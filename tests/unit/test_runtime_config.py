@@ -10,6 +10,7 @@ from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
+    RetrievalCacheStoreRegistration,
     RuntimeConfig,
     StorageAdapterRegistration,
     load_runtime_config,
@@ -42,6 +43,7 @@ def test_runtime_configuration_fields_have_explicit_production_consumers() -> No
         for model in (
             RuntimeConfig,
             StorageAdapterRegistration,
+            RetrievalCacheStoreRegistration,
             CollectionVolumePolicy,
             PackRangeRetrievalPolicy,
             ArchiveThroughputTuning,
@@ -389,42 +391,59 @@ def test_configured_archive_store_requires_complete_connection_settings(
 def test_load_runtime_config_builds_retrieval_cache_adapter_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_STORES", "local")
     monkeypatch.setenv(
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "https://cache.example.test/adapter/"
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL", "https://cache.example.test/adapter/"
     )
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS", "24")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv(
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token"
+    )
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_MAX_CONNECTIONS", "24")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_ENABLED", "false")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_BUDGET_BYTES", "1048576")
 
     config = load_runtime_config()
 
-    assert config.retrieval_cache == StorageAdapterRegistration(
-        name="retrieval-cache",
-        base_url="https://cache.example.test/adapter",
-        token_file=Path("/run/secrets/cache.token"),
-        maximum_connections=24,
-        timeout_seconds=90,
-    )
+    assert config.retrieval_cache_stores == {
+        "local": RetrievalCacheStoreRegistration(
+            name="local",
+            adapter=StorageAdapterRegistration(
+                name="local",
+                base_url="https://cache.example.test/adapter",
+                token_file=Path("/run/secrets/cache.token"),
+                maximum_connections=24,
+                timeout_seconds=90,
+            ),
+            admission_enabled=False,
+            admission_budget_bytes=1048576,
+        )
+    }
 
 
 def test_retrieval_cache_adapter_allows_explicit_remote_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "http://cache.example.test")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP", "true")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_STORES", "local")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL", "http://cache.example.test")
+    monkeypatch.setenv(
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token"
+    )
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_ALLOW_INSECURE_HTTP", "true")
 
     config = load_runtime_config()
 
-    assert config.retrieval_cache is not None
-    assert config.retrieval_cache.base_url == "http://cache.example.test"
-    assert config.retrieval_cache.allow_insecure_http is True
+    assert config.retrieval_cache_stores["local"].adapter.base_url == "http://cache.example.test"
+    assert config.retrieval_cache_stores["local"].adapter.allow_insecure_http is True
 
 
 def test_retrieval_cache_adapter_connection_is_atomic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_STORES", "local")
+    monkeypatch.setenv(
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token"
+    )
 
-    with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE_.*incomplete"):
+    with pytest.raises(ValueError, match="retrieval cache store local.*incomplete"):
         load_runtime_config()

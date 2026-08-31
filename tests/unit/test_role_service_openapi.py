@@ -232,7 +232,7 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
     }
 
     assert by_operation[("GET", "/v1/adapter")] == common
-    assert by_operation[("POST", "/v1/writes/begin")] == common | request
+    assert by_operation[("POST", "/v1/writes/begin")] == common | request | {"insufficient_storage"}
     assert by_operation[("POST", "/v1/writes/complete")] == common | request | {
         "not_found",
         "identity_conflict",
@@ -242,6 +242,7 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
         "length_required",
         "identity_conflict",
         "integrity_failure",
+        "insufficient_storage",
     }
     assert by_operation[("POST", "/v1/objects/read")] == common | request | {
         "not_found",

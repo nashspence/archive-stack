@@ -180,6 +180,7 @@ def run_storage_adapter_conformance(
         if descriptor.maximum_segment_count is None or descriptor.maximum_segment_count >= 2:
             sparse_request = WriteStartRequest(
                 object_path=sparse_write_path,
+                expected_bytes=descriptor.minimum_nonfinal_segment_bytes,
                 content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-conformance": "sparse-resumable-write/v1"},
                 placement="immediate",
@@ -217,6 +218,7 @@ def run_storage_adapter_conformance(
             segment_contents.append(b"final")
         write_request = WriteStartRequest(
             object_path=write_path,
+            expected_bytes=sum(len(content) for content in segment_contents),
             content_type="application/octet-stream",
             required_identity_assertions={"riverhog-conformance": "resumable-write/v1"},
             placement="immediate",
@@ -265,6 +267,7 @@ def run_storage_adapter_conformance(
         headed_completion = continuation_client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=write_path,
+                expected_bytes=total_bytes,
                 expected_content_type=write_request.content_type,
                 required_identity_assertions=write_request.required_identity_assertions,
                 expected_placement=write_request.placement,

@@ -58,6 +58,7 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
+    RetrievalCacheStoreAccountingRecord,
     RetrievalJobFileRecord,
     RetrievalJobObjectRecord,
     RetrievalJobRecord,
@@ -86,6 +87,7 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.services.retrieval_cache import register_cache_ready
 from riverhog_core.streaming_age import ResumableAgeSessionCache
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
@@ -464,6 +466,10 @@ class SqlAlchemyRetrievalService:
                     func.coalesce(func.sum(case((active_lease, 1), else_=0)), 0),
                 ).where(visible, RetrievalCacheObjectRecord.state == "ready")
             ).one()
+            accounting = {
+                row.cache_store: row
+                for row in session.scalars(select(RetrievalCacheStoreAccountingRecord))
+            }
         return {
             "configured": self._cache is not None,
             "new_archive_enabled": (
@@ -473,6 +479,24 @@ class SqlAlchemyRetrievalService:
             "stored_bytes": int(stored_bytes),
             "protected_objects": int(protected),
             "unleased_objects": int(objects) - int(protected),
+            "stores": [
+                {
+                    "cache_store": name,
+                    "priority": priority,
+                    "admission_enabled": registration.admission_enabled,
+                    "admission_budget_bytes": registration.admission_budget_bytes,
+                    "reserved_bytes": (
+                        accounting[name].reserved_bytes if name in accounting else 0
+                    ),
+                    "committed_bytes": (
+                        accounting[name].committed_bytes if name in accounting else 0
+                    ),
+                }
+                for priority, (name, registration) in enumerate(
+                    self._config.retrieval_cache_stores.items(),
+                    start=1,
+                )
+            ],
             "policy": {
                 "new_archive_lease_seconds": int(
                     self._config.retrieval_cache_new_archive_lease.total_seconds()
@@ -504,6 +528,7 @@ class SqlAlchemyRetrievalService:
         tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
+        cache_store: str | None = None,
         state: str | None = None,
         protection: str | None = None,
         expires_before: str | None = None,
@@ -520,6 +545,7 @@ class SqlAlchemyRetrievalService:
             tag=tag,
             collection_id=collection_id,
             source_store=source_store,
+            cache_store=cache_store,
             state=state,
             protection=protection,
             expires_before=expires_before,
@@ -567,6 +593,7 @@ class SqlAlchemyRetrievalService:
         tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
+        cache_store: str | None = None,
         state: str | None = None,
         protection: str | None = None,
         expires_before: str | None = None,
@@ -581,6 +608,7 @@ class SqlAlchemyRetrievalService:
             tag=tag,
             collection_id=collection_id,
             source_store=source_store,
+            cache_store=cache_store,
             state=state,
             protection=protection,
             expires_before=expires_before,
@@ -812,6 +840,11 @@ class SqlAlchemyRetrievalService:
                             object_id=str(current["object_id"]),
                             object_order=order,
                             read_mode=str(current["read_mode"]),
+                            cache_store=(
+                                str(current["cache_store"])
+                                if current.get("cache_store") is not None
+                                else None
+                            ),
                         )
                     )
                     if current["read_mode"] == "cache":
@@ -921,6 +954,8 @@ class SqlAlchemyRetrievalService:
             payload = _job_payload(record)
         if self._download_allowance is not None:
             self._download_allowance.release_retrieval(job_id=job_id)
+        if self._cache is not None:
+            self._cache.release(owner=_job_owner(job_id))
         return payload
 
     def cancel(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
@@ -947,6 +982,8 @@ class SqlAlchemyRetrievalService:
             payload = _job_payload(record)
         if self._download_allowance is not None:
             self._download_allowance.release_retrieval(job_id=job_id)
+        if self._cache is not None:
+            self._cache.release(owner=_job_owner(job_id))
         return payload
 
     def content(
@@ -1128,6 +1165,7 @@ class SqlAlchemyRetrievalService:
             base = _CachedArchiveRangeStore(
                 self._cache,
                 archive_object_path=object_record.object_path,
+                cache_store=cached.cache_store,
                 cache_object_path=cached.object_path,
                 cache_revision=cached.revision,
             )
@@ -1194,6 +1232,8 @@ class SqlAlchemyRetrievalService:
     def sweep(self, *, limit: int = 100) -> int:
         if limit < 1:
             return 0
+        if self._cache is not None:
+            self._cache.reap_abandoned_populations(limit=limit)
         now_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             expired_jobs = session.scalars(
@@ -1265,6 +1305,7 @@ class SqlAlchemyRetrievalService:
                     cached.source_store,
                     cached.collection_id,
                     cached.object_id,
+                    cached.cache_store,
                     cached.object_path,
                     cached.revision,
                 )
@@ -1274,9 +1315,10 @@ class SqlAlchemyRetrievalService:
                 cached.state = "deleting"
 
         removed = 0
-        for source_store, collection_id, object_id, object_path, revision in cleanup:
+        for source_store, collection_id, object_id, cache_store, object_path, revision in cleanup:
             try:
                 self._cache.delete(
+                    cache_store=cache_store,
                     object_path=object_path,
                     revision=revision,
                 )
@@ -1305,6 +1347,14 @@ class SqlAlchemyRetrievalService:
                     and cache_record.object_path == object_path
                     and cache_record.revision == revision
                 ):
+                    accounting = session.get(
+                        RetrievalCacheStoreAccountingRecord,
+                        cache_record.cache_store,
+                    )
+                    if accounting is None or accounting.committed_bytes < cache_record.stored_bytes:
+                        raise RuntimeError("retrieval cache accounting is inconsistent")
+                    accounting.committed_bytes -= cache_record.stored_bytes
+                    accounting.updated_at = format_utc_timestamp(utc_now())
                     session.delete(cache_record)
                     removed += 1
         return removed
@@ -1419,6 +1469,7 @@ class SqlAlchemyRetrievalService:
             "sha256": object_record.sha256,
             "retrieval_bytes": 0,
             "read_mode": read_mode,
+            "cache_store": cached.cache_store if cached is not None else None,
             "placements": [],
         }
 
@@ -1533,10 +1584,61 @@ class SqlAlchemyRetrievalService:
                             expires_at=pending_expires_at,
                         )
         if pending_failed:
+            if self._cache is not None:
+                self._cache.release(owner=_job_owner(job_id))
             if self._download_allowance is not None:
                 self._download_allowance.release_retrieval(job_id=job_id)
             return
         try:
+            admissions = {}
+            if groups:
+                if self._cache is None:
+                    raise RuntimeError("retrieval cache is unavailable")
+                admission_waiting = False
+                for (store_name, collection_id), objects in groups.items():
+                    for object_identity in objects:
+                        key = (store_name, collection_id, object_identity.object_id)
+                        admission = self._cache.admit(
+                            owner=_job_owner(job_id),
+                            source_store=store_name,
+                            collection_id=collection_id,
+                            object_id=object_identity.object_id,
+                            expected_bytes=object_identity.stored_bytes,
+                        )
+                        if admission is None:
+                            with session_scope(self._session_factory) as session:
+                                cached = session.get(RetrievalCacheObjectRecord, key)
+                                if cached is None or cached.state != "ready":
+                                    admission_waiting = True
+                                else:
+                                    job_object = session.get(
+                                        RetrievalJobObjectRecord,
+                                        (
+                                            job_id,
+                                            collection_id,
+                                            store_name,
+                                            object_identity.object_id,
+                                        ),
+                                    )
+                                    if job_object is not None:
+                                        job_object.cache_store = cached.cache_store
+                            continue
+                        admissions[key] = admission
+                        with session_scope(self._session_factory) as session:
+                            job_object = session.get(
+                                RetrievalJobObjectRecord,
+                                (job_id, collection_id, store_name, object_identity.object_id),
+                            )
+                            if job_object is not None:
+                                job_object.cache_store = admission.cache_store
+                if admission_waiting:
+                    with session_scope(self._session_factory) as session:
+                        job = session.get(RetrievalJobRecord, job_id)
+                        if job is not None and job.state == "requested":
+                            job.next_poll_at = format_utc_timestamp(
+                                utc_now() + self._config.retrieval_restore_poll_interval
+                            )
+                    return
             if groups and restore_requested_at is None:
                 restore_requested_at = format_utc_timestamp(utc_now())
                 for (store_name, collection_id), objects in groups.items():
@@ -1576,22 +1678,24 @@ class SqlAlchemyRetrievalService:
                 if self._cache is None:
                     raise RuntimeError("retrieval cache is unavailable")
                 for object_identity in objects:
+                    key = (store_name, collection_id, object_identity.object_id)
+                    admission = admissions.get(key)
+                    if admission is None:
+                        continue
                     receipt = self._cache.put(
-                        source_store=store_name,
-                        collection_id=collection_id,
-                        object_id=object_identity.object_id,
+                        admission=admission,
                         content=store.iter_stored_archive_object(
                             collection_id=collection_id,
                             object=object_identity,
                             attribution=attribution,
                         ),
-                        content_length=object_identity.stored_bytes,
                     )
                     try:
                         _validate_cache_receipt(receipt, object_identity)
                     except Exception as receipt_error:
                         try:
                             self._cache.delete(
+                                cache_store=receipt.cache_store,
                                 object_path=receipt.object_path,
                                 revision=receipt.revision,
                             )
@@ -1602,19 +1706,12 @@ class SqlAlchemyRetrievalService:
                             ) from cleanup_error
                         raise
                     with session_scope(self._session_factory) as session:
-                        session.merge(
-                            RetrievalCacheObjectRecord(
-                                source_store=store_name,
-                                collection_id=collection_id,
-                                object_id=object_identity.object_id,
-                                object_path=receipt.object_path,
-                                revision=receipt.revision,
-                                stored_bytes=receipt.stored_bytes,
-                                stored_sha256=receipt.stored_sha256,
-                                cached_at=receipt.cached_at,
-                                verified_at=receipt.verified_at,
-                                state="ready",
-                            )
+                        register_cache_ready(
+                            session,
+                            source_store=store_name,
+                            collection_id=collection_id,
+                            object_id=object_identity.object_id,
+                            receipt=receipt,
                         )
                         session.flush()
                         self._lease_cached_object(
@@ -1809,11 +1906,13 @@ class _CachedArchiveRangeStore:
         cache: RetrievalCache,
         *,
         archive_object_path: str,
+        cache_store: str,
         cache_object_path: str,
         cache_revision: str | None,
     ) -> None:
         self._cache = cache
         self._archive_object_path = archive_object_path
+        self._cache_store = cache_store
         self._cache_object_path = cache_object_path
         self._cache_revision = cache_revision
 
@@ -1830,6 +1929,7 @@ class _CachedArchiveRangeStore:
         if object_path != self._archive_object_path:
             raise ValueError("retrieval cache archive object identity changed")
         return self._cache.iter_object_range(
+            cache_store=self._cache_store,
             object_path=self._cache_object_path,
             revision=self._cache_revision,
             expected_bytes=expected_bytes,
@@ -1953,6 +2053,7 @@ def _cache_list_statement(
     tag: str | None,
     collection_id: int | None,
     source_store: str | None,
+    cache_store: str | None,
     state: str | None,
     protection: str | None,
     expires_before: str | None,
@@ -1971,6 +2072,9 @@ def _cache_list_statement(
     )
     normalized_store = (
         source_store.strip().casefold() if source_store and source_store.strip() else None
+    )
+    normalized_cache_store = (
+        cache_store.strip().casefold() if cache_store and cache_store.strip() else None
     )
     normalized_state = state.strip().casefold() if state and state.strip() else None
     if normalized_state is not None and normalized_state not in _CACHE_STATES:
@@ -2015,6 +2119,10 @@ def _cache_list_statement(
         )
     if normalized_store is not None:
         statement = statement.where(RetrievalCacheObjectRecord.source_store == normalized_store)
+    if normalized_cache_store is not None:
+        statement = statement.where(
+            RetrievalCacheObjectRecord.cache_store == normalized_cache_store
+        )
     if normalized_state is not None:
         statement = statement.where(RetrievalCacheObjectRecord.state == normalized_state)
     if normalized_protection == "protected":
@@ -2063,6 +2171,7 @@ def _cache_list_statement(
         "tag": normalized_tag,
         "collection_id": normalized_collection_id,
         "source_store": normalized_store,
+        "cache_store": normalized_cache_store,
         "state": normalized_state,
         "protection": normalized_protection,
         "expires_before": normalized_expires_before,
@@ -2148,6 +2257,7 @@ def _cache_object_payload(
     return {
         "collection_id": current.collection_id,
         "source_store": current.source_store,
+        "cache_store": current.cache_store,
         "object_id": current.object_id,
         "state": current.state,
         "stored_bytes": current.stored_bytes,
@@ -2197,10 +2307,11 @@ def _validate_cache_receipt(
     identity: ArchiveObjectIdentity,
 ) -> None:
     if (
-        not receipt.object_path
+        not receipt.cache_store
+        or not receipt.object_path
         or receipt.stored_bytes != identity.stored_bytes
         or (identity.stored_sha256 is not None and receipt.stored_sha256 != identity.stored_sha256)
-        or len(receipt.stored_sha256) != 64
+        or (receipt.stored_sha256 is not None and len(receipt.stored_sha256) != 64)
         or not receipt.cached_at
         or not receipt.verified_at
     ):
@@ -2232,6 +2343,21 @@ def _release_job_reservation(session: Session, job_id: str) -> None:
 
 def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
     plan = json.loads(record.constraints_json)
+    cache_stores = {
+        (current.collection_id, current.source_store, current.object_id): current.cache_store
+        for current in record.objects
+    }
+    objects: list[dict[str, object]] = []
+    for value in plan["objects"]:
+        current = dict(value)
+        current["cache_store"] = cache_stores.get(
+            (
+                int(current["collection_id"]),
+                str(current["source_store"]),
+                str(current["object_id"]),
+            )
+        )
+        objects.append(current)
     return {
         "id": record.id,
         "state": record.state,
@@ -2248,5 +2374,5 @@ def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
         "restore_policy": plan["restore_policy"],
         "requires_restore": plan["requires_restore"],
         "files": plan["files"],
-        "objects": plan["objects"],
+        "objects": objects,
     }

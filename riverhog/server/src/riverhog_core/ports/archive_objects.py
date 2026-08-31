@@ -32,6 +32,7 @@ class WriteSegmentReceipt:
 class WriteSession:
     object_path: str
     write_token: str
+    expected_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,7 @@ class ArchiveResumableObjectStore(Protocol):
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         content_type: str,
         metadata: dict[str, str],
     ) -> WriteSession: ...
@@ -79,6 +81,7 @@ class ArchiveResumableObjectStore(Protocol):
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None: ...

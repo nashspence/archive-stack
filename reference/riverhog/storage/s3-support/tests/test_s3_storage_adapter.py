@@ -335,6 +335,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     adapter = S3StorageAdapter(client, _config())
     create = WriteStartRequest(
         object_path="archives/collection/volume.age",
+        expected_bytes=adapter.descriptor().minimum_nonfinal_segment_bytes + 6,
         content_type="application/octet-stream",
         required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
         placement="archive",
@@ -377,6 +378,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         restarted_adapter.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=first.object_path,
+                expected_bytes=first.stored_bytes,
                 expected_content_type=create.content_type,
                 required_identity_assertions=create.required_identity_assertions,
                 expected_placement=create.placement,
@@ -395,6 +397,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         restarted_adapter.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=first.object_path,
+                expected_bytes=first.stored_bytes,
                 expected_content_type="application/vnd.example.other",
                 required_identity_assertions=create.required_identity_assertions,
                 expected_placement=create.placement,
@@ -409,6 +412,7 @@ def test_resumable_write_lists_sparse_provider_state_after_restart() -> None:
     session = adapter.begin_write(
         WriteStartRequest(
             object_path="archives/collection/sparse.age",
+            expected_bytes=adapter.descriptor().minimum_nonfinal_segment_bytes,
             content_type="application/octet-stream",
             required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
             placement="archive",
@@ -438,6 +442,7 @@ def test_identity_assertions_are_inert_while_placement_remains_explicit() -> Non
     immediate = adapter.begin_write(
         WriteStartRequest(
             object_path="cache/collection/volume.age",
+            expected_bytes=1,
             content_type="application/octet-stream",
             required_identity_assertions=identity,
             placement="immediate",
@@ -446,6 +451,7 @@ def test_identity_assertions_are_inert_while_placement_remains_explicit() -> Non
     archive = adapter.begin_write(
         WriteStartRequest(
             object_path="archives/collection/volume.age",
+            expected_bytes=1,
             content_type="application/octet-stream",
             required_identity_assertions=identity,
             placement="archive",
@@ -598,6 +604,7 @@ def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
     session = adapter.begin_write(
         WriteStartRequest(
             object_path="archives/collection/volume.age",
+            expected_bytes=1,
             content_type="application/octet-stream",
             required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
             placement="archive",

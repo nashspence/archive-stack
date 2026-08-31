@@ -2186,6 +2186,10 @@ def retrieval_cache_list_cmd(
         str | None,
         typer.Option("--source-store", help="Require one archive source store"),
     ] = None,
+    cache_store: Annotated[
+        str | None,
+        typer.Option("--cache-store", help="Require one retrieval-cache store"),
+    ] = None,
     state: Annotated[
         str | None,
         typer.Option("--state", help="Require ready, delete_pending, or deleting state"),
@@ -2224,6 +2228,7 @@ def retrieval_cache_list_cmd(
         tag=tag,
         collection_id=collection_id,
         source_store=source_store,
+        cache_store=cast(Any, cache_store),
         state=cast(Any, state),
         protection=cast(Any, protection),
         expires_before=expires_before,

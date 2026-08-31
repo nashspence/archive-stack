@@ -159,8 +159,15 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     dynamic_archive_store_names = {
         name for name in configured_names if name.startswith("RIVERHOG_ARCHIVE_STORE_")
     }
-    assert all(name in runtime_source for name in configured_names - dynamic_archive_store_names)
+    dynamic_cache_store_names = {
+        name for name in configured_names if name.startswith("RIVERHOG_RETRIEVAL_CACHE_LOCAL_")
+    }
+    assert all(
+        name in runtime_source
+        for name in configured_names - dynamic_archive_store_names - dynamic_cache_store_names
+    )
     assert "RIVERHOG_ARCHIVE_STORE_" in runtime_source
+    assert "RIVERHOG_RETRIEVAL_CACHE_{store}_{setting}" in runtime_source
     assert {name.rsplit("_", 1)[-1] for name in dynamic_archive_store_names} <= {
         "URL",
         "BYTES",
@@ -241,7 +248,7 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
     topology_fields = {
         "database_url",
         "public_base_url",
-        "retrieval_cache",
+        "retrieval_cache_stores",
     }
     archive_topology_fields = {
         "allow_insecure_http",
@@ -287,11 +294,14 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES",
         "RIVERHOG_AGE_SESSION_CACHE_ENTRIES",
         "RIVERHOG_AGE_SESSION_DERIVATION_CONCURRENCY",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
+        "RIVERHOG_RETRIEVAL_CACHE_STORES",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_ALLOW_INSECURE_HTTP",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_MAX_CONNECTIONS",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TIMEOUT_SECONDS",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_ENABLED",
+        "RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_BUDGET_BYTES",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE",
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE",
@@ -720,6 +730,7 @@ def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) ->
     assert "tests/integration/test_catalog_schema_postgres.py" in docker_log
     assert "tests/integration/test_collection_deletion_concurrency.py" in docker_log
     assert "tests/integration/test_download_allowance_concurrency.py" in docker_log
+    assert "tests/integration/test_retrieval_cache_admission_concurrency.py" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 

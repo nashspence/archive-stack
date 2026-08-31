@@ -24,7 +24,11 @@ def test_core_archive_layout_and_resumable_write_vocabularies_are_distinct() -> 
         "stored_bytes",
         "stored_sha256",
     }
-    assert {field.name for field in fields(WriteSession)} == {"object_path", "write_token"}
+    assert {field.name for field in fields(WriteSession)} == {
+        "object_path",
+        "write_token",
+        "expected_bytes",
+    }
     assert {field.name for field in fields(WriteSegmentReceipt)} == {
         "number",
         "segment_token",

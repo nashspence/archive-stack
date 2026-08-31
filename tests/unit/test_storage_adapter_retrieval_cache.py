@@ -5,7 +5,7 @@ import logging
 import threading
 
 import pytest
-from riverhog_core.ports.archive_objects import CompletedObjectReceipt, WriteSegmentReceipt
+from riverhog_core.ports.archive_objects import CompletedObjectReceipt
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 from riverhog_storage_adapter_protocol import (
@@ -21,6 +21,7 @@ from riverhog_storage_adapter_protocol import (
     ObjectReadStream,
     SmallObjectWriteRequest,
     WriteCompleteRequest,
+    WriteSegmentSet,
     WriteStartRequest,
 )
 from riverhog_storage_adapter_protocol import (
@@ -64,7 +65,11 @@ class _Adapter:
         request: WriteStartRequest,
     ) -> AdapterWriteSession:
         self.created = request
-        return AdapterWriteSession(object_path=request.object_path, write_token="write-1")
+        return AdapterWriteSession(
+            object_path=request.object_path,
+            write_token="write-1",
+            expected_bytes=request.expected_bytes,
+        )
 
     def write_segment(
         self,
@@ -96,16 +101,19 @@ class _Adapter:
     def list_segments(
         self,
         session: AdapterWriteSession,
-    ) -> tuple[AdapterWriteSegmentReceipt, ...]:
+    ) -> WriteSegmentSet:
         assert session.write_token == "write-1"
-        return tuple(
-            AdapterWriteSegmentReceipt(
-                number=number,
-                segment_token=f"segment-{number}",
-                stored_bytes=len(content),
-                stored_sha256=hashlib.sha256(content).hexdigest(),
-            )
-            for number, content in sorted(self._segments.items())
+        return WriteSegmentSet(
+            session=session,
+            segments=tuple(
+                AdapterWriteSegmentReceipt(
+                    number=number,
+                    segment_token=f"segment-{number}",
+                    stored_bytes=len(content),
+                    stored_sha256=hashlib.sha256(content).hexdigest(),
+                )
+                for number, content in sorted(self._segments.items())
+            ),
         )
 
     def complete_write(
@@ -215,6 +223,7 @@ def _cache(adapter: _Adapter) -> StorageAdapterRetrievalCache:
         upload_max_inflight_bytes=3 * _PART_BYTES,
     )
     return StorageAdapterRetrievalCache(
+        "local",
         adapter,  # type: ignore[arg-type]
         write_segment_bytes=_PART_BYTES,
         throughput_tuning=tuning,
@@ -230,14 +239,20 @@ def test_cache_hydration_preserves_bounded_overlapping_uploads_without_reread(
     cache = _cache(adapter)
     content = b"a" * _PART_BYTES + b"b" * _PART_BYTES + b"tail"
 
-    receipt = cache.put(
+    session = cache.begin_population(
+        source_store="archive",
+        collection_id=1,
+        object_id="raw-000001",
+        expected_bytes=len(content),
+    )
+    receipt = cache.populate(
+        session=session,
         source_store="archive",
         collection_id=1,
         object_id="raw-000001",
         content=(
             content[offset : offset + 1024 * 1024] for offset in range(0, len(content), 1024 * 1024)
         ),
-        content_length=len(content),
     )
 
     assert adapter.maximum_active == 2
@@ -249,7 +264,7 @@ def test_cache_hydration_preserves_bounded_overlapping_uploads_without_reread(
     assert "raw-000001" not in caplog.messages[-1]
 
 
-def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts() -> None:
+def test_cache_receipt_and_range_read_do_not_reread_completed_content() -> None:
     adapter = _Adapter()
     cache = _cache(adapter)
     path = "objects/aa/digest"
@@ -263,25 +278,11 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
         bytes=len(content),
         completed_at="2026-08-21T00:00:00.000000Z",
     )
-    segments = (
-        WriteSegmentReceipt(1, "one", 10, hashlib.sha256(b"first-part").hexdigest()),
-        WriteSegmentReceipt(2, "two", 11, hashlib.sha256(b"second-part").hexdigest()),
-    )
+    receipt = cache.receipt(completed=completed, stored_sha256=None)
 
-    receipt = cache.verify_resumable_object(completed=completed, segments=segments)
-
-    assert receipt.stored_sha256 == hashlib.sha256(content).hexdigest()
-    assert (
-        b"".join(
-            cache.iter_object(
-                object_path=path,
-                revision="version-1",
-                expected_bytes=len(content),
-                expected_sha256=receipt.stored_sha256,
-            )
-        )
-        == content
-    )
+    assert receipt.cache_store == "local"
+    assert receipt.stored_sha256 is None
+    assert adapter.reads == 0
     assert (
         b"".join(
             cache.iter_object_range(
@@ -295,10 +296,6 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
         == b"second-part"
     )
 
-    corrupted = (segments[0], WriteSegmentReceipt(2, "two", 11, "0" * 64))
-    with pytest.raises(RuntimeError, match="segment failed integrity"):
-        cache.verify_resumable_object(completed=completed, segments=corrupted)
-
 
 def test_cache_mirror_uses_deterministic_immediate_object_and_exact_deletion() -> None:
     adapter = _Adapter()
@@ -310,6 +307,7 @@ def test_cache_mirror_uses_deterministic_immediate_object_and_exact_deletion() -
     )
     session = objects.begin_write(
         object_path="archives/opaque/volumes/pack-000000000000.tar.age",
+        expected_bytes=6,
         content_type="application/octet-stream",
         metadata={"riverhog-format": "riverhog-pack-volume/v1"},
     )

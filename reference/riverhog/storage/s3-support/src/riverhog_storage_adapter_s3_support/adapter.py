@@ -167,7 +167,11 @@ class S3StorageAdapter:
         upload_id = str(response.get("UploadId", ""))
         if not upload_id:
             raise RuntimeError("S3 did not return a multipart upload id")
-        return WriteSession(object_path=request.object_path, write_token=upload_id)
+        return WriteSession(
+            object_path=request.object_path,
+            expected_bytes=request.expected_bytes,
+            write_token=upload_id,
+        )
 
     def write_segment(
         self,
@@ -282,6 +286,7 @@ class S3StorageAdapter:
             recovered = self.find_completed_write(
                 CompletedWriteLookupRequest(
                     object_path=request.session.object_path,
+                    expected_bytes=request.expected_bytes,
                     expected_content_type=request.expected_content_type,
                     required_identity_assertions=request.required_identity_assertions,
                     expected_placement=request.expected_placement,
@@ -300,6 +305,7 @@ class S3StorageAdapter:
         completed = self.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=request.session.object_path,
+                expected_bytes=request.expected_bytes,
                 expected_content_type=request.expected_content_type,
                 required_identity_assertions=request.required_identity_assertions,
                 expected_placement=request.expected_placement,

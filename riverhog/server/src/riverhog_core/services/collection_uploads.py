@@ -146,7 +146,6 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     CollectionUploadTagRecord,
     RetrievalCacheLeaseRecord,
-    RetrievalCacheObjectRecord,
     TagRecord,
 )
 from riverhog_core.catalog_workflow_models import (
@@ -206,6 +205,7 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
+from riverhog_core.services.retrieval_cache import register_cache_ready
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -1804,6 +1804,7 @@ class SqlAlchemyCollectionUploadService:
             source_store=store_name,
             collection_id=collection_id,
             object_id=object_id,
+            owner=f"collection-upload:{collection_id}:{object_id}",
         )
 
     def _raw_uploader(
@@ -2372,16 +2373,6 @@ class SqlAlchemyCollectionUploadService:
                     if record.kind == "pack"
                     else _parse_sealed_raw(record.sealed_receipt_json)
                 )
-                cache_required = (
-                    self._config.retrieval_cache_new_archive_enabled
-                    and self._retrieval_cache is not None
-                    and self._archive_stores.require(upload.archive_store).store.read_mode()
-                    == "restore_required"
-                )
-                if cache_required and volume.retrieval_cache is None:
-                    raise RuntimeError(
-                        "restore-required archive volume is missing its retrieval cache receipt"
-                    )
                 session.add(
                     CollectionArchiveObjectRecord(
                         collection_id=upload.collection_id,
@@ -2429,26 +2420,18 @@ class SqlAlchemyCollectionUploadService:
                 )
                 if volume.retrieval_cache is not None:
                     receipt = volume.retrieval_cache
-                    if (
-                        receipt.stored_bytes != volume.stored_bytes
-                        or len(receipt.stored_sha256) != 64
+                    if receipt.stored_bytes != volume.stored_bytes or (
+                        receipt.stored_sha256 is not None and len(receipt.stored_sha256) != 64
                     ):
                         raise RuntimeError(
                             "retrieval cache receipt does not match its sealed archive volume"
                         )
-                    session.add(
-                        RetrievalCacheObjectRecord(
-                            source_store=upload.archive_store,
-                            collection_id=upload.collection_id,
-                            object_id=volume.volume_id,
-                            object_path=receipt.object_path,
-                            revision=receipt.revision,
-                            stored_bytes=receipt.stored_bytes,
-                            stored_sha256=receipt.stored_sha256,
-                            cached_at=receipt.cached_at,
-                            verified_at=receipt.verified_at,
-                            state="ready",
-                        )
+                    register_cache_ready(
+                        session,
+                        source_store=upload.archive_store,
+                        collection_id=upload.collection_id,
+                        object_id=volume.volume_id,
+                        receipt=receipt,
                     )
                     session.flush()
                     session.add(

@@ -42,8 +42,7 @@ from riverhog_core.incremental_plan import (
     incremental_volume_planner_checkpoint_bytes,
     parse_incremental_volume_planner_checkpoint,
 )
-from riverhog_core.ports.archive_objects import CompletedObjectReceipt
-from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
+from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -110,26 +109,48 @@ class _MemoryResumableCache:
     def __init__(self) -> None:
         self.resumable = MemoryResumableStore()
 
+    def admit(
+        self,
+        *,
+        owner: str,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+        expected_bytes: int,
+    ) -> RetrievalCacheAdmission:
+        path = f"cache/{source_store}/{collection_id}/{object_id}"
+        session = self.resumable.begin_write(
+            object_path=path,
+            expected_bytes=expected_bytes,
+            content_type="application/octet-stream",
+            metadata={},
+        )
+        return RetrievalCacheAdmission(
+            owner=owner,
+            cache_store="memory",
+            source_store=source_store,
+            collection_id=collection_id,
+            object_id=object_id,
+            object_path=path,
+            expected_bytes=expected_bytes,
+            write_token=session.write_token,
+            admitted_at="2026-08-08T00:00:00.000000Z",
+        )
+
     def resumable_object_store(self, **_: object) -> MemoryResumableStore:
         return self.resumable
 
-    def verify_resumable_object(
-        self,
-        *,
-        completed: CompletedObjectReceipt,
-        segments: tuple[object, ...] = (),
-    ) -> RetrievalCacheReceipt:
-        assert segments
-        content = self.resumable.objects[completed.object_path][0]
-        assert len(content) == completed.bytes
-        return RetrievalCacheReceipt(
-            object_path=completed.object_path,
-            revision=completed.revision,
-            stored_bytes=len(content),
-            stored_sha256=hashlib.sha256(content).hexdigest(),
-            cached_at=completed.completed_at,
-            verified_at=completed.completed_at,
-        )
+    def release(self, *, owner: str) -> int:
+        _ = owner
+        return 0
+
+    def is_current(self, *, admission: RetrievalCacheAdmission) -> bool:
+        _ = admission
+        return True
+
+    def reap_abandoned_populations(self, *, limit: int = 100) -> int:
+        _ = limit
+        return 0
 
 
 def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
@@ -403,7 +424,7 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
     assert reencrypted["passphrase_id"] == "collection-test-key-v2"
 
 
-def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_lease(
+def test_restore_required_ingress_commits_encrypted_cache_with_initial_lease(
     tmp_path: Path,
 ) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
@@ -502,7 +523,7 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
         cache_ciphertext = cache.resumable.objects[cached.object_path][0]
         assert cache_ciphertext == archive_ciphertext
         assert cache_ciphertext != content
-        assert cached.stored_sha256 == hashlib.sha256(cache_ciphertext).hexdigest()
+        assert cached.cache_store == "memory"
 
 
 def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_disabled(

@@ -103,6 +103,7 @@ _DATABASE_FILTER_SELECTORS = {
     "processing-claims": {"state"},
     "provenance": {"q", "status"},
     "retrieval-cache": {
+        "cache_store",
         "collection_id",
         "expires_after",
         "expires_before",
@@ -395,11 +396,12 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             """,
             f"""
             INSERT INTO retrieval_cache_objects (
-                source_store, collection_id, object_id, object_path, revision,
+                source_store, collection_id, object_id, cache_store, object_path, revision,
                 stored_bytes, stored_sha256, cached_at, verified_at, state
             )
             SELECT 'archive-' || lpad((g % 16)::text, 2, '0'), g,
                    'object-' || lpad(g::text, 6, '0'),
+                   CASE WHEN g % 2 = 0 THEN 'local' ELSE 'elastic' END,
                    'collections/' || g || '/object', 'revision-' || g,
                    g + 64, {sha}, {timestamp}, {timestamp},
                    CASE WHEN g = {rows} THEN 'delete_pending' ELSE 'ready' END
@@ -769,6 +771,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 tag=None,
                 collection_id=None,
                 source_store=None,
+                cache_store=None,
                 state=None,
                 protection=None,
                 expires_before=None,
@@ -817,6 +820,12 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             ),
             None,
         ),
+        (
+            "cache_store",
+            {"cache_store": "local"},
+            "ix_retrieval_cache_objects_store_cleanup",
+            None,
+        ),
         ("state", {"state": "delete_pending"}, "ix_retrieval_cache_objects_cleanup", None),
         ("tag", {"tag": "tag-004096"}, "ix_collection_tags_tag", None),
         ("protection", {"protection": "protected"}, None, "Aggregate"),
@@ -839,6 +848,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             tag=str(kwargs["tag"]) if "tag" in kwargs else None,
             collection_id=(int(kwargs["collection_id"]) if "collection_id" in kwargs else None),
             source_store=(str(kwargs["source_store"]) if "source_store" in kwargs else None),
+            cache_store=(str(kwargs["cache_store"]) if "cache_store" in kwargs else None),
             state=str(kwargs["state"]) if "state" in kwargs else None,
             protection=str(kwargs["protection"]) if "protection" in kwargs else None,
             expires_before=(str(kwargs["expires_before"]) if "expires_before" in kwargs else None),

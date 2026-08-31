@@ -115,6 +115,8 @@ def _load_catalog_models() -> None:
         LifecycleEventRecord,
         RetrievalCacheLeaseRecord,
         RetrievalCacheObjectRecord,
+        RetrievalCachePopulationRecord,
+        RetrievalCacheStoreAccountingRecord,
         RetrievalJobFileRecord,
         RetrievalJobObjectRecord,
         RetrievalJobRecord,
@@ -160,6 +162,8 @@ def _load_catalog_models() -> None:
         RetrievalJobObjectRecord,
         RetrievalCacheObjectRecord,
         RetrievalCacheLeaseRecord,
+        RetrievalCachePopulationRecord,
+        RetrievalCacheStoreAccountingRecord,
         TagRecord,
     )
 

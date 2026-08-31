@@ -158,7 +158,7 @@ def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
         read_mode="immediate",
         minimum_nonfinal_segment_bytes=1,
     )
-    session = WriteSession(object_path="objects/item", write_token="write-1")
+    session = WriteSession(object_path="objects/item", write_token="write-1", expected_bytes=3)
     segment_adapter = cast(
         StorageAdapterPort,
         SimpleNamespace(
@@ -180,7 +180,11 @@ def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
 
 
 def test_write_completion_preserves_optional_digests_and_repeated_provider_tokens() -> None:
-    session = WriteSession(object_path="archives/id/volumes/pack.tar.age", write_token="opaque")
+    session = WriteSession(
+        object_path="archives/id/volumes/pack.tar.age",
+        write_token="opaque",
+        expected_bytes=12,
+    )
     request = WriteCompleteRequest(
         session=session,
         segments=(
@@ -211,6 +215,7 @@ def test_write_completion_preserves_optional_digests_and_repeated_provider_token
 def test_completed_write_attestation_binds_exact_identity_and_placement() -> None:
     request = CompletedWriteLookupRequest(
         object_path="archives/id/volumes/pack.tar.age",
+        expected_bytes=12,
         expected_content_type="application/vnd.riverhog.pack+age",
         required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
         expected_placement="archive",
@@ -228,7 +233,11 @@ def test_completed_write_attestation_binds_exact_identity_and_placement() -> Non
 
     validate_completed_write_response(request, receipt)
     completion = WriteCompleteRequest(
-        session=WriteSession(object_path=request.object_path, write_token="opaque-write"),
+        session=WriteSession(
+            object_path=request.object_path,
+            write_token="opaque-write",
+            expected_bytes=12,
+        ),
         segments=(WriteSegmentReceipt(number=1, segment_token="opaque-part", stored_bytes=12),),
         expected_bytes=12,
         expected_content_type=request.expected_content_type,
@@ -283,6 +292,7 @@ def test_small_object_digest_does_not_apply_to_resumable_writes() -> None:
 def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
     request = WriteStartRequest(
         object_path="archives/id/volumes/segment.bin.age",
+        expected_bytes=1,
         content_type="application/octet-stream",
         required_identity_assertions={
             "Riverhog-Plan-Sha256": "a" * 64,
@@ -305,6 +315,7 @@ def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
     with pytest.raises(ValidationError, match="encoded-size bound"):
         WriteStartRequest(
             object_path="archives/id/object",
+            expected_bytes=1,
             content_type="application/octet-stream",
             required_identity_assertions={"identity": "x" * (16 * 1024 + 1)},
             placement="archive",
@@ -312,6 +323,7 @@ def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
     with pytest.raises(ValidationError, match="adapter-private namespace"):
         WriteStartRequest(
             object_path="archives/id/object",
+            expected_bytes=1,
             content_type="application/octet-stream",
             required_identity_assertions={
                 f"{ADAPTER_PRIVATE_ASSERTION_PREFIX}private": "not-public"
@@ -324,6 +336,7 @@ def test_write_session_is_a_persistable_restart_stable_continuation() -> None:
     session = WriteSession(
         object_path="archives/id/volumes/segment.bin.age",
         write_token="opaque-adapter-continuation",
+        expected_bytes=1,
     )
 
     assert WriteSession.model_validate_json(session.model_dump_json()) == session
@@ -453,11 +466,16 @@ def test_response_validators_bind_exact_requests_and_closed_readiness_states() -
     )
     start = WriteStartRequest(
         object_path="archives/id/object.age",
+        expected_bytes=1,
         content_type="application/octet-stream",
         required_identity_assertions={"riverhog-format": "fixture/v1"},
         placement="archive",
     )
-    session = WriteSession(object_path=start.object_path, write_token="opaque")
+    session = WriteSession(
+        object_path=start.object_path,
+        write_token="opaque",
+        expected_bytes=1,
+    )
     validate_write_session_response(start, session)
     segment_set = WriteSegmentSet(
         session=session,
@@ -499,7 +517,11 @@ def test_response_validators_bind_exact_requests_and_closed_readiness_states() -
 
 
 def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_not() -> None:
-    session = WriteSession(object_path="archives/id/object.age", write_token="opaque")
+    session = WriteSession(
+        object_path="archives/id/object.age",
+        write_token="opaque",
+        expected_bytes=1,
+    )
     second = WriteSegmentReceipt(number=2, segment_token="two", stored_bytes=1)
     listed = WriteSegmentSet(session=session, segments=(second,))
     descriptor = AdapterDescriptor(
@@ -540,7 +562,11 @@ def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_no
 
 
 def test_segment_constraints_are_shared_by_listing_and_completion() -> None:
-    session = WriteSession(object_path="archives/id/object.age", write_token="opaque")
+    session = WriteSession(
+        object_path="archives/id/object.age",
+        write_token="opaque",
+        expected_bytes=5,
+    )
     descriptor = AdapterDescriptor(
         implementation_id="fixture.storage/v1",
         implementation_version="1.0.0",

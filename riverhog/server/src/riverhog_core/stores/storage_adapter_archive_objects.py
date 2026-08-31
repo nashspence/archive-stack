@@ -56,12 +56,14 @@ class StorageAdapterArchiveResumableObjectStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         content_type: str,
         metadata: dict[str, str],
     ) -> WriteSession:
         session = self._adapter.begin_write(
             WriteStartRequest(
                 object_path=object_path,
+                expected_bytes=expected_bytes,
                 content_type=content_type,
                 required_identity_assertions=metadata,
                 placement=self._placement,
@@ -124,11 +126,13 @@ class StorageAdapterArchiveResumableObjectStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         request = CompletedWriteLookupRequest(
             object_path=object_path,
+            expected_bytes=expected_bytes,
             expected_content_type=expected_content_type,
             required_identity_assertions=expected_metadata,
             expected_placement=self._placement,
@@ -223,12 +227,17 @@ class StorageAdapterArchiveObjectRangeStore:
 def _adapter_session(session: WriteSession) -> AdapterWriteSession:
     return AdapterWriteSession(
         object_path=session.object_path,
+        expected_bytes=session.expected_bytes,
         write_token=session.write_token,
     )
 
 
 def _write_session(session: AdapterWriteSession) -> WriteSession:
-    return WriteSession(object_path=session.object_path, write_token=session.write_token)
+    return WriteSession(
+        object_path=session.object_path,
+        write_token=session.write_token,
+        expected_bytes=session.expected_bytes,
+    )
 
 
 def _adapter_segment(segment: WriteSegmentReceipt) -> AdapterWriteSegmentReceipt:

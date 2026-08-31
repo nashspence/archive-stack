@@ -21,7 +21,7 @@ from riverhog_core.catalog_models import RetrievalCacheLeaseRecord, RetrievalJob
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.download_allowance import DownloadAttribution
-from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
+from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission, RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
@@ -94,21 +94,40 @@ class MemoryRetrievalCache:
         self.range_requests: list[tuple[str, int, int]] = []
         self.deleted: list[tuple[str, str | None]] = []
 
-    def put(
+    def admit(
         self,
         *,
+        owner: str,
         source_store: str,
         collection_id: int,
         object_id: str,
+        expected_bytes: int,
+    ) -> RetrievalCacheAdmission | None:
+        return RetrievalCacheAdmission(
+            owner=owner,
+            cache_store="memory",
+            source_store=source_store,
+            collection_id=collection_id,
+            object_id=object_id,
+            object_path=f"cache/{source_store}/{collection_id}/{object_id}",
+            expected_bytes=expected_bytes,
+            write_token="memory-write",
+            admitted_at="2026-08-08T00:00:00.000000Z",
+        )
+
+    def put(
+        self,
+        *,
+        admission: RetrievalCacheAdmission,
         content: Iterable[bytes],
-        content_length: int,
     ) -> RetrievalCacheReceipt:
         payload = b"".join(content)
-        assert len(payload) == content_length
-        path = f"cache/{source_store}/{collection_id}/{object_id}"
+        assert len(payload) == admission.expected_bytes
+        path = admission.object_path
         version = hashlib.sha256(payload).hexdigest()[:16]
         self.objects[(path, version)] = payload
         return RetrievalCacheReceipt(
+            cache_store=admission.cache_store,
             object_path=path,
             revision=version,
             stored_bytes=len(payload),
@@ -120,11 +139,13 @@ class MemoryRetrievalCache:
     def iter_object(
         self,
         *,
+        cache_store: str,
         object_path: str,
         revision: str | None,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]:
+        assert cache_store == "memory"
         payload = self.objects[(object_path, revision)]
         assert len(payload) == expected_bytes
         assert hashlib.sha256(payload).hexdigest() == expected_sha256
@@ -133,20 +154,81 @@ class MemoryRetrievalCache:
     def iter_object_range(
         self,
         *,
+        cache_store: str,
         object_path: str,
         revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
+        assert cache_store == "memory"
         payload = self.objects[(object_path, revision)]
         assert expected_bytes == len(payload)
         self.range_requests.append((object_path, offset, size))
         yield payload[offset : offset + size]
 
-    def delete(self, *, object_path: str, revision: str | None) -> None:
+    def delete(
+        self,
+        *,
+        cache_store: str,
+        object_path: str,
+        revision: str | None,
+    ) -> None:
+        assert cache_store == "memory"
         self.deleted.append((object_path, revision))
         del self.objects[(object_path, revision)]
+
+    def release(self, *, owner: str) -> int:
+        _ = owner
+        return 0
+
+    def is_current(self, *, admission: RetrievalCacheAdmission) -> bool:
+        _ = admission
+        return True
+
+    def reap_abandoned_populations(self, *, limit: int = 100) -> int:
+        _ = limit
+        return 0
+
+
+class NoCapacityRetrievalCache(MemoryRetrievalCache):
+    def admit(
+        self,
+        *,
+        owner: str,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+        expected_bytes: int,
+    ) -> None:
+        _ = owner, source_store, collection_id, object_id, expected_bytes
+        return None
+
+
+class FirstAdmissionOnlyRetrievalCache(MemoryRetrievalCache):
+    def __init__(self) -> None:
+        super().__init__()
+        self.admission_calls = 0
+
+    def admit(
+        self,
+        *,
+        owner: str,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+        expected_bytes: int,
+    ) -> RetrievalCacheAdmission | None:
+        self.admission_calls += 1
+        if self.admission_calls > 1:
+            return None
+        return super().admit(
+            owner=owner,
+            source_store=source_store,
+            collection_id=collection_id,
+            object_id=object_id,
+            expected_bytes=expected_bytes,
+        )
 
 
 class RecordingDownloadAllowance:
@@ -493,6 +575,48 @@ def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     assert ranges.requests == []
 
 
+def test_restore_is_not_requested_until_cache_placement_is_admitted(tmp_path: Path) -> None:
+    cache = NoCapacityRetrievalCache()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+    )
+    job = _ready_job(service, collection_id, "document.txt")
+
+    assert service.process_due() == 1
+
+    pending = service.get(app="reader", job_id=str(job["id"]))
+    assert pending["state"] == "requested"
+    assert store.prepare_calls == 0
+
+
+def test_restore_waits_until_every_required_object_has_cache_admission(tmp_path: Path) -> None:
+    cache = FirstAdmissionOnlyRetrievalCache()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"large.bin": b"x" * (11 * MIB)},
+        raw=True,
+        read_mode="restore_required",
+        cache=cache,
+    )
+    plan = service.plan(((collection_id, "large.bin"),))
+    assert len(plan["objects"]) == 2
+    job = service.create(
+        app="reader",
+        files=((collection_id, "large.bin"),),
+        plan_etag=str(plan["etag"]),
+    )
+
+    assert service.process_due() == 1
+
+    pending = service.get(app="reader", job_id=str(job["id"]))
+    assert pending["state"] == "requested"
+    assert cache.admission_calls == 2
+    assert store.prepare_calls == 0
+
+
 def test_retrieval_reserves_and_attributes_the_planned_range_bytes(
     tmp_path: Path,
 ) -> None:
@@ -699,6 +823,7 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
         "tag": "docs",
         "collection_id": collection_id,
         "source_store": "archive",
+        "cache_store": None,
         "state": "ready",
         "protection": "protected",
         "expires_before": "2099-01-01T00:00:00.000000Z",

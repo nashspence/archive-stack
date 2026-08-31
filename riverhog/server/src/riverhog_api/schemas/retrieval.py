@@ -11,6 +11,7 @@ from riverhog_protocol import (
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
+    RetrievalCacheStoreName,
     RetrievalFileReferenceDocument,
     RetrievalFileReferenceSetDocument,
     SortOrder,
@@ -51,6 +52,7 @@ class RetrievalPlanObjectOut(RiverhogModel):
     sha256: str | None
     retrieval_bytes: int
     read_mode: Literal["immediate", "restore_required", "cache"]
+    cache_store: RetrievalCacheStoreName | None
     placements: list[RetrievalPlanObjectPlacementOut]
 
 
@@ -137,6 +139,15 @@ class RetrievalCachePolicyOut(RiverhogModel):
     restore_poll_interval_seconds: int
 
 
+class RetrievalCacheStoreStatusOut(RiverhogModel):
+    cache_store: RetrievalCacheStoreName
+    priority: int = Field(ge=1)
+    admission_enabled: bool
+    admission_budget_bytes: int | None = Field(default=None, ge=1)
+    reserved_bytes: int = Field(ge=0)
+    committed_bytes: int = Field(ge=0)
+
+
 class RetrievalCacheStatusOut(RiverhogModel):
     configured: bool
     new_archive_enabled: bool
@@ -144,16 +155,18 @@ class RetrievalCacheStatusOut(RiverhogModel):
     stored_bytes: int
     protected_objects: int
     unleased_objects: int
+    stores: list[RetrievalCacheStoreStatusOut]
     policy: RetrievalCachePolicyOut
 
 
 class RetrievalCacheObjectOut(RiverhogModel):
     collection_id: CollectionId
     source_store: ArchiveStoreName
+    cache_store: RetrievalCacheStoreName
     object_id: str
     state: RetrievalCacheState
     stored_bytes: int
-    stored_sha256: str
+    stored_sha256: str | None
     cached_at: str
     verified_at: str
     protected_until: str | None
@@ -167,6 +180,7 @@ class RetrievalCacheObjectListFiltersOut(RiverhogModel):
     tag: str | None
     collection_id: CollectionId | None
     source_store: ArchiveStoreName | None
+    cache_store: RetrievalCacheStoreName | None
     state: RetrievalCacheState | None
     protection: RetrievalCacheProtection | None
     expires_before: str | None

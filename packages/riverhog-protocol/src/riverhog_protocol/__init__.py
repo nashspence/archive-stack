@@ -157,6 +157,7 @@ from riverhog_protocol.retrieval_transport import (
 from riverhog_protocol.storage_names import (
     ArchiveCopyStoreSelectionDocument,
     ArchiveStoreName,
+    RetrievalCacheStoreName,
     validate_archive_store_name,
 )
 from riverhog_protocol.transport import (
@@ -211,6 +212,7 @@ __all__ += [
     "RetrievalFileReferenceSetDocument",
     "TransformIntent",
     "ArchiveStoreName",
+    "RetrievalCacheStoreName",
     "ArchiveCopyStoreSelectionDocument",
     "collection_upload_raw_digest_summary",
     "collection_upload_path_order_key",

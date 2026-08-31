@@ -2197,6 +2197,8 @@ def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, o
             "transport": "signed-https",
         },
         "retrieval_cache": {
+            "qualified_store": "b2-cache",
+            "placement_accounting": "exact-reserved-and-committed-bytes",
             "new_archive_insertion": True,
             "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
             "retrieval_default_lease_seconds": checkpoint.restore_copy_days * 24 * 60 * 60,
@@ -2419,11 +2421,12 @@ def write_runtime_environment(
         "RIVERHOG_BOOTSTRAP_TOKEN": _required_env(values, "RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN"),
         "RIVERHOG_PUBLIC_BASE_URL": "",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY": "48h",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL": "http://b2-retrieval-cache-adapter:8080",
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE": (
+        "RIVERHOG_RETRIEVAL_CACHE_STORES": "b2-cache",
+        "RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_URL": ("http://b2-retrieval-cache-adapter:8080"),
+        "RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_TOKEN_FILE": (
             "/run/secrets/riverhog-storage-adapter.token"
         ),
-        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP": "true",
+        "RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_ALLOW_INSECURE_HTTP": "true",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED": "true",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE": (QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE),
         "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL": QUALIFICATION_CACHE_SWEEP_INTERVAL,
@@ -2932,6 +2935,17 @@ def _assert_retrieval_cache_surface(
         raise QualificationError("retrieval-cache status omitted the enabled provider policy")
     if int(status.get("objects", 0)) <= 0 or int(status.get("protected_objects", 0)) <= 0:
         raise QualificationError("retrieval-cache status omitted protected objects")
+    stores = status.get("stores")
+    expected_store_status = {
+        "cache_store": "b2-cache",
+        "priority": 1,
+        "admission_enabled": True,
+        "admission_budget_bytes": None,
+        "reserved_bytes": 0,
+        "committed_bytes": int(status.get("stored_bytes", -1)),
+    }
+    if stores != [expected_store_status]:
+        raise QualificationError("retrieval-cache status omitted exact placement accounting")
     policy = status.get("policy")
     expected_policy = {
         "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
@@ -2951,6 +2965,7 @@ def _assert_retrieval_cache_surface(
             per_page=100,
             collection_id=collection_id,
             source_store=source_store,
+            cache_store="b2-cache",
             sort="object_id",
             order="asc",
         )
@@ -2959,6 +2974,7 @@ def _assert_retrieval_cache_surface(
             for item in result.get("objects", [])
             if int(item.get("collection_id", 0)) == collection_id
             and item.get("source_store") == source_store
+            and item.get("cache_store") == "b2-cache"
         )
         if page >= int(result.get("pages", 0)):
             break

@@ -5,6 +5,7 @@ import os
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from riverhog_age import encrypt_age_scrypt
@@ -12,9 +13,11 @@ from riverhog_core.archive_formats import (
     RAW_VOLUME_STORAGE_FORMAT,
     ROOT_MANIFEST_STORAGE_FORMAT,
 )
+from riverhog_core.catalog_db import initialize_db, make_session_factory
 from riverhog_core.ports.archive_objects import WriteSegmentReceipt
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.runtime_config import StorageAdapterRegistration, load_runtime_config
+from riverhog_core.services.retrieval_cache import SqlAlchemyRetrievalCache
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -33,6 +36,8 @@ from riverhog_storage_adapter_protocol import (
 from riverhog_storage_adapter_support import StorageAdapterClient
 from time_formats import format_utc_timestamp
 
+from tests.unit.db_helpers import sqlite_url
+
 pytestmark = pytest.mark.integration
 
 
@@ -46,7 +51,7 @@ def _client(registration: StorageAdapterRegistration) -> StorageAdapterClient:
     )
 
 
-def test_canonical_archive_capabilities_against_garage_adapter() -> None:
+def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -> None:
     if os.environ.get("RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST") != "1":
         pytest.skip("set RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 to run against Garage")
 
@@ -63,10 +68,9 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
         archive_active_passphrase_id="garage-test-key-v1",
         archive_scrypt_work_factor=12,
     )
-    cache_registration = config.retrieval_cache
-    assert cache_registration is not None
+    cache_registration = next(iter(config.retrieval_cache_stores.values()))
     archive_client = _client(config.archive_store(config.archive_write_store))
-    cache_client = _client(cache_registration)
+    cache_client = _client(cache_registration.adapter)
     archive_client.check_readiness()
     cache_client.check_readiness()
     resumable = StorageAdapterArchiveResumableObjectStore(archive_client)
@@ -78,11 +82,19 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
         adapter=archive_client,
     )
     throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
-    cache = StorageAdapterRetrievalCache(
+    cache_candidate = StorageAdapterRetrievalCache(
+        cache_registration.name,
         cache_client,
         write_segment_bytes=config.retrieval_cache_write_segment_bytes,
         throughput_tuning=throughput_tuning,
         transfer_resources=ArchiveTransferResources.from_tuning(throughput_tuning),
+    )
+    cache_database_url = sqlite_url(tmp_path / "retrieval-cache.sqlite3")
+    initialize_db(cache_database_url)
+    cache = SqlAlchemyRetrievalCache(
+        {cache_registration.name: cache_candidate},
+        {cache_registration.name: cache_registration},
+        session_factory=make_session_factory(cache_database_url),
     )
 
     plaintext = b"canonical direct-final Garage archive volume"
@@ -105,6 +117,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     try:
         session = resumable.begin_write(
             object_path=volume_path,
+            expected_bytes=len(ciphertext),
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
@@ -125,9 +138,11 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             source_store=config.archive_write_store,
             collection_id=1,
             object_id="segment-000000000001",
+            owner="test:segment-000000000001",
         )
         mirrored_session = mirrored.begin_write(
             object_path=mirrored_path,
+            expected_bytes=len(ciphertext),
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
@@ -152,14 +167,17 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
         )
         cache_receipt = mirrored_completed.retrieval_cache
         assert cache_receipt is not None
-        assert cache_receipt.stored_sha256 == stored_sha256
+        assert cache_receipt.cache_store == cache_registration.name
+        assert cache_receipt.stored_sha256 is None
         assert (
             b"".join(
-                cache.iter_object(
+                cache.iter_object_range(
+                    cache_store=cache_receipt.cache_store,
                     object_path=cache_receipt.object_path,
                     revision=cache_receipt.revision,
                     expected_bytes=cache_receipt.stored_bytes,
-                    expected_sha256=cache_receipt.stored_sha256,
+                    offset=0,
+                    size=cache_receipt.stored_bytes,
                 )
             )
             == ciphertext

@@ -23,6 +23,12 @@ type ArchiveStoreName = Annotated[
     AfterValidator(validate_archive_store_name),
 ]
 
+type RetrievalCacheStoreName = Annotated[
+    str,
+    Field(pattern=ARCHIVE_STORE_NAME_PATTERN),
+    AfterValidator(validate_archive_store_name),
+]
+
 
 class ArchiveCopyStoreSelectionDocument(BaseModel):
     """Canonical logical stores participating in one Riverhog archive copy."""
@@ -43,5 +49,6 @@ __all__ = [
     "ARCHIVE_STORE_NAME_PATTERN",
     "ArchiveCopyStoreSelectionDocument",
     "ArchiveStoreName",
+    "RetrievalCacheStoreName",
     "validate_archive_store_name",
 ]

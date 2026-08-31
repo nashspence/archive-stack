@@ -3459,53 +3459,6 @@
       },
       {
         "acceptance_expressions": [
-          "os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP', 'false')"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP"
-      },
-      {
-        "acceptance_expressions": [
-          "_parse_int(os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS', str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS)), name='RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS', minimum=1)",
-          "os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS', str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS))"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS"
-      },
-      {
-        "acceptance_expressions": [
-          "_parse_float(os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS', str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS)), name='RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS')",
-          "os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS', str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS))"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS"
-      },
-      {
-        "acceptance_expressions": [
-          "os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE', '')"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE"
-      },
-      {
-        "acceptance_expressions": [
-          "os.getenv('RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL', '')"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL"
-      },
-      {
-        "acceptance_expressions": [
           "os.getenv('RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED', 'true')"
         ],
         "consumers": [
@@ -3521,6 +3474,15 @@
           "riverhog-server"
         ],
         "name": "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE"
+      },
+      {
+        "acceptance_expressions": [
+          "values.get('RIVERHOG_RETRIEVAL_CACHE_STORES', '')"
+        ],
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_RETRIEVAL_CACHE_STORES"
       },
       {
         "acceptance_expressions": [
@@ -4074,7 +4036,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "29f1663f5323633d43d0e924025e0a1c0054095be463a2a04fdbe95a164878c6"
+              "sha256": "67fe8d892d5e6d0e29137c9c9bbe0c338c94a577a58eba2ef89fda96b45c27d8"
             }
           ],
           "format": "state-schema/postgresql",
@@ -14579,6 +14541,16 @@
             "RetrievalCacheObjectListFiltersOut": {
               "additionalProperties": false,
               "properties": {
+                "cache_store": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RetrievalCacheStoreName"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "collection_id": {
                   "anyOf": [
                     {
@@ -14657,6 +14629,7 @@
                 "tag",
                 "collection_id",
                 "source_store",
+                "cache_store",
                 "state",
                 "protection",
                 "expires_before",
@@ -14729,6 +14702,9 @@
             "RetrievalCacheObjectOut": {
               "additionalProperties": false,
               "properties": {
+                "cache_store": {
+                  "$ref": "#/components/schemas/RetrievalCacheStoreName"
+                },
                 "cached_at": {
                   "title": "Cached At",
                   "type": "string"
@@ -14788,8 +14764,15 @@
                   "type": "integer"
                 },
                 "stored_sha256": {
-                  "title": "Stored Sha256",
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Stored Sha256"
                 },
                 "tag_count": {
                   "minimum": 0.0,
@@ -14804,6 +14787,7 @@
               "required": [
                 "collection_id",
                 "source_store",
+                "cache_store",
                 "object_id",
                 "state",
                 "stored_bytes",
@@ -14911,6 +14895,13 @@
                   "title": "Stored Bytes",
                   "type": "integer"
                 },
+                "stores": {
+                  "items": {
+                    "$ref": "#/components/schemas/RetrievalCacheStoreStatusOut"
+                  },
+                  "title": "Stores",
+                  "type": "array"
+                },
                 "unleased_objects": {
                   "title": "Unleased Objects",
                   "type": "integer"
@@ -14923,9 +14914,62 @@
                 "stored_bytes",
                 "protected_objects",
                 "unleased_objects",
+                "stores",
                 "policy"
               ],
               "title": "RetrievalCacheStatusOut",
+              "type": "object"
+            },
+            "RetrievalCacheStoreName": {
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "RetrievalCacheStoreStatusOut": {
+              "additionalProperties": false,
+              "properties": {
+                "admission_budget_bytes": {
+                  "anyOf": [
+                    {
+                      "minimum": 1.0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Admission Budget Bytes"
+                },
+                "admission_enabled": {
+                  "title": "Admission Enabled",
+                  "type": "boolean"
+                },
+                "cache_store": {
+                  "$ref": "#/components/schemas/RetrievalCacheStoreName"
+                },
+                "committed_bytes": {
+                  "minimum": 0.0,
+                  "title": "Committed Bytes",
+                  "type": "integer"
+                },
+                "priority": {
+                  "minimum": 1.0,
+                  "title": "Priority",
+                  "type": "integer"
+                },
+                "reserved_bytes": {
+                  "minimum": 0.0,
+                  "title": "Reserved Bytes",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "cache_store",
+                "priority",
+                "admission_enabled",
+                "reserved_bytes",
+                "committed_bytes"
+              ],
+              "title": "RetrievalCacheStoreStatusOut",
               "type": "object"
             },
             "RetrievalCanceledData": {
@@ -16026,6 +16070,16 @@
             "RetrievalPlanObjectOut": {
               "additionalProperties": false,
               "properties": {
+                "cache_store": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RetrievalCacheStoreName"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
@@ -16094,6 +16148,7 @@
                 "sha256",
                 "retrieval_bytes",
                 "read_mode",
+                "cache_store",
                 "placements"
               ],
               "title": "RetrievalPlanObjectOut",
@@ -30421,6 +30476,22 @@
                       }
                     ],
                     "title": "Source Store"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "cache_store",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/RetrievalCacheStoreName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Cache Store"
                   }
                 },
                 {
@@ -50175,7 +50246,7 @@
             "semantic_acceptance": "semantic_acceptance",
             "structural_models": "schemas"
           },
-          "bundle_sha256": "1639d6dd9f996f437ba9d16d50b4c21f3fa0a16945b2a7f3a48bca87f86f5b9f",
+          "bundle_sha256": "d3c53db6dc1b07e73d854d52b8236fcb92268a3e4ef4b187084afe73bf2e9fd5",
           "compatibility": {
             "provider_ontology": "private",
             "unknown_fields": "reject"
@@ -50241,6 +50312,10 @@
                   {
                     "code": "request_too_large",
                     "status": 413
+                  },
+                  {
+                    "code": "insufficient_storage",
+                    "status": 507
                   },
                   {
                     "code": "invalid_path",
@@ -50549,6 +50624,10 @@
                   {
                     "code": "request_too_large",
                     "status": 413
+                  },
+                  {
+                    "code": "insufficient_storage",
+                    "status": 507
                   },
                   {
                     "code": "invalid_path",
@@ -51215,6 +51294,11 @@
             "CompletedWriteLookupRequest": {
               "additionalProperties": false,
               "properties": {
+                "expected_bytes": {
+                  "minimum": 1,
+                  "title": "Expected Bytes",
+                  "type": "integer"
+                },
                 "expected_content_type": {
                   "maxLength": 255,
                   "minLength": 1,
@@ -51246,6 +51330,7 @@
               },
               "required": [
                 "object_path",
+                "expected_bytes",
                 "expected_content_type",
                 "required_identity_assertions",
                 "expected_placement"
@@ -52112,6 +52197,7 @@
                         "method_not_allowed",
                         "length_required",
                         "request_too_large",
+                        "insufficient_storage",
                         "identity_conflict",
                         "invalid_path",
                         "invalid_range",
@@ -52197,6 +52283,12 @@
                 "WriteSession": {
                   "additionalProperties": false,
                   "properties": {
+                    "expected_bytes": {
+                      "description": "Exact immutable-object byte length admitted by this write session. The value remains fixed until the write becomes terminal.",
+                      "minimum": 1,
+                      "title": "Expected Bytes",
+                      "type": "integer"
+                    },
                     "object_path": {
                       "maxLength": 4096,
                       "minLength": 1,
@@ -52213,6 +52305,7 @@
                   },
                   "required": [
                     "object_path",
+                    "expected_bytes",
                     "write_token"
                   ],
                   "title": "WriteSession",
@@ -52317,6 +52410,12 @@
                 "WriteSession": {
                   "additionalProperties": false,
                   "properties": {
+                    "expected_bytes": {
+                      "description": "Exact immutable-object byte length admitted by this write session. The value remains fixed until the write becomes terminal.",
+                      "minimum": 1,
+                      "title": "Expected Bytes",
+                      "type": "integer"
+                    },
                     "object_path": {
                       "maxLength": 4096,
                       "minLength": 1,
@@ -52333,6 +52432,7 @@
                   },
                   "required": [
                     "object_path",
+                    "expected_bytes",
                     "write_token"
                   ],
                   "title": "WriteSession",
@@ -52409,6 +52509,12 @@
                 "WriteSession": {
                   "additionalProperties": false,
                   "properties": {
+                    "expected_bytes": {
+                      "description": "Exact immutable-object byte length admitted by this write session. The value remains fixed until the write becomes terminal.",
+                      "minimum": 1,
+                      "title": "Expected Bytes",
+                      "type": "integer"
+                    },
                     "object_path": {
                       "maxLength": 4096,
                       "minLength": 1,
@@ -52425,6 +52531,7 @@
                   },
                   "required": [
                     "object_path",
+                    "expected_bytes",
                     "write_token"
                   ],
                   "title": "WriteSession",
@@ -52454,6 +52561,12 @@
             "WriteSession": {
               "additionalProperties": false,
               "properties": {
+                "expected_bytes": {
+                  "description": "Exact immutable-object byte length admitted by this write session. The value remains fixed until the write becomes terminal.",
+                  "minimum": 1,
+                  "title": "Expected Bytes",
+                  "type": "integer"
+                },
                 "object_path": {
                   "maxLength": 4096,
                   "minLength": 1,
@@ -52470,6 +52583,7 @@
               },
               "required": [
                 "object_path",
+                "expected_bytes",
                 "write_token"
               ],
               "title": "WriteSession",
@@ -52483,6 +52597,11 @@
                   "minLength": 1,
                   "title": "Content Type",
                   "type": "string"
+                },
+                "expected_bytes": {
+                  "minimum": 1,
+                  "title": "Expected Bytes",
+                  "type": "integer"
                 },
                 "object_path": {
                   "maxLength": 4096,
@@ -52509,6 +52628,7 @@
               },
               "required": [
                 "object_path",
+                "expected_bytes",
                 "content_type",
                 "required_identity_assertions",
                 "placement"
@@ -63496,7 +63616,7 @@
               },
               "list_retrieval_cache_objects": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, cache_store: 'RetrievalCacheStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_tags": {
                 "kind": "method",
@@ -65898,6 +66018,10 @@
             "kind": "type-alias",
             "value": "typing.Literal['ready', 'delete_pending', 'deleting']"
           },
+          "RetrievalCacheStoreName": {
+            "kind": "type-alias",
+            "value": "typing.Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[_PydanticGeneralMetadata(pattern='^[a-z0-9]+(?:-[a-z0-9]+)*$')]), AfterValidator(func=<function validate_archive_store_name>)]"
+          },
           "RetrievalFileReferenceDocument": {
             "kind": "class",
             "schema_sha256": "46c0a44ede7dac165b09955455c01f3facbf8b911f1ebc4472f6653e8348ea57",
@@ -67463,8 +67587,8 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "f2c63a096846eeaa5d39454a56f6f3842bd64bb59a56f717efdeac91915aef42",
-            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], expected_content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: dict[str, str], expected_placement: Literal['archive', 'immediate']) -> None"
+            "schema_sha256": "82720e07deac16b6be1dd43547a31acc0a7310b13221f8d44d8a44f5dbb11b6a",
+            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], expected_bytes: Annotated[int, Ge(ge=1)], expected_content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: dict[str, str], expected_placement: Literal['archive', 'immediate']) -> None"
           },
           "DeleteObjectRequest": {
             "kind": "class",
@@ -67673,13 +67797,13 @@
           },
           "StorageAdapterError": {
             "kind": "class",
-            "schema_sha256": "dc4c2839fc40d3225f1f590b6cf063500d5d72fcba83425d733a90abac0ff5ef",
+            "schema_sha256": "40cd573753d7065b03910677c666186c9e3b55aa46c899c3b8f4dcaa6d140245",
             "signature": "(*, error: riverhog_storage_adapter_protocol.protocol.StorageAdapterErrorBody) -> None"
           },
           "StorageAdapterErrorBody": {
             "kind": "class",
-            "schema_sha256": "578c083b6710b9edf1689b93e8df2408338bb0790499651c10eb97e90d86a1be",
-            "signature": "(*, code: Literal['unauthorized', 'invalid_request', 'not_found', 'method_not_allowed', 'length_required', 'request_too_large', 'identity_conflict', 'invalid_path', 'invalid_range', 'read_not_ready', 'read_expired', 'integrity_failure', 'provider_unavailable', 'internal_failure'], message: Annotated[str, MinLen(min_length=1), MaxLen(max_length=2000)]) -> None"
+            "schema_sha256": "97f66be2bca75b83f1f69639a51602fb4af8932ed3f5b2045b8f77fcf129b35a",
+            "signature": "(*, code: Literal['unauthorized', 'invalid_request', 'not_found', 'method_not_allowed', 'length_required', 'request_too_large', 'insufficient_storage', 'identity_conflict', 'invalid_path', 'invalid_range', 'read_not_ready', 'read_expired', 'integrity_failure', 'provider_unavailable', 'internal_failure'], message: Annotated[str, MinLen(min_length=1), MaxLen(max_length=2000)]) -> None"
           },
           "StorageAdapterErrorCode": {
             "kind": "object",
@@ -67850,7 +67974,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "ca577ae98cea53d7c2026060de6dfae67a269957493d8c2f1919ab580e816d23",
+            "schema_sha256": "ce600e4184706a7bb8156b5168254ad1e8578b1b55f96b1928c3a4ed10c4bf35",
             "signature": "(*, session: riverhog_storage_adapter_protocol.protocol.WriteSession, segments: Annotated[tuple[riverhog_storage_adapter_protocol.protocol.WriteSegmentReceipt, ...], MinLen(min_length=1)], expected_bytes: Annotated[int, Ge(ge=1)], expected_content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: dict[str, str], expected_placement: Literal['archive', 'immediate']) -> None"
           },
           "WriteSegmentReceipt": {
@@ -67860,7 +67984,7 @@
           },
           "WriteSegmentRequest": {
             "kind": "class",
-            "schema_sha256": "131634e6ad7f8741083293d75a39814941a1b04936994e6c31cd4b6040d675f3",
+            "schema_sha256": "e51e90e06c0f6a6ca83920b56cbb0696ced3950650ea8d743c33191cb2cf7d31",
             "signature": "(*, session: riverhog_storage_adapter_protocol.protocol.WriteSession, number: Annotated[int, Ge(ge=1)], stored_bytes: Annotated[int, Ge(ge=1)]) -> None"
           },
           "WriteSegmentSet": {
@@ -67871,7 +67995,7 @@
                 "signature": "(cls, value: 'tuple[WriteSegmentReceipt, ...]') -> 'tuple[WriteSegmentReceipt, ...]'"
               }
             },
-            "schema_sha256": "d8cf53fd5d80efaf441e2fb676548a4f2e76ddde703be18a0dd8480b2bfbac11",
+            "schema_sha256": "efefe4e7d1b517363a9ba0b71edf24998be480383f3c983a5391753ce555a688",
             "signature": "(*, session: riverhog_storage_adapter_protocol.protocol.WriteSession, segments: tuple[riverhog_storage_adapter_protocol.protocol.WriteSegmentReceipt, ...] = ()) -> None"
           },
           "WriteSession": {
@@ -67882,8 +68006,8 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "f1b215e61b0ae8afa196d69c5c75663030b16d07d22a64a9295b826e12688e91",
-            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], write_token: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4000)]) -> None"
+            "schema_sha256": "8273b4a0c12b6fa55f8669267e1ed4d9a0091e43944c85d6f7e1c16aa6e892ac",
+            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], expected_bytes: Annotated[int, Ge(ge=1)], write_token: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4000)]) -> None"
           },
           "WriteStartRequest": {
             "kind": "class",
@@ -67897,8 +68021,8 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "a616524059990b20aebf1314376daf2ca7aca7321d486676701efb3207843944",
-            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: dict[str, str], placement: Literal['archive', 'immediate']) -> None"
+            "schema_sha256": "c2732c8ff37d3c96aa3dc7d3424bb45a4c8a5089276a0131df53cf871d170a54",
+            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], expected_bytes: Annotated[int, Ge(ge=1)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: dict[str, str], placement: Literal['archive', 'immediate']) -> None"
           },
           "normalize_object_path": {
             "kind": "function",
@@ -67943,6 +68067,10 @@
           "validate_write_session_response": {
             "kind": "function",
             "signature": "(request: 'WriteStartRequest', response: 'WriteSession') -> 'None'"
+          },
+          "validate_write_start_request": {
+            "kind": "function",
+            "signature": "(request: 'WriteStartRequest', descriptor: 'AdapterDescriptor') -> 'None'"
           },
           "validated_storage_adapter": {
             "kind": "function",

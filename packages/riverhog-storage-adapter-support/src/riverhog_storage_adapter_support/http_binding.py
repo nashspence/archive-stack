@@ -394,6 +394,7 @@ _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
     "method_not_allowed": 405,
     "length_required": 411,
     "request_too_large": 413,
+    "insufficient_storage": 507,
     "identity_conflict": 409,
     "invalid_path": 400,
     "invalid_range": 416,
@@ -436,7 +437,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         WriteStartRequest,
         WriteSession,
         "json",
-        errors=_adapter_errors("request_too_large", "invalid_path"),
+        errors=_adapter_errors("request_too_large", "insufficient_storage", "invalid_path"),
     ),
     _storage_operation(
         "POST",
@@ -501,6 +502,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         errors=_adapter_errors(
             "length_required",
             "request_too_large",
+            "insufficient_storage",
             "invalid_path",
             "identity_conflict",
             "integrity_failure",

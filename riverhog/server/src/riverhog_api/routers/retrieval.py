@@ -18,6 +18,7 @@ from riverhog_protocol import (
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
+    RetrievalCacheStoreName,
     SortOrder,
 )
 from riverhog_protocol.errors import BadRequest
@@ -67,6 +68,7 @@ def list_retrieval_cache_objects(
     tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
     source_store: Annotated[ArchiveStoreName | None, Query()] = None,
+    cache_store: Annotated[RetrievalCacheStoreName | None, Query()] = None,
     state: Annotated[RetrievalCacheState | None, Query()] = None,
     protection: Annotated[RetrievalCacheProtection | None, Query()] = None,
     expires_before: str | None = Query(None),
@@ -82,6 +84,7 @@ def list_retrieval_cache_objects(
             tag=tag,
             collection_id=collection_id,
             source_store=source_store,
+            cache_store=cache_store,
             state=state,
             protection=protection,
             expires_before=expires_before,

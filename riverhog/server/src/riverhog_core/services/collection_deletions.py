@@ -222,6 +222,7 @@ class SqlAlchemyCollectionDeletionService:
         for current in cached:
             assert self._retrieval_cache is not None
             self._retrieval_cache.delete(
+                cache_store=current.cache_store,
                 object_path=current.object_path,
                 revision=current.revision,
             )

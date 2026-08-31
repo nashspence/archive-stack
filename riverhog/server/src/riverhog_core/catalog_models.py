@@ -1162,6 +1162,7 @@ class RetrievalJobObjectRecord(Base):
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_order: Mapped[int] = mapped_column(Integer)
     read_mode: Mapped[str] = mapped_column(String)
+    cache_store: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(["job_id"], ["retrieval_jobs.id"], ondelete="CASCADE"),
@@ -1190,16 +1191,17 @@ class RetrievalCacheObjectRecord(Base):
     source_store: Mapped[str] = mapped_column(String, primary_key=True)
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    cache_store: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)
     revision: Mapped[str | None] = mapped_column(String, nullable=True)
     stored_bytes: Mapped[int] = mapped_column(BigInteger)
-    stored_sha256: Mapped[str] = mapped_column(String(64))
+    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cached_at: Mapped[str] = mapped_column(String)
     verified_at: Mapped[str] = mapped_column(String)
     state: Mapped[str] = mapped_column(String, default="ready")
     search_text: Mapped[str] = mapped_column(
         String,
-        Computed("lower(source_store || ' ' || object_id)"),
+        Computed("lower(source_store || ' ' || cache_store || ' ' || object_id)"),
     )
 
     __table_args__ = (
@@ -1213,6 +1215,15 @@ class RetrievalCacheObjectRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_retrieval_cache_objects_cleanup", "state", "cached_at"),
+        Index(
+            "ix_retrieval_cache_objects_store_cleanup",
+            "cache_store",
+            "state",
+            "cached_at",
+            "collection_id",
+            "source_store",
+            "object_id",
+        ),
         Index(
             "ix_retrieval_cache_objects_collection", "collection_id", "source_store", "object_id"
         ),
@@ -1250,10 +1261,107 @@ class RetrievalCacheObjectRecord(Base):
             postgresql_ops={"search_text": "gin_trgm_ops"},
         ),
         CheckConstraint("stored_bytes >= 0", name="ck_retrieval_cache_objects_bytes"),
-        CheckConstraint("length(stored_sha256) = 64", name="ck_retrieval_cache_objects_sha256"),
+        CheckConstraint(
+            "stored_sha256 IS NULL OR length(stored_sha256) = 64",
+            name="ck_retrieval_cache_objects_sha256",
+        ),
         CheckConstraint(
             "state IN ('ready','delete_pending','deleting')",
             name="ck_retrieval_cache_objects_state",
+        ),
+    )
+
+
+class RetrievalCachePopulationRecord(Base):
+    __tablename__ = "retrieval_cache_populations"
+
+    source_store: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    cache_store: Mapped[str | None] = mapped_column(String, nullable=True)
+    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    write_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    expected_bytes: Mapped[int] = mapped_column(BigInteger)
+    state: Mapped[str] = mapped_column(String)
+    initiated_at: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_retrieval_cache_populations_store_state",
+            "cache_store",
+            "state",
+            "updated_at",
+            "collection_id",
+            "source_store",
+            "object_id",
+        ),
+        CheckConstraint(
+            "expected_bytes >= 1",
+            name="ck_retrieval_cache_populations_expected_bytes",
+        ),
+        CheckConstraint(
+            "state IN ('waiting','admitting','admitted','writing','abandoning')",
+            name="ck_retrieval_cache_populations_state",
+        ),
+        CheckConstraint(
+            "cache_store IS NULL AND object_path IS NULL AND write_token IS NULL "
+            "AND state IN ('waiting','abandoning') OR "
+            "cache_store IS NOT NULL AND object_path IS NOT NULL AND "
+            "(write_token IS NULL AND state = 'admitting' OR "
+            "write_token IS NOT NULL AND state IN ('admitted','writing') OR "
+            "state = 'abandoning')",
+            name="ck_retrieval_cache_populations_session",
+        ),
+    )
+
+
+class RetrievalCachePopulationClaimRecord(Base):
+    __tablename__ = "retrieval_cache_population_claims"
+
+    owner: Mapped[str] = mapped_column(String, primary_key=True)
+    source_store: Mapped[str] = mapped_column(String, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_store", "collection_id", "object_id"],
+            [
+                "retrieval_cache_populations.source_store",
+                "retrieval_cache_populations.collection_id",
+                "retrieval_cache_populations.object_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_retrieval_cache_population_claims_object",
+            "source_store",
+            "collection_id",
+            "object_id",
+            "owner",
+        ),
+    )
+
+
+class RetrievalCacheStoreAccountingRecord(Base):
+    __tablename__ = "retrieval_cache_store_accounting"
+
+    cache_store: Mapped[str] = mapped_column(String, primary_key=True)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    committed_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    updated_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        CheckConstraint(
+            "reserved_bytes >= 0",
+            name="ck_retrieval_cache_store_accounting_reserved",
+        ),
+        CheckConstraint(
+            "committed_bytes >= 0",
+            name="ck_retrieval_cache_store_accounting_committed",
         ),
     )
 
