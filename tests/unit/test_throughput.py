@@ -54,6 +54,15 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     assert customized.age_session_cache_entries == 256
     assert customized.age_derivation_concurrency == 6
 
+    scaled = ArchiveThroughputTuning.from_env(
+        {
+            "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY": "256",
+            "RIVERHOG_AGE_SESSION_CACHE_ENTRIES": "8192",
+        }
+    )
+    assert scaled.upload_prepare_concurrency == 256
+    assert scaled.age_session_cache_entries == 8192
+
 
 def test_shared_transfer_resources_use_process_wide_tuning_limits() -> None:
     tuning = ArchiveThroughputTuning.from_env({})

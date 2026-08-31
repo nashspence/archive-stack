@@ -5,12 +5,29 @@ from pathlib import Path
 
 import pytest
 from lifecycle_events import (
+    MAX_EVENT_CONTEXT_BYTES,
+    EventContext,
     EventPage,
     SQLiteEventCursorStore,
     SQLiteLifecycleEventLog,
     caused_event,
     cloud_event,
+    normalize_event_context,
 )
+from pydantic import TypeAdapter
+
+
+def test_event_context_runtime_and_schema_share_the_exact_encoded_byte_bound() -> None:
+    schema = TypeAdapter(EventContext).json_schema()
+    maximum = schema["x-riverhog-encoded-bytes-max"]
+    assert maximum == MAX_EVENT_CONTEXT_BYTES
+
+    exact = {"x": "a" * (maximum - len(b'{"x":""}'))}
+    above = {"x": exact["x"] + "a"}
+
+    assert normalize_event_context(exact) == exact
+    with pytest.raises(ValueError, match="at most"):
+        normalize_event_context(above)
 
 
 def test_nonempty_event_pages_require_opaque_cursor_progress() -> None:

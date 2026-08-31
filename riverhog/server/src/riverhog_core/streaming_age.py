@@ -57,8 +57,8 @@ class ResumableAgeSessionCache:
     ) -> None:
         if not passphrase:
             raise ValueError("age session cache passphrase must not be empty")
-        if max_entries < 0 or max_entries > 4096:
-            raise ValueError("age session cache entries must be between 0 and 4096")
+        if max_entries < 0:
+            raise ValueError("age session cache entries must be non-negative")
         self._passphrase = passphrase
         self._max_entries = max_entries
         self._lock = threading.Lock()

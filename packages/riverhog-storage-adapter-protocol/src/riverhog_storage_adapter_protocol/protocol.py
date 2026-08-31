@@ -7,6 +7,7 @@ configuration model.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Iterator
 from hashlib import sha256
@@ -54,13 +55,21 @@ StorageAdapterErrorCode = Literal[
 RequiredIdentityAssertions = Annotated[
     dict[str, str],
     Field(
+        max_length=_MAX_IDENTITY_ASSERTIONS_ITEMS,
         description=(
             "Inert caller-owned facts used only to identify and reconcile an exact stored "
             "object. Adapters canonicalize, persist, return, and compare these assertions; "
             "they must not interpret them as routing, retrieval, retention, credentials, "
             "placement, or provider-control instructions. Adapters may retain additional "
             "adapter-private assertions."
-        )
+        ),
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-object-identity-assertion-envelope",
+            },
+            "x-riverhog-encoded-bytes-max": _MAX_IDENTITY_ASSERTIONS_BYTES,
+        },
     ),
 ]
 BinaryContent = bytes | Iterable[bytes]
@@ -102,9 +111,14 @@ def _canonical_identity_assertions(value: dict[str, str]) -> dict[str, str]:
         if key in normalized:
             raise ValueError("required identity assertion keys collide after case folding")
         normalized[key] = item
-    if sum(len(key.encode()) + len(item.encode()) for key, item in normalized.items()) > (
-        _MAX_IDENTITY_ASSERTIONS_BYTES
-    ):
+    encoded = json.dumps(
+        normalized,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(encoded) > _MAX_IDENTITY_ASSERTIONS_BYTES:
         raise ValueError("required identity assertions exceed their encoded-size bound")
     return dict(sorted(normalized.items()))
 

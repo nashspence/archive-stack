@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 from http_api_contracts import Sha256Identity
+from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
@@ -67,7 +68,7 @@ class RetrievalPlanOut(RiverhogModel):
 
 
 class CreateRetrievalJobRequest(RetrievalPlanRequest):
-    event_context: dict[str, Any] | None = None
+    event_context: EventContext | None = None
 
 
 class RenewRetrievalJobRequest(RiverhogModel):

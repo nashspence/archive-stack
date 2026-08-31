@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
+from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
@@ -58,7 +60,6 @@ from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 _CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _EXECUTION_KEY = "_execution"
-_BLOCKER_SAMPLE_LIMIT = 10
 
 
 class SqlAlchemyCollectionDeletionService:
@@ -429,7 +430,10 @@ def _active_blockers(
     exempt_claim_id: str | None = None,
 ) -> list[str]:
     blockers: list[str] = processing_claim_blockers(
-        session, collection_id, exempt_claim_id=exempt_claim_id, limit=_BLOCKER_SAMPLE_LIMIT
+        session,
+        collection_id,
+        exempt_claim_id=exempt_claim_id,
+        limit=COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX,
     )
     retrieval_jobs = list(
         session.scalars(
@@ -440,10 +444,16 @@ def _active_blockers(
                 RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
             )
             .order_by(RetrievalJobRecord.id)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
         )
     )
-    blockers.extend(f"retrieval job is active: {job_id}" for job_id in retrieval_jobs)
+    blockers.extend(
+        _bounded_blocker_sample(
+            retrieval_jobs,
+            render=lambda job_id: f"retrieval job is active: {job_id}",
+            overflow="additional active retrieval jobs exist; list retrievals for details",
+        )
+    )
     copy_jobs = list(
         session.execute(
             select(ArchiveCopyJobRecord.source_store, ArchiveCopyJobRecord.destination_store)
@@ -452,21 +462,34 @@ def _active_blockers(
                 ArchiveCopyJobRecord.state.in_(ARCHIVE_COPY_BLOCKING_STATES),
             )
             .order_by(ArchiveCopyJobRecord.destination_store)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
         )
     )
     blockers.extend(
-        f"archive copy is active: {source} -> {destination}" for source, destination in copy_jobs
+        _bounded_blocker_sample(
+            copy_jobs,
+            render=lambda value: f"archive copy is active: {value[0]} -> {value[1]}",
+            overflow="additional active archive copies exist; list archive-copy jobs for details",
+        )
     )
     retirements = list(
         session.scalars(
             select(ArchiveCopyRetirementRecord.store)
             .where(ArchiveCopyRetirementRecord.collection_id == collection_id)
             .order_by(ArchiveCopyRetirementRecord.store)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
         )
     )
-    blockers.extend(f"archive copy retirement is active: {store}" for store in retirements)
+    blockers.extend(
+        _bounded_blocker_sample(
+            retirements,
+            render=lambda store: f"archive copy retirement is active: {store}",
+            overflow=(
+                "additional archive copy retirements exist; list collection archive copies "
+                "for details"
+            ),
+        )
+    )
     metadata_publications = list(
         session.scalars(
             select(CollectionMetadataPublicationRecord.store)
@@ -475,13 +498,32 @@ def _active_blockers(
                 CollectionMetadataPublicationRecord.state == "publishing",
             )
             .order_by(CollectionMetadataPublicationRecord.store)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
         )
     )
     blockers.extend(
-        f"collection metadata publication is active: {store}" for store in metadata_publications
+        _bounded_blocker_sample(
+            metadata_publications,
+            render=lambda store: f"collection metadata publication is active: {store}",
+            overflow=(
+                "additional collection metadata publications exist; list archive copies for details"
+            ),
+        )
     )
     return blockers
+
+
+def _bounded_blocker_sample[T](
+    values: Sequence[T],
+    *,
+    render: Callable[[T], str],
+    overflow: str,
+) -> list[str]:
+    maximum = COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX
+    result = [render(value) for value in values[:maximum]]
+    if len(values) > maximum:
+        result.append(overflow)
+    return result
 
 
 def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, object]:

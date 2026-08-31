@@ -11,11 +11,30 @@ from stove0_protocol import (
 )
 from stove0_target_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+    ExternalEffectReceiptPayload,
     InputArtifactContract,
     OperationContract,
     OperationContractPayload,
     OutputArtifactContract,
 )
+
+
+def test_external_effect_result_runtime_matches_its_schema_byte_bound() -> None:
+    schema = ExternalEffectReceiptPayload.model_json_schema()["properties"]["result"]
+    maximum = schema["x-riverhog-encoded-bytes-max"]
+    exact = {"x": "a" * (maximum - len(b'{"x":""}'))}
+    fields = {
+        "job_id": "1" * 64,
+        "request_sha256": "2" * 64,
+        "target_contract_sha256": "3" * 64,
+        "operation_contract_sha256": "4" * 64,
+        "plan_sha256": "5" * 64,
+        "execution_sha256": "6" * 64,
+    }
+
+    assert ExternalEffectReceiptPayload(**fields, result=exact).result == exact
+    with pytest.raises(ValueError, match="bounded size"):
+        ExternalEffectReceiptPayload(**fields, result={"x": exact["x"] + "a"})
 
 
 def test_target_contract_models_are_importable_without_runtime_support() -> None:

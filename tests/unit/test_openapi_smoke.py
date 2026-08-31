@@ -14,7 +14,10 @@ from riverhog_protocol import (
     RETRIEVAL_FILE_BATCH_MAX,
     canonical_json_sha256,
 )
-from riverhog_protocol.collection_workflow_transport import ExactSetAuthorityDocument
+from riverhog_protocol.collection_workflow_transport import (
+    WORK_DOCUMENT_MAX_BYTES,
+    ExactSetAuthorityDocument,
+)
 from riverhog_protocol.lifecycle_events import RIVERHOG_EVENT_TYPES
 
 
@@ -222,6 +225,11 @@ def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() ->
         "additionalProperties": True,
         "type": "object",
         "title": "Work Document",
+        "x-riverhog-encoded-bytes-max": WORK_DOCUMENT_MAX_BYTES,
+        "x-riverhog-extent": {
+            "policy": "contract_max",
+            "reason": "bounded-work-document-envelope",
+        },
     }
     assert settle["derivation"]["$ref"].endswith("/CollectionDerivationDocument")
     assert claim["plan"]["anyOf"][0]["$ref"].endswith("/ProcessingClaimPlanDocument")

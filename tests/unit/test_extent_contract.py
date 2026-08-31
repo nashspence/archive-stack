@@ -61,10 +61,13 @@ def test_extent_projection_is_exhaustive_source_linked_and_self_identifying() ->
     }
     assert len({decision["id"] for decision in decisions}) == len(decisions)
     assert set(extents["rules"]) == {
+        "bounded-segment/v1",
+        "configuration-composition/v1",
+        "configured-capacity/v1",
         "extension-contract/v1",
+        "no-semantic-maximum/v1",
         "route-progression/v1",
         "schema-bound/v1",
-        "unconstrained-finite-document/v1",
     }
     assert {decision["policy"] for decision in decisions} == {
         "contract_max",
@@ -76,6 +79,7 @@ def test_extent_projection_is_exhaustive_source_linked_and_self_identifying() ->
 
     for decision in decisions:
         assert decision["rule"] in extents["rules"]
+        assert decision["reason"]
         source = _resolve_pointer(projection, decision["source_pointer"])
         assert isinstance(source, dict)
         policy = decision["policy"]
@@ -86,7 +90,10 @@ def test_extent_projection_is_exhaustive_source_linked_and_self_identifying() ->
             elif source_field == "type.maximum":
                 assert source["type"]["maximum"] == decision["maximum"]
             elif decision["dimension"] == "cardinality":
-                assert source["maxItems"] == decision["maximum"]
+                keyword = "maxProperties" if decision["unit"] == "entries" else "maxItems"
+                assert source[keyword] == decision["maximum"]
+            elif decision["dimension"] == "encoded-size":
+                assert source["x-riverhog-encoded-bytes-max"] == decision["maximum"]
             elif decision["dimension"] == "length":
                 if "source_constraint" in decision:
                     assert source["pattern"] == decision["source_constraint"]["pattern"]
@@ -94,10 +101,14 @@ def test_extent_projection_is_exhaustive_source_linked_and_self_identifying() ->
                     assert source["maxLength"] == decision["maximum"]
             else:
                 assert source["maximum"] == decision["maximum"]
+        elif policy == "segmented_no_total_max" and "maximum" in decision:
+            keyword = "maxProperties" if decision["unit"] == "entries" else "maxItems"
+            assert source[keyword] == decision["maximum"]
         elif decision["dimension"] == "cardinality":
-            if source.get("type") == "array":
-                assert source["type"] == "array"
+            if decision["unit"] == "items" and source.get("type") == "array":
                 assert "maxItems" not in source
+            elif decision["unit"] == "entries" and source.get("type") == "object":
+                assert "maxProperties" not in source
         assert policy != "segmented_no_total_max" or "progression" in decision
 
 
@@ -143,15 +154,29 @@ def test_schema_bounds_accept_the_boundary_and_reject_the_next_value() -> None:
         minimum = decision.get("minimum")
         dimension = decision["dimension"]
         if dimension == "cardinality":
-            validator = Draft202012Validator(
-                {
-                    "type": "array",
-                    "maxItems": maximum,
-                    **({"minItems": minimum} if minimum is not None else {}),
-                }
-            )
-            exact: object = [None] * maximum
-            above: object = [None] * (maximum + 1)
+            if decision["unit"] == "entries":
+                validator = Draft202012Validator(
+                    {
+                        "type": "object",
+                        "maxProperties": maximum,
+                        **({"minProperties": minimum} if minimum is not None else {}),
+                    }
+                )
+                exact = {str(index): None for index in range(maximum)}
+                above = {str(index): None for index in range(maximum + 1)}
+            else:
+                validator = Draft202012Validator(
+                    {
+                        "type": "array",
+                        "maxItems": maximum,
+                        **({"minItems": minimum} if minimum is not None else {}),
+                    }
+                )
+                exact = [None] * maximum
+                above = [None] * (maximum + 1)
+        elif dimension == "encoded-size":
+            assert maximum > 0
+            continue
         elif dimension == "length":
             source_pattern = decision.get("source_constraint", {}).get("pattern")
             if source_pattern is not None:
@@ -185,6 +210,77 @@ def test_schema_bounds_accept_the_boundary_and_reject_the_next_value() -> None:
         exercised += 1
 
     assert exercised > 500
+
+
+def test_every_open_schema_map_is_classified_and_hidden_maxima_are_forbidden() -> None:
+    projection = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    decisions = projection["external_contract"]["extents"]["decisions"]
+    maps = [
+        decision
+        for decision in decisions
+        if decision["dimension"] == "cardinality" and decision["unit"] == "entries"
+    ]
+
+    assert len(maps) > 100
+    for decision in maps:
+        if decision["policy"] == "operational_policy":
+            assert decision["capacity_authority"] == {
+                "owner": decision["owner"],
+                "declared_maximum": None,
+                "hidden_maximum": "forbidden",
+            }
+
+
+def test_bounded_carriers_do_not_become_domain_cardinality_maxima() -> None:
+    projection = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    decisions = {
+        decision["id"]: decision
+        for decision in projection["external_contract"]["extents"]["decisions"]
+    }
+
+    registration = decisions[
+        "http:riverhog:components:/schemas/RegisterCollectionUploadSessionFilesRequest/"
+        "properties/files:cardinality"
+    ]
+    assert registration["policy"] == "segmented_no_total_max"
+    assert registration["reason"] == "bounded-upload-registration"
+    archive_parts = decisions[
+        "protocol:https://nashspence.github.io/riverhog/v1/schemas/"
+        "collection-archive-volume-v1.schema.json:/$defs/pack/properties/parts:cardinality"
+    ]
+    assert archive_parts["policy"] == "segmented_no_total_max"
+    assert archive_parts["maximum"] == 1024
+
+    semantic_set_maxima = {
+        decision["reason"]
+        for decision in decisions.values()
+        if decision["dimension"] == "cardinality" and decision["policy"] == "contract_max"
+    }
+    assert semantic_set_maxima == {
+        "bounded-diagnostic-sample-with-complete-count",
+        "bounded-diagnostic-sample-with-explicit-overflow-markers",
+        "bounded-object-identity-assertion-envelope",
+        "state-conditioned-empty-set",
+        "wildcard-access-grant-is-exclusive",
+    }
+
+
+def test_generated_protocols_remain_owned_by_the_product_contract_packages() -> None:
+    projection = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    decisions = projection["external_contract"]["extents"]["decisions"]
+    expected = {
+        "generated:riverhog-storage-adapter": "riverhog-storage-adapter-protocol",
+        "generated:stove0-observer": "stove0-observer-protocol",
+        "generated:stove0-review-sampler": "stove0-review-sampler-protocol",
+        "generated:stove0-target": "stove0-target-protocol",
+    }
+
+    for authority, owner in expected.items():
+        selected = [
+            decision for decision in decisions if f"protocol:{authority}:" in decision["id"]
+        ]
+        assert selected
+        assert {decision["owner"] for decision in selected} == {owner}
 
 
 def test_extent_relevant_deployment_configuration_is_source_linked() -> None:

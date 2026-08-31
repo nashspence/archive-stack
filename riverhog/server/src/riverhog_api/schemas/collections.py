@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, cast
 
 from http_api_contracts import CanonicalVisibleText
+from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
@@ -29,6 +30,7 @@ from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
 )
 from riverhog_protocol.paths import CanonicalTag
+from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKERS_MAX
 from time_formats import format_utc_timestamp, parse_utc_timestamp
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
@@ -344,7 +346,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     ingest_source: str | None = None
     archive_store: ArchiveStoreName | None = None
-    event_context: dict[str, Any] | None = None
+    event_context: EventContext | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
     provenance_omission_reason: CanonicalVisibleText | None = None
     custody_mode: CollectionUploadCustodyMode = "producer-retained"
@@ -446,7 +448,15 @@ class CollectionDeletionPlanOut(RiverhogModel):
     inventory_identity: str
     metadata_rows: dict[str, int]
     retirement_claim: RetirementClaimReferenceDocument | None = None
-    blockers: list[str]
+    blockers: list[str] = Field(
+        max_length=COLLECTION_DELETION_BLOCKERS_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-diagnostic-sample-with-explicit-overflow-markers",
+            }
+        },
+    )
     billing_note: str
 
     @model_validator(mode="after")
@@ -462,7 +472,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
 class DeleteCollectionRequest(RiverhogModel):
     challenge: str
     retirement_claim_id: ProcessingClaimId | None = None
-    event_context: dict[str, Any] | None = None
+    event_context: EventContext | None = None
 
 
 class CollectionDeletionResultOut(RiverhogModel):

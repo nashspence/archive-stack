@@ -5,6 +5,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 from riverhog_protocol.collection_workflow_transport import (
+    CONTROLLER_EVIDENCE_MAX_BYTES,
+    WORK_DOCUMENT_MAX_BYTES,
     ArtifactDispositionDocument,
     ArtifactDispositionOutputDocument,
     CollectionArtifactIdentityDocument,
@@ -73,6 +75,50 @@ def test_opaque_work_document_is_digest_bound_without_application_ontology() -> 
             work_id="4" * 64,
             work_document=document,
             work_document_sha256="5" * 64,
+        )
+
+
+def test_opaque_work_and_evidence_runtime_match_their_schema_byte_bounds() -> None:
+    work_schema = ProcessingClaimCreateDocument.model_json_schema()["properties"]["work_document"]
+    evidence_schema = ProcessingClaimPlanSealDocument.model_json_schema()["properties"][
+        "controller_evidence"
+    ]
+    assert work_schema["x-riverhog-encoded-bytes-max"] == WORK_DOCUMENT_MAX_BYTES
+    assert evidence_schema["x-riverhog-encoded-bytes-max"] == CONTROLLER_EVIDENCE_MAX_BYTES
+
+    work = {"x": "a" * (WORK_DOCUMENT_MAX_BYTES - len(b'{"x":""}'))}
+    ProcessingClaimCreateDocument(
+        work_id="4" * 64,
+        work_document=work,
+        work_document_sha256=canonical_json_sha256(work),
+    )
+    work_above = {"x": work["x"] + "a"}
+    with pytest.raises(ValidationError, match="work document exceeds"):
+        ProcessingClaimCreateDocument(
+            work_id="4" * 64,
+            work_document=work_above,
+            work_document_sha256=canonical_json_sha256(work_above),
+        )
+
+    evidence = {"x": "a" * (CONTROLLER_EVIDENCE_MAX_BYTES - len(b'{"x":""}'))}
+    plan = {
+        "fence": 1,
+        "execution_id": "4" * 64,
+        "controller_evidence": evidence,
+        "controller_evidence_sha256": canonical_json_sha256(evidence),
+        "operation": {"id": "fixture.operation/v1", "sha256": "5" * 64},
+        "retirement_policy": "retain",
+        "retirement_grace_seconds": 0,
+    }
+    ProcessingClaimPlanSealDocument.model_validate(plan)
+    evidence_above = {"x": evidence["x"] + "a"}
+    with pytest.raises(ValidationError, match="controller evidence exceeds"):
+        ProcessingClaimPlanSealDocument.model_validate(
+            {
+                **plan,
+                "controller_evidence": evidence_above,
+                "controller_evidence_sha256": canonical_json_sha256(evidence_above),
+            }
         )
 
 

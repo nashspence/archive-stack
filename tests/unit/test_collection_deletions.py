@@ -14,8 +14,15 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     TagRecord,
 )
-from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
+from riverhog_core.services.collection_deletions import (
+    SqlAlchemyCollectionDeletionService,
+    _bounded_blocker_sample,
+)
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_protocol.transport import (
+    COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX,
+    COLLECTION_DELETION_BLOCKERS_MAX,
+)
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -31,6 +38,24 @@ DELETER = ApplicationPrincipal(
     key_id="client-key",
     access=frozenset(),
 )
+
+
+def test_deletion_blocker_samples_report_overflow_within_the_public_bound() -> None:
+    values = list(range(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1))
+
+    rendered = _bounded_blocker_sample(
+        values,
+        render=lambda value: f"blocker {value}",
+        overflow="additional blockers exist",
+    )
+
+    assert rendered[:-1] == [
+        f"blocker {value}" for value in range(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX)
+    ]
+    assert rendered[-1] == "additional blockers exist"
+    schema = CollectionDeletionPlanOut.model_json_schema()["properties"]["blockers"]
+    assert schema["maxItems"] == COLLECTION_DELETION_BLOCKERS_MAX
+    assert COLLECTION_DELETION_BLOCKERS_MAX == 5 * len(rendered)
 
 
 def _service(path: Path):
