@@ -137,20 +137,21 @@ class ObservationRuntime:
 
     def subjects(self) -> tuple[tuple[ArtifactSubject, ClaimedArtifact], ...]:
         self.heartbeat()
-        inventory = {artifact.key: artifact for artifact in self.reader.inventory()}
         resolved: list[tuple[ArtifactSubject, ClaimedArtifact]] = []
+        seen: set[tuple[int, str]] = set()
         for subject in self.request.subjects:
-            key = (subject.collection.collection_id, subject.path)
-            artifact = inventory.get(key)
-            if (
-                artifact is None
-                or artifact.root != subject.collection.to_identity()
-                or artifact.bytes != subject.bytes
-                or artifact.sha256 != subject.sha256
-            ):
+            artifact = ClaimedArtifact(
+                root=subject.collection.to_identity(),
+                path=subject.path,
+                bytes=subject.bytes,
+                sha256=subject.sha256,
+                control=False,
+            )
+            if artifact.root not in self.reader.inputs or artifact.key in seen:
                 raise RuntimeError(
-                    f"observer subject is not the current claimed artifact: {subject.id}"
+                    f"observer subject is not an exact claimed artifact: {subject.id}"
                 )
+            seen.add(artifact.key)
             resolved.append((subject, artifact))
         return tuple(resolved)
 

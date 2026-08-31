@@ -23,7 +23,6 @@ import stove0_api_client.client as stove0_client_module
 import stove0_core.persistence as stove0_persistence_module
 from fastapi import FastAPI
 from http_api_contracts import (
-    COMPLETE_ENUMERATION_FORMAT,
     ERROR_STATUS_BY_CODE,
     JSON_SEQUENCE_MEDIA_TYPE,
     closed_literal_values,
@@ -101,6 +100,7 @@ from stove0_operator_contracts import (
     SortOrder as Stove0SortOrder,
 )
 from stove0_protocol import CollectionRootRef
+from stove0_target_client import TargetCallbackClient
 from stove0_target_protocol import OutputCollectionRef
 
 from scripts.operation_qualification import (
@@ -118,6 +118,8 @@ SUPPORTED_CLIENT_HELPERS = {
     "riverhog": {
         "catalog_changes",
         "close",
+        "collection_provenance_journal_metadata",
+        "download_collection_provenance_journal",
         "resourcesync_capabilities",
         "resourcesync_discovery",
         "resourcesync_resource_pages",
@@ -125,8 +127,9 @@ SUPPORTED_CLIENT_HELPERS = {
         "replace_collection_tags",
         "spawn",
         "stream_retrieval_file",
+        "upload_collection_upload_session_provenance_journal",
     },
-    "stove0": {"close", "health_live", "health_ready"},
+    "stove0": {"close", "health_live", "health_ready", "iter_inputs"},
     "riverhog-ftp-adapter": {
         "close",
         "ftp_adapter_health_live",
@@ -235,7 +238,7 @@ def _parameter_enum(
     ("application", "app_factory", "client_types"),
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
-        ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
+        ("stove0", create_stove0_contract_app, (Stove0ApiClient, TargetCallbackClient)),
         (
             "riverhog-ftp-adapter",
             create_adapter_contract_app,
@@ -268,7 +271,7 @@ def test_every_public_api_operation_has_an_official_client_method(
     ("application", "app_factory", "client_types"),
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
-        ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
+        ("stove0", create_stove0_contract_app, (Stove0ApiClient, TargetCallbackClient)),
         (
             "riverhog-ftp-adapter",
             create_adapter_contract_app,
@@ -392,54 +395,39 @@ READ_COLLECTION_OPERATIONS = {
             "list_collections",
             "list_download_quotas",
             "list_processing_claims",
+            "list_processing_claim_disposition_outputs",
+            "list_processing_claim_dispositions",
             "list_retrieval_cache_objects",
             "list_tags",
             "search",
             "trace_collection_file_provenance",
         },
-        "complete-enumeration": {
-            "stream_app_key_access",
-            "stream_app_keys",
-            "stream_apps",
-            "stream_archive_copy_jobs",
-            "stream_archive_stores",
-            "stream_collection_provenance",
-            "stream_collection_provenance_journal_agents",
-            "stream_collection_archive_copies",
-            "stream_collection_tags",
-            "stream_collection_upload_session_tags",
-            "stream_collection_upload_session_files",
-            "stream_collection_upload_sessions",
-            "stream_collections",
-            "stream_download_quotas",
-            "stream_processing_claims",
-            "stream_retrieval_cache_objects",
-            "stream_search",
-            "stream_tags",
-            "stream_collection_file_provenance_trace",
-        },
         "cursor-feed": {"list_lifecycle_events", "resourcesync_change_list"},
+        "exact-set-page": {"get_portable_collection_inventory"},
+        "exact-authority-page": {
+            "list_processing_claim_artifacts",
+            "list_processing_claim_inputs",
+            "list_processing_claim_outcomes",
+            "list_processing_claim_output_tags",
+        },
     },
     "stove0": {
         "bounded-list": {
-            "get_artifact_selection",
             "list_evaluations",
             "list_work",
         },
-        "complete-enumeration": {
-            "stream_artifact_selection",
-            "stream_evaluations",
-            "stream_work",
-        },
         "cursor-feed": {"list_events"},
+        "exact-set-page": set(),
+        "exact-authority-page": {
+            "get_artifact_selection",
+            "get_target_execution_inputs",
+        },
     },
 }
 
 EXACT_RESOURCE_STREAM_OPERATIONS = {
     "riverhog": {
         "stream_collection_provenance_journal",
-        "stream_collection_upload_session_provenance_journal",
-        "stream_portable_collection_inventory",
     },
     "stove0": set(),
 }
@@ -450,6 +438,7 @@ EXACT_RESOURCE_STREAM_OPERATIONS = {
 # without an explicit contract decision.
 PUBLIC_QUERY_SELECTORS = {
     "riverhog": {
+        "acquire_collection_upload_session_work": {"limit"},
         "download_retrieval_file": {"collection_id", "path"},
         "list_app_key_access": {
             "active",
@@ -478,6 +467,7 @@ PUBLIC_QUERY_SELECTORS = {
         "list_collection_provenance_journal_agents": {"page", "per_page"},
         "list_collection_archive_copies": {"page", "per_page"},
         "get_collection_tags": {"page", "per_page"},
+        "get_portable_collection_inventory": {"cursor", "limit"},
         "list_collection_upload_session_tags": {"page", "per_page"},
         "list_collection_upload_session_files": {"page", "per_page"},
         "list_collection_upload_sessions": {
@@ -510,6 +500,16 @@ PUBLIC_QUERY_SELECTORS = {
         },
         "list_lifecycle_events": {"after", "limit"},
         "list_processing_claims": {"order", "page", "per_page", "sort", "state"},
+        "list_processing_claim_artifacts": {"authority_sha256", "start_ordinal"},
+        "list_processing_claim_inputs": {"authority_sha256", "start_ordinal"},
+        "list_processing_claim_outcomes": {"authority_sha256", "start_ordinal"},
+        "list_processing_claim_output_tags": {"authority_sha256", "start_ordinal"},
+        "list_processing_claim_dispositions": {"authority_sha256", "page", "per_page"},
+        "list_processing_claim_disposition_outputs": {
+            "authority_sha256",
+            "page",
+            "per_page",
+        },
         "list_retrieval_cache_objects": {
             "collection_id",
             "expires_after",
@@ -528,56 +528,15 @@ PUBLIC_QUERY_SELECTORS = {
         "plan_collection_deletion": {"retirement_claim_id"},
         "resourcesync_change_list": {"after"},
         "search": {"collection", "order", "page", "per_page", "q", "sort"},
-        "stream_app_key_access": {
-            "active",
-            "app",
-            "key",
-            "order",
-            "permission",
-            "q",
-            "resource",
-            "sort",
-        },
-        "stream_app_keys": {"active", "order", "q", "sort"},
-        "stream_apps": {"active", "order", "q", "sort"},
-        "stream_archive_copy_jobs": {"order", "q", "sort", "state"},
-        "stream_archive_stores": {"order", "q", "sort"},
-        "stream_collection_provenance": {"order", "q", "sort", "status"},
-        "stream_collection_upload_sessions": {"order", "q", "sort", "state", "tag"},
-        "stream_collections": {
-            "encryption_format",
-            "order",
-            "passphrase_id",
-            "q",
-            "sort",
-            "tag",
-        },
-        "stream_download_quotas": {"active", "app", "order", "q", "sort"},
-        "stream_processing_claims": {"order", "sort", "state"},
-        "stream_retrieval_cache_objects": {
-            "collection_id",
-            "expires_after",
-            "expires_before",
-            "order",
-            "protection",
-            "q",
-            "sort",
-            "source_store",
-            "state",
-            "tag",
-        },
-        "stream_search": {"collection", "order", "q", "sort"},
-        "stream_tags": {"order", "q", "sort"},
         "trace_collection_file_provenance": {"page", "per_page"},
     },
     "stove0": {
-        "get_artifact_selection": {"page", "per_page"},
+        "get_artifact_selection": {"continuation"},
+        "get_target_execution_inputs": {"continuation"},
         "get_recipe": {"revision"},
         "list_evaluations": {"order", "page", "per_page", "phase", "q", "sort"},
         "list_events": {"after", "limit"},
         "list_work": {"order", "page", "per_page", "phase", "q", "sort"},
-        "stream_evaluations": {"order", "phase", "q", "sort"},
-        "stream_work": {"order", "phase", "q", "sort"},
     },
     "riverhog-ftp-adapter": {},
 }
@@ -603,47 +562,17 @@ NAMED_ENUM_QUERY_SELECTOR_TYPES = {
     "TagSort": TagSort,
 }
 INLINE_ENUM_QUERY_SELECTOR_TYPES = {
-    **{
-        ("riverhog", operation_id, "sort"): ProvenanceSort
-        for operation_id in ("list_collection_provenance", "stream_collection_provenance")
-    },
-    **{
-        ("riverhog", operation_id, "order"): SortOrder
-        for operation_id in ("list_collection_provenance", "stream_collection_provenance")
-    },
-    **{
-        ("riverhog", operation_id, "state"): ClaimState
-        for operation_id in ("list_processing_claims", "stream_processing_claims")
-    },
-    **{
-        ("riverhog", operation_id, "sort"): ProcessingClaimSort
-        for operation_id in ("list_processing_claims", "stream_processing_claims")
-    },
-    **{
-        ("riverhog", operation_id, "order"): SortOrder
-        for operation_id in ("list_processing_claims", "stream_processing_claims")
-    },
-    **{
-        ("stove0", operation_id, "phase"): WorkPhase
-        for operation_id in ("list_work", "stream_work")
-    },
-    **{("stove0", operation_id, "sort"): WorkSort for operation_id in ("list_work", "stream_work")},
-    **{
-        ("stove0", operation_id, "order"): Stove0SortOrder
-        for operation_id in ("list_work", "stream_work")
-    },
-    **{
-        ("stove0", operation_id, "phase"): EvaluationPhase
-        for operation_id in ("list_evaluations", "stream_evaluations")
-    },
-    **{
-        ("stove0", operation_id, "sort"): EvaluationSort
-        for operation_id in ("list_evaluations", "stream_evaluations")
-    },
-    **{
-        ("stove0", operation_id, "order"): Stove0SortOrder
-        for operation_id in ("list_evaluations", "stream_evaluations")
-    },
+    ("riverhog", "list_collection_provenance", "sort"): ProvenanceSort,
+    ("riverhog", "list_collection_provenance", "order"): SortOrder,
+    ("riverhog", "list_processing_claims", "state"): ClaimState,
+    ("riverhog", "list_processing_claims", "sort"): ProcessingClaimSort,
+    ("riverhog", "list_processing_claims", "order"): SortOrder,
+    ("stove0", "list_work", "phase"): WorkPhase,
+    ("stove0", "list_work", "sort"): WorkSort,
+    ("stove0", "list_work", "order"): Stove0SortOrder,
+    ("stove0", "list_evaluations", "phase"): EvaluationPhase,
+    ("stove0", "list_evaluations", "sort"): EvaluationSort,
+    ("stove0", "list_evaluations", "order"): Stove0SortOrder,
 }
 
 
@@ -666,31 +595,23 @@ def _parameters(operation: dict[str, Any], *, exclude: set[str] | None = None) -
 
 
 @pytest.mark.parametrize(
-    ("application", "app_factory", "client_schemas"),
+    ("application", "app_factory"),
     (
-        (
-            "riverhog",
-            create_riverhog_app,
-            riverhog_client_module._STREAM_ITEM_SCHEMAS,
-        ),
-        (
-            "stove0",
-            create_stove0_contract_app,
-            stove0_client_module._STREAM_ITEM_SCHEMAS,
-        ),
+        ("riverhog", create_riverhog_app),
+        ("stove0", create_stove0_contract_app),
     ),
 )
-def test_public_read_collection_selectors_are_complete_paired_and_frozen(
+def test_public_read_collection_selectors_are_bounded_and_frozen(
     application: str,
     app_factory: Callable[[], FastAPI],
-    client_schemas: dict[str, Any],
 ) -> None:
     schema = app_factory().openapi()
     operations = _http_operations(schema)
     classified: dict[str, set[str]] = {
         "bounded-list": set(),
-        "complete-enumeration": set(),
         "cursor-feed": set(),
+        "exact-set-page": set(),
+        "exact-authority-page": set(),
     }
     exact_resource_streams: set[str] = set()
 
@@ -716,22 +637,37 @@ def test_public_read_collection_selectors_are_complete_paired_and_frozen(
             else:
                 assert classification["fixed_limit"] >= 1
             continue
-        paired = operations[classification["paired_operation_id"]]
+        if kind == "exact-set-page":
+            assert classification["cursor_parameter"] in parameter_names
+            limit_name = classification["limit_parameter"]
+            limit = next(item for item in operation["parameters"] if item["name"] == limit_name)
+            assert limit["schema"]["maximum"] >= 1
+            validator = classification["validator_header"]
+            assert any(
+                item["in"] == "header" and item["name"] == validator
+                for item in operation["parameters"]
+            )
+            assert classification["authority"] == "portable-collection-inventory"
+            continue
+        if kind == "exact-authority-page":
+            assert classification["cursor_parameter"] in parameter_names
+            authority_parameter = classification.get("authority_parameter")
+            if authority_parameter is not None:
+                assert authority_parameter in parameter_names
+            limit_name = classification.get("limit_parameter")
+            if limit_name is None:
+                assert classification["fixed_limit"] >= 1
+            else:
+                limit = next(item for item in operation["parameters"] if item["name"] == limit_name)
+                assert limit["schema"]["maximum"] >= 1
+            assert classification["authority"]
+            continue
         if kind == "bounded-list":
             assert {"page", "per_page"} <= parameter_names
             per_page = next(item for item in operation["parameters"] if item["name"] == "per_page")
             assert per_page["schema"]["maximum"] >= 1
-            assert _parameters(operation, exclude={"page", "per_page"}) == _parameters(paired)
-            assert paired["x-riverhog-read-collection"]["paired_operation_id"] == operation_id
             continue
-        assert kind == "complete-enumeration"
-        assert {"page", "per_page", "all"}.isdisjoint(parameter_names)
-        assert _parameters(operation) == _parameters(paired, exclude={"page", "per_page"})
-        assert classification["format"] == COMPLETE_ENUMERATION_FORMAT
-        assert classification["media_type"] == JSON_SEQUENCE_MEDIA_TYPE
-        assert set(operation["responses"]["200"]["content"]) == {JSON_SEQUENCE_MEDIA_TYPE}
-        advertised = classification["item_schema"]
-        assert client_schemas[advertised["id"]].model_dump(mode="json") == advertised
+        raise AssertionError(f"unsupported read-collection classification: {kind}")
 
     assert classified == READ_COLLECTION_OPERATIONS[application]
     assert exact_resource_streams == EXACT_RESOURCE_STREAM_OPERATIONS[application]
@@ -995,23 +931,33 @@ def test_retrieval_job_creation_requires_the_sealed_plan_precondition() -> None:
     assert if_match["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
 
 
-def test_collection_upload_binary_identity_headers_are_exact() -> None:
-    paths = create_riverhog_app().openapi()["paths"]
-    provenance = paths[
+def test_collection_upload_authority_and_binary_headers_are_exact() -> None:
+    openapi = create_riverhog_app().openapi()
+    paths = openapi["paths"]
+    provenance_create = paths[
         "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}"
     ]["put"]
+    provenance_append = paths[
+        "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}"
+    ]["patch"]
     upload_unit = paths[
         "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}"
     ]["put"]
 
-    provenance_identity = next(
+    authority_ref = provenance_create["requestBody"]["content"]["application/json"]["schema"][
+        "$ref"
+    ]
+    authority = openapi["components"]["schemas"][authority_ref.rsplit("/", 1)[-1]]
+    assert set(authority["required"]) == {"bytes", "sha256"}
+    assert authority["properties"]["sha256"]["pattern"] == "^[0-9a-f]{64}$"
+    upload_offset = next(
         parameter
-        for parameter in provenance["parameters"]
-        if parameter["name"] == "X-Riverhog-Provenance-SHA256"
+        for parameter in provenance_append["parameters"]
+        if parameter["name"] == "Upload-Offset"
     )
-    assert provenance_identity["required"] is True
-    assert provenance_identity["schema"]["type"] == "string"
-    assert provenance_identity["schema"]["pattern"] == "^[0-9a-f]{64}$"
+    assert upload_offset["required"] is True
+    assert upload_offset["schema"]["type"] == "integer"
+    assert upload_offset["schema"]["minimum"] == 0
     upload_identity = next(
         parameter for parameter in upload_unit["parameters"] if parameter["name"] == "If-Match"
     )
@@ -1229,39 +1175,31 @@ def test_direct_ingress_openapi_describes_the_binary_unit_body() -> None:
     assert "411" in operation["responses"]
 
 
-def test_staged_provenance_openapi_describes_exact_binary_transfer() -> None:
+def test_provenance_upload_openapi_describes_bounded_resumable_transfer() -> None:
     path = create_riverhog_app().openapi()["paths"][
         "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}"
     ]
-    upload = path["put"]
-    download = path["get"]
+    append = path["patch"]
+    status = path["get"]
 
-    assert set(upload["requestBody"]["content"]) == {"application/json-seq"}
-    assert upload["requestBody"]["content"]["application/json-seq"]["schema"] == {
+    assert set(append["requestBody"]["content"]) == {"application/json-seq"}
+    assert append["requestBody"]["content"]["application/json-seq"]["schema"] == {
         "type": "string",
         "format": "binary",
     }
     content_length = next(
-        parameter for parameter in upload["parameters"] if parameter["name"] == "Content-Length"
+        parameter for parameter in append["parameters"] if parameter["name"] == "Content-Length"
     )
     assert content_length["required"] is True
-    assert content_length["schema"] == {"type": "integer", "minimum": 0}
-    assert "411" in upload["responses"]
-
-    response = download["responses"]["200"]
-    assert set(response["content"]) == {"application/json-seq"}
-    assert response["content"]["application/json-seq"]["schema"] == {
-        "type": "string",
-        "format": "binary",
-    }
-    assert response["headers"]["Content-Length"]["schema"] == {
+    assert content_length["schema"] == {
         "type": "integer",
-        "minimum": 0,
+        "minimum": 1,
+        "maximum": 1024 * 1024,
     }
-    assert response["headers"]["ETag"]["schema"] == {
-        "type": "string",
-        "pattern": '^"[0-9a-f]{64}"$',
-    }
+    assert "411" in append["responses"]
+
+    response = status["responses"]["200"]
+    assert set(response["content"]) == {"application/json"}
 
 
 @pytest.mark.parametrize(

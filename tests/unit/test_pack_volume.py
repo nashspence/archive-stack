@@ -46,7 +46,7 @@ class _SequentialPackAssembler:
     def __init__(self, *, sequence: int, part_plaintext_bytes: int) -> None:
         self.sequence = sequence
         self.part_plaintext_bytes = part_plaintext_bytes
-        self.volume_id = f"pack-{sequence:012d}"
+        self.volume_id = f"pack-{sequence:064x}"
         self.members: list[PackMemberPlan] = []
         self.plaintext = bytearray()
         self.unit = 0

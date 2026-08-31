@@ -305,13 +305,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
-        "RIVERHOG_OTS_STAMP_COMMAND",
-        "RIVERHOG_OTS_UPGRADE_COMMAND",
-        "RIVERHOG_OTS_VERIFY_COMMAND",
-        "RIVERHOG_ATTESTATION_SECRET_KEY_FILE",
-        "RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE",
-        "RIVERHOG_PROOF_MATURATION_RETRY_DELAY",
-        "RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):

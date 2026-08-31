@@ -6,7 +6,10 @@ from typing import Protocol, TypeVar
 from sqlalchemy import select
 
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionArchiveObjectUploadRecord
+from riverhog_core.catalog_models import (
+    CollectionArchiveObjectUploadRecord,
+    CollectionUploadRecord,
+)
 from riverhog_core.domain.archive import StoredArchivePart
 from riverhog_core.pack_upload import PackUploadCheckpoint, merge_pack_upload_checkpoints
 from riverhog_core.raw_upload import RawUploadCheckpoint, merge_raw_upload_checkpoints
@@ -105,13 +108,27 @@ class SqlAlchemyArchiveUploadCheckpointStore:
             )
             if record is None or record.kind != kind:
                 raise LookupError(f"archive upload volume not found: {volume_id}")
-            current = parse(record.checkpoint_json) if record.checkpoint_json else incoming
+            previous = parse(record.checkpoint_json) if record.checkpoint_json else None
+            current = previous or incoming
             merged = merge(current, incoming)
+            previous_payload_bytes = (
+                sum(item.plaintext_bytes for item in previous.archive_parts)
+                if previous is not None
+                else 0
+            )
+            merged_payload_bytes = sum(item.plaintext_bytes for item in merged.archive_parts)
             encoded = merged.to_json()
             record.checkpoint_json = encoded
             record.uploaded_bytes = sum(item.stored_bytes for item in merged.archive_parts)
             record.uploaded_units = len(merged.archive_parts)
             record.state = "sealed" if merged.completed is not None else "uploading"
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == collection_id)
+                .with_for_update()
+            )
+            if upload is not None:
+                upload.uploaded_payload_bytes += merged_payload_bytes - previous_payload_bytes
             return encoded
 
     def _delete(self, *, collection_id: int, volume_id: str, kind: str) -> None:

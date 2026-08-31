@@ -89,7 +89,10 @@ def test_recovery_tool_is_independent_and_advertised() -> None:
         (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
     )
 
-    assert config["project"]["dependencies"] == ["riverhog-archive-contracts>=0.1,<0.2"]
+    assert config["project"]["dependencies"] == [
+        "riverhog-archive-contracts>=0.1,<0.2",
+        "riverhog-provenance>=0.1,<0.2",
+    ]
     contracts = tomllib.loads(
         (REPO_ROOT / "packages/riverhog-archive-contracts/pyproject.toml").read_text(
             encoding="utf-8"
@@ -128,7 +131,6 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 
 def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
-    riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
     exiftool = (REPO_ROOT / "reference/stove0/observers/exiftool/Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -139,10 +141,6 @@ def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> Non
         encoding="utf-8"
     )
 
-    assert (
-        "third_party/minisign/0.12/LICENSE "
-        "/usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE"
-    ) in riverhog
     assert "riverhog-third-party/exiftool/13.59/LICENSE" in exiftool
     assert "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986" in exiftool
     assert "riverhog-third-party/rclone/1.75.0/LICENSE" in review

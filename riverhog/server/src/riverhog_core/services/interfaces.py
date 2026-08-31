@@ -4,7 +4,11 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from riverhog_protocol import PortableCollectionFile, PortableCollectionHeader
+from riverhog_protocol import (
+    PortableCollectionFile,
+    PortableCollectionHeader,
+    PortableCollectionInventoryPage,
+)
 from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 from riverhog_core.app_permissions import ApplicationAccess, ApplicationPrincipal
@@ -123,6 +127,15 @@ class ProvenanceService(Protocol):
         collection_id: int,
         journal_id: str,
         *,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[bytes]: ...
+    def iter_journal_range(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        offset: int,
+        size: int,
         principal: ApplicationPrincipal,
     ) -> Iterator[bytes]: ...
     def list_journal_agents(
@@ -266,6 +279,15 @@ class RetrievalService(Protocol):
         int,
         int,
     ]: ...
+    def collection_inventory_page(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None,
+        limit: int,
+        expected_identity: str | None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> PortableCollectionInventoryPage: ...
     def resource_list_page(
         self,
         *,
@@ -593,18 +615,6 @@ class ArchiveCopyService(Protocol):
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[JsonObject]: ...
     def process_due(self, *, limit: int = 1) -> int: ...
-
-
-class ProofMaturationService(Protocol):
-    def requeue_interrupted_for_startup(self) -> int: ...
-    def schedule_missing(self, *, limit: int = 1000) -> int: ...
-    def process_due(self, *, limit: int = 10) -> int: ...
-
-
-class ArchiveAttestationService(Protocol):
-    def requeue_interrupted_for_startup(self) -> int: ...
-    def schedule_missing(self, *, limit: int = 1000) -> int: ...
-    def process_due(self, *, limit: int = 10) -> int: ...
 
 
 class ArchiveCopyRetirementService(Protocol):

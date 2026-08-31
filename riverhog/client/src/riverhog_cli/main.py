@@ -19,10 +19,10 @@ import httpx
 import typer
 from riverhog_api_client.client import ApiClient, ProvenanceMode
 from riverhog_api_client.producer import COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES
+from riverhog_api_client.source_hashing import RawSourceHash, hash_raw_source_chunks
 from riverhog_api_client.uploads import (
     configured_upload_concurrency,
     configured_upload_window,
-    put_collection_upload_unit,
     upload_collection_units,
 )
 from riverhog_application_access import ApplicationPermission
@@ -42,7 +42,6 @@ from riverhog_cli_support.output import (
 from riverhog_protocol.collection_upload_transport import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadUnitWorkDocument,
-    CollectionUploadVolumeWorkDocument,
 )
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_identity
@@ -51,13 +50,10 @@ from riverhog_protocol.paths import (
     normalize_collection_id,
     normalize_tag,
 )
-from riverhog_protocol.raw_ingress import hash_raw_source
 from riverhog_provenance import (
     SIDECAR_SUFFIX,
-    FileProvenanceBinding,
     FileStateObserverFactory,
     ResolvedProvenanceObserver,
-    build_provenance_archive,
     canonical_sidecar_path,
     prepare_file_provenance,
     resolve_provenance_observer,
@@ -158,7 +154,8 @@ _API_CLIENT: ApiClient | None = None
 
 class RawPartsPayload(TypedDict):
     part_plaintext_bytes: int
-    sha256s: list[str]
+    part_count: int
+    ordered_sha256: str
 
 
 class CollectionManifestEntry(TypedDict, total=False):
@@ -166,6 +163,7 @@ class CollectionManifestEntry(TypedDict, total=False):
     bytes: int
     sha256: str
     raw_parts: RawPartsPayload
+    raw_digest_spool: RawSourceHash
     provenance: dict[str, object]
     provenance_journals: dict[str, bytes]
 
@@ -261,78 +259,6 @@ def _list_order(sort: str, order: str, *, fields: set[str]) -> str:
     return normalized_order
 
 
-def _emit_complete_enumeration(
-    items: Iterator[dict[str, Any]],
-    *,
-    key: str,
-    formatter: Callable[[Mapping[str, object]], str],
-    json_mode: bool,
-    selector_formatter: Callable[[Mapping[str, object]], str] | None = None,
-) -> None:
-    """Render one complete stream while retaining only a bounded display chunk."""
-
-    if selector_formatter is not None:
-        for item in items:
-            rendered = selector_formatter({key: [item]})
-            if rendered:
-                typer.echo(rendered)
-        return
-    if json_mode:
-        sys.stdout.write("{" + json.dumps(key) + ":[")
-        count = 0
-        for item in items:
-            if count:
-                sys.stdout.write(",")
-            sys.stdout.write(
-                json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            )
-            sys.stdout.flush()
-            count += 1
-        sys.stdout.write(f'],"total":{count}}}\n')
-        return
-
-    chunk: list[dict[str, Any]] = []
-    first_chunk = True
-    for item in items:
-        chunk.append(item)
-        if len(chunk) == 100:
-            first_chunk = _emit_human_enumeration_chunk(
-                chunk,
-                key=key,
-                formatter=formatter,
-                first_chunk=first_chunk,
-            )
-            chunk = []
-    if chunk or first_chunk:
-        _emit_human_enumeration_chunk(
-            chunk,
-            key=key,
-            formatter=formatter,
-            first_chunk=first_chunk,
-        )
-
-
-def _emit_human_enumeration_chunk(
-    items: list[dict[str, Any]],
-    *,
-    key: str,
-    formatter: Callable[[Mapping[str, object]], str],
-    first_chunk: bool,
-) -> bool:
-    rendered = formatter({key: items, "_complete_enumeration": True})
-    lines = rendered.splitlines()
-    if not first_chunk and lines:
-        lines = lines[1:]
-    if lines:
-        typer.echo("\n".join(lines))
-    return False
-
-
-def _format_collection_tag_ids(payload: Mapping[str, object]) -> str:
-    items = cast(list[dict[str, object]], payload["tags"])
-    return "\n".join(str(item["tag"]) for item in items)
-
-
 def _monthly_quota_bytes(value: str) -> int | None:
     candidate = value.strip().casefold()
     if candidate == "unlimited":
@@ -415,7 +341,6 @@ def app_list_cmd(
         bool | None,
         typer.Option("--active/--inactive", help="Filter by usable key availability"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching app")] = False,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one app name per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -425,25 +350,6 @@ def app_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_APP_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_apps(
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-            active=active,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="apps",
-                formatter=format_apps,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "apps", id_key="name"))
-                    if ids
-                    else None
-                ),
-            )
-        return
     payload = api.list_apps(
         page=page,
         per_page=per_page,
@@ -490,7 +396,6 @@ def tag_list_cmd(
         str | None,
         typer.Option("--query", "-q", help="Substring match over tag ids"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching tag")] = False,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one tag id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -500,22 +405,6 @@ def tag_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_TAG_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_tags(
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="tags",
-                formatter=format_tags,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "tags")) if ids else None
-                ),
-            )
-        return
     payload = api.list_tags(
         page=page,
         per_page=per_page,
@@ -581,6 +470,8 @@ def tag_delete_cmd(
 @collection_tag_app.command("list")
 def collection_tag_list_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one tag id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -588,14 +479,12 @@ def collection_tag_list_cmd(
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    with client().stream_collection_tags(collection_id) as items:
-        _emit_complete_enumeration(
-            items,
-            key="tags",
-            formatter=format_collection_tags,
-            json_mode=json_mode,
-            selector_formatter=_format_collection_tag_ids if ids else None,
-        )
+    payload = client().get_collection_tags(collection_id, page=page, per_page=per_page)
+    if ids:
+        tags = cast(list[str], payload["tags"])
+        emit("\n".join(tags), json_mode=False)
+        return
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
 
 
 @collection_tag_app.command("replace")
@@ -689,7 +578,6 @@ def app_key_list_cmd(
         bool | None,
         typer.Option("--active/--inactive", help="Filter by key usability"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching key")] = False,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one key id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -699,24 +587,6 @@ def app_key_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_app_keys(
-            app_name,
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-            active=active,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="keys",
-                formatter=lambda payload: format_app_keys({"app": app_name, **payload}),
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "keys")) if ids else None
-                ),
-            )
-        return
     payload = api.list_app_keys(
         app_name,
         page=page,
@@ -786,7 +656,6 @@ def app_key_access_list_cmd(
         bool | None,
         typer.Option("--active/--inactive", help="Filter by key usability"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching grant")] = False,
     selectors: Annotated[
         bool,
         typer.Option("--selectors", help="Emit one actionable access selector per line"),
@@ -799,25 +668,6 @@ def app_key_access_list_cmd(
         raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_ACCESS_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_app_key_access(
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-            app=app_name,
-            key_id=key_id,
-            permission=cast(ApplicationPermission | None, permission),
-            resource=resource,
-            active=active,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="access",
-                formatter=format_app_access,
-                json_mode=json_mode,
-                selector_formatter=(format_app_access_selectors if selectors else None),
-            )
-        return
     payload = api.list_app_key_access(
         page=page,
         per_page=per_page,
@@ -946,7 +796,6 @@ def app_key_quota_list_cmd(
         bool | None,
         typer.Option("--active/--inactive", help="Filter by key usability"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching quota")] = False,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one key id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -958,24 +807,6 @@ def app_key_quota_list_cmd(
         raise typer.BadParameter("--ids requires --app so each key id is actionable")
     normalized_order = _list_order(sort, order, fields=_APP_KEY_QUOTA_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_download_quotas(
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-            app=app_name,
-            active=active,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="quotas",
-                formatter=format_download_quotas,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "quotas")) if ids else None
-                ),
-            )
-        return
     payload = api.list_download_quotas(
         page=page,
         per_page=per_page,
@@ -1112,10 +943,10 @@ def _upload_error_description(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _retry_transient_upload_operation(
+def _retry_transient_upload_operation[UploadResult](
     description: str,
-    operation: Callable[[], dict[str, Any]],
-) -> dict[str, Any]:
+    operation: Callable[[], UploadResult],
+) -> UploadResult:
     delay = UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS
     last_log_at = 0.0
     attempt = 0
@@ -1172,12 +1003,44 @@ def _register_collection_upload_session_files(
         lambda: api.register_collection_upload_session_files(
             collection_id,
             [
-                {key: value for key, value in item.items() if key != "provenance_journals"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"provenance_journals", "raw_digest_spool"}
+                }
                 for item in file_payloads
             ],
             registration_constraints=registration_constraints,
         ),
     )
+
+
+def _register_collection_upload_raw_digests(
+    api: ApiClient,
+    collection_id: int,
+    entries: list[CollectionManifestEntry],
+) -> None:
+    for entry in entries:
+        spool = entry.get("raw_digest_spool")
+        if spool is None:
+            continue
+        try:
+            for first_part, sha256s in spool.iter_batches():
+                _retry_transient_upload_operation(
+                    f"Upload session register raw digests for {entry['path']}",
+                    partial(
+                        api.register_collection_upload_session_raw_part_digests,
+                        collection_id,
+                        {
+                            "path": entry["path"],
+                            "first_part": first_part,
+                            "sha256s": list(sha256s),
+                        },
+                    ),
+                )
+        finally:
+            spool.close()
+            entry.pop("raw_digest_spool", None)
 
 
 def _complete_collection_upload_session(
@@ -1193,7 +1056,6 @@ def _complete_collection_upload_session(
             content_identity=collection_content_identity(
                 (item["path"], item["bytes"], item["sha256"]) for item in manifest
             ),
-            provenance_identity=_provenance_identity(manifest),
         ),
     )
 
@@ -1283,7 +1145,7 @@ def _hash_collection_source(
             "sha256": _file_sha256(source_path),
         }
     else:
-        raw = hash_raw_source(
+        raw = hash_raw_source_chunks(
             path=rel_path,
             chunks=_iter_file_chunks(source_path),
             expected_bytes=byte_count,
@@ -1292,11 +1154,13 @@ def _hash_collection_source(
         result = {
             "path": rel_path,
             "bytes": byte_count,
-            "sha256": raw.sha256,
+            "sha256": raw.summary.sha256,
             "raw_parts": {
-                "part_plaintext_bytes": raw.part_plaintext_bytes,
-                "sha256s": list(raw.part_sha256s),
+                "part_plaintext_bytes": raw.summary.part_plaintext_bytes,
+                "part_count": raw.summary.part_count,
+                "ordered_sha256": raw.summary.ordered_part_sha256,
             },
+            "raw_digest_spool": raw,
         }
     prepared = prepare_file_provenance(
         source_path,
@@ -1327,7 +1191,22 @@ def _hash_collection_source(
 
 def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManifestEntry]:
     result: list[CollectionManifestEntry] = []
-    with api.stream_collection_upload_session_files(collection_id) as values:
+    page = 1
+    expected_total: int | None = None
+    while True:
+        payload = api.list_collection_upload_session_files(
+            collection_id,
+            page=page,
+            per_page=100,
+        )
+        total = int(payload.get("total") or 0)
+        if expected_total is None:
+            expected_total = total
+        elif expected_total != total:
+            raise RuntimeError("upload manifest changed during bounded reconciliation")
+        values = payload.get("files")
+        if not isinstance(values, list):
+            raise RuntimeError("upload session returned an invalid file page")
         for value in values:
             path = value.get("path")
             byte_count = value.get("bytes")
@@ -1349,6 +1228,11 @@ def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManif
                     "provenance": dict(provenance),
                 }
             )
+        if page >= int(payload.get("pages") or 0):
+            break
+        page += 1
+    if len(result) != expected_total:
+        raise RuntimeError("upload manifest reconciliation is incomplete")
     return result
 
 
@@ -1362,31 +1246,6 @@ def _manifest_identity(manifest: list[CollectionManifestEntry]) -> list[tuple[ob
         )
         for item in manifest
     ]
-
-
-def _provenance_identity(manifest: list[CollectionManifestEntry]) -> str | None:
-    bindings: list[FileProvenanceBinding] = []
-    journals: dict[str, bytes] = {}
-    for item in manifest:
-        provenance = item.get("provenance")
-        if not isinstance(provenance, Mapping):
-            raise RuntimeError("local manifest has no provenance accounting")
-        status = str(provenance.get("status", ""))
-        bindings.append(
-            FileProvenanceBinding(
-                path=item["path"],
-                bytes=item["bytes"],
-                sha256=item["sha256"],
-                status=cast(Any, status),
-                journal_id=cast(str | None, provenance.get("journal_id")),
-                current_state_id=cast(str | None, provenance.get("current_state_id")),
-                omission_reason=cast(str | None, provenance.get("omission_reason")),
-            )
-        )
-        journals.update(item.get("provenance_journals", {}))
-    if not journals:
-        return None
-    return build_provenance_archive(bindings=bindings, journals=journals).identity
 
 
 def _put_provenance_journals(
@@ -1405,7 +1264,7 @@ def _put_provenance_journals(
         _retry_transient_upload_operation(
             f"Upload provenance journal {journal_id}",
             partial(
-                api.put_collection_upload_session_provenance_journal,
+                api.upload_collection_upload_session_provenance_journal,
                 collection_id,
                 journal_id,
                 content=(content,),
@@ -1442,26 +1301,6 @@ def _upload_unit_content(
             f"{unit.payload_bytes}-byte upload unit"
         )
     return bytes(content)
-
-
-def _put_collection_upload_session_unit(
-    api: ApiClient,
-    collection_id: int,
-    volume: CollectionUploadVolumeWorkDocument,
-    unit: CollectionUploadUnitWorkDocument,
-    *,
-    root: Path,
-) -> int:
-    return put_collection_upload_unit(
-        api,
-        collection_id,
-        volume,
-        unit,
-        content_for_unit=lambda current: _upload_unit_content(root, current),
-        retry_notice=_log_upload,
-        retry_initial_delay_seconds=UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS,
-        retry_max_delay_seconds=UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS,
-    )
 
 
 def _upload_planned_units(
@@ -1625,6 +1464,7 @@ def _upload_collection_via_session(
                     batch,
                     registration_constraints=registration_constraints,
                 )
+                _register_collection_upload_raw_digests(api, collection_id, batch)
                 for _ in batch:
                     progress.registered_file()
         else:
@@ -1632,6 +1472,10 @@ def _upload_collection_via_session(
             existing = _server_manifest(api, collection_id)
             if _manifest_identity(existing) != _manifest_identity(manifest):
                 raise Conflict("local collection identity differs from the resumable session")
+            for entry in manifest:
+                spool = entry.pop("raw_digest_spool", None)
+                if spool is not None:
+                    spool.close()
             for _ in manifest:
                 progress.registered_file()
 
@@ -1713,10 +1557,6 @@ def collection_list_cmd(
         str | None,
         typer.Option("--passphrase-id", help="Restrict results to one opaque key ID"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching collection"),
-    ] = False,
     ids: Annotated[
         bool,
         typer.Option("--ids", help="Emit one collection id per line"),
@@ -1729,25 +1569,6 @@ def collection_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_COLLECTION_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_collections(
-            q=query,
-            tag=tag,
-            encryption_format=encryption_format,
-            passphrase_id=passphrase_id,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="collections",
-                formatter=format_collections,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "collections")) if ids else None
-                ),
-            )
-        return
     payload = api.list_collections(
         page=page,
         per_page=per_page,
@@ -1769,24 +1590,11 @@ def collection_archive_copies_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every archive copy"),
-    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List the durable archive copies of one collection."""
 
     api = client()
-    if all_items:
-        with api.stream_collection_archive_copies(collection_id) as items:
-            _emit_complete_enumeration(
-                items,
-                key="copies",
-                formatter=format_collection_archive_copies,
-                json_mode=json_mode,
-            )
-        return
     payload = api.list_collection_archive_copies(
         collection_id,
         page=page,
@@ -1956,10 +1764,6 @@ def upload_list_cmd(
         str | None,
         typer.Option("--state", help="Restrict results to one exact session state"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching upload session"),
-    ] = False,
     ids: Annotated[
         bool,
         typer.Option("--ids", help="Emit one collection/upload id per line"),
@@ -1972,26 +1776,6 @@ def upload_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_COLLECTION_UPLOAD_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_collection_upload_sessions(
-            q=query,
-            tag=tag,
-            state=cast(Any, state),
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="uploads",
-                formatter=format_collection_uploads,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "uploads", id_key="collection_id"))
-                    if ids
-                    else None
-                ),
-            )
-        return
     payload = api.list_collection_upload_sessions(
         page=page,
         per_page=per_page,
@@ -2026,21 +1810,11 @@ def upload_files_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection upload session id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every registered file")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List exact registered artifacts and their Riverhog custody state."""
 
     api = client()
-    if all_items:
-        with api.stream_collection_upload_session_files(collection_id) as items:
-            _emit_complete_enumeration(
-                items,
-                key="files",
-                formatter=format_collection_upload_files,
-                json_mode=json_mode,
-            )
-        return
     payload = api.list_collection_upload_session_files(
         collection_id,
         page=page,
@@ -2148,10 +1922,6 @@ def find_cmd(
         int | None,
         typer.Option("--collection", help="Restrict results to one collection"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching file"),
-    ] = False,
     selectors: Annotated[
         bool,
         typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
@@ -2171,21 +1941,6 @@ def find_cmd(
     if normalized_order not in {"asc", "desc"}:
         raise typer.BadParameter("order must be asc or desc", param_hint="--order")
     api = client()
-    if all_items:
-        with api.stream_search(
-            query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-            collection=collection,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="files",
-                formatter=format_find,
-                json_mode=json_mode,
-                selector_formatter=(format_file_selectors if selectors else None),
-            )
-        return
     payload = api.search(
         query,
         page=page,
@@ -2229,14 +1984,13 @@ def provenance_list_cmd(
         str | None,
         typer.Option("--status", help="Restrict to captured or omitted files"),
     ] = None,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every matching file")] = False,
     selectors: Annotated[
         bool,
         typer.Option("--selectors", help="Emit one COLLECTION_ID::PATH selector per line"),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List every file's provenance accounting in one collection."""
+    """List one bounded page of file provenance accounting."""
 
     if selectors and json_mode:
         raise typer.BadParameter("--selectors and --json cannot be used together")
@@ -2244,22 +1998,6 @@ def provenance_list_cmd(
     if status is not None and status not in {"captured", "omitted"}:
         raise typer.BadParameter("status must be captured or omitted", param_hint="--status")
     api = client()
-    if all_items:
-        with api.stream_collection_provenance(
-            collection_id,
-            q=query,
-            status=cast(Any, status),
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="files",
-                formatter=format_provenance_files,
-                json_mode=json_mode,
-                selector_formatter=(format_file_selectors if selectors else None),
-            )
-        return
     payload = api.list_collection_provenance(
         collection_id,
         page=page,
@@ -2293,24 +2031,11 @@ def provenance_trace_cmd(
     path: Annotated[str, typer.Argument(help="Collection-relative file path")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every reachable journal and reference"),
-    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Trace one file through reachable provenance journals and references."""
 
     api = client()
-    if all_items:
-        with api.stream_collection_file_provenance_trace(collection_id, path) as items:
-            _emit_complete_enumeration(
-                items,
-                key="items",
-                formatter=format_provenance_trace,
-                json_mode=json_mode,
-            )
-        return
     payload = api.trace_collection_file_provenance(
         collection_id,
         path,
@@ -2326,24 +2051,11 @@ def provenance_agents_cmd(
     journal_id: Annotated[str, typer.Argument(help="Exact provenance journal id")],
     page: Annotated[int, typer.Option("--page", min=1)] = 1,
     per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
-    all_items: Annotated[bool, typer.Option("--all", help="Return every agent")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List agents asserted by one exact provenance journal."""
 
     api = client()
-    if all_items:
-        with api.stream_collection_provenance_journal_agents(
-            collection_id,
-            journal_id,
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="agents",
-                formatter=format_provenance_journal_agents,
-                json_mode=json_mode,
-            )
-        return
     payload = api.list_collection_provenance_journal_agents(
         collection_id,
         journal_id,
@@ -2364,19 +2076,11 @@ def provenance_export_cmd(
 
     destination = output.expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
-    byte_count = 0
-    digest = hashlib.sha256()
-    try:
-        with client().stream_collection_provenance_journal(collection_id, journal_id) as chunks:
-            with temporary.open("wb") as stream:
-                for chunk in chunks:
-                    stream.write(chunk)
-                    byte_count += len(chunk)
-                    digest.update(chunk)
-        temporary.replace(destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    byte_count, sha256 = client().download_collection_provenance_journal(
+        collection_id,
+        journal_id,
+        output=destination,
+    )
     if json_mode:
         emit(
             {
@@ -2384,7 +2088,7 @@ def provenance_export_cmd(
                 "journal_id": journal_id,
                 "output": str(destination),
                 "bytes": byte_count,
-                "sha256": digest.hexdigest(),
+                "sha256": sha256,
             },
             json_mode=True,
         )
@@ -2498,10 +2202,6 @@ def retrieval_cache_list_cmd(
         str | None,
         typer.Option("--expires-after", help="Require protection expiry at or after timestamp"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching cache object"),
-    ] = False,
     selectors: Annotated[
         bool,
         typer.Option(
@@ -2517,27 +2217,6 @@ def retrieval_cache_list_cmd(
         raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_RETRIEVAL_CACHE_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_retrieval_cache_objects(
-            q=query,
-            tag=tag,
-            collection_id=collection_id,
-            source_store=source_store,
-            state=cast(Any, state),
-            protection=cast(Any, protection),
-            expires_before=expires_before,
-            expires_after=expires_after,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="objects",
-                formatter=format_retrieval_cache_objects,
-                json_mode=json_mode,
-                selector_formatter=(format_retrieval_cache_selectors if selectors else None),
-            )
-        return
     payload = api.list_retrieval_cache_objects(
         page=page,
         per_page=per_page,
@@ -2583,10 +2262,6 @@ def archive_store_list_cmd(
         str | None,
         typer.Option("--query", "-q", help="Substring match over store configuration"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching archive store"),
-    ] = False,
     ids: Annotated[
         bool,
         typer.Option("--ids", help="Emit one archive store name per line"),
@@ -2599,24 +2274,6 @@ def archive_store_list_cmd(
         raise typer.BadParameter("--ids and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_ARCHIVE_STORE_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_archive_stores(
-            q=query,
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="stores",
-                formatter=format_archive_stores,
-                json_mode=json_mode,
-                selector_formatter=(
-                    (lambda payload: format_list_ids(payload, "stores", id_key="store"))
-                    if ids
-                    else None
-                ),
-            )
-        return
     payload = api.list_archive_stores(
         page=page,
         per_page=per_page,
@@ -2745,10 +2402,6 @@ def archive_copy_list_cmd(
         str | None,
         typer.Option("--state", help="Exact archive-copy state"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching archive-copy job"),
-    ] = False,
     selectors: Annotated[
         bool,
         typer.Option(
@@ -2764,21 +2417,6 @@ def archive_copy_list_cmd(
         raise typer.BadParameter("--selectors and --json cannot be used together")
     normalized_order = _list_order(sort, order, fields=_ARCHIVE_COPY_SORT_FIELDS)
     api = client()
-    if all_items:
-        with api.stream_archive_copy_jobs(
-            q=query,
-            state=cast(Any, state),
-            sort=cast(Any, sort),
-            order=cast(Any, normalized_order),
-        ) as items:
-            _emit_complete_enumeration(
-                items,
-                key="copies",
-                formatter=format_archive_copy_jobs,
-                json_mode=json_mode,
-                selector_formatter=(format_archive_copy_selectors if selectors else None),
-            )
-        return
     payload = api.list_archive_copy_jobs(
         page=page,
         per_page=per_page,

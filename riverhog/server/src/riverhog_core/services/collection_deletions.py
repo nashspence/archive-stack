@@ -18,12 +18,10 @@ from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
-    CollectionProofMaturationRecord,
     CollectionRecord,
     CollectionTagRecord,
     CollectionUploadFileRecord,
@@ -133,7 +131,10 @@ class SqlAlchemyCollectionDeletionService:
         with session_scope(self._session_factory) as session:
             collection = session.scalar(
                 select(CollectionRecord)
-                .where(CollectionRecord.id == normalized_id)
+                .where(
+                    CollectionRecord.id == normalized_id,
+                    CollectionRecord.is_published.is_(True),
+                )
                 .with_for_update()
             )
             active = session.get(CollectionDeletionRecord, normalized_id)
@@ -465,30 +466,6 @@ def _active_blockers(
         )
     )
     blockers.extend(f"archive copy retirement is active: {store}" for store in retirements)
-    proof_maturations = list(
-        session.scalars(
-            select(CollectionProofMaturationRecord.store)
-            .where(
-                CollectionProofMaturationRecord.collection_id == collection_id,
-                CollectionProofMaturationRecord.state == "upgrading",
-            )
-            .order_by(CollectionProofMaturationRecord.store)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
-        )
-    )
-    blockers.extend(f"archive proof maturation is active: {store}" for store in proof_maturations)
-    attestations = list(
-        session.scalars(
-            select(CollectionArchiveAttestationRecord.store)
-            .where(
-                CollectionArchiveAttestationRecord.collection_id == collection_id,
-                CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
-            )
-            .order_by(CollectionArchiveAttestationRecord.store)
-            .limit(_BLOCKER_SAMPLE_LIMIT)
-        )
-    )
-    blockers.extend(f"archive attestation is active: {store}" for store in attestations)
     metadata_publications = list(
         session.scalars(
             select(CollectionMetadataPublicationRecord.store)

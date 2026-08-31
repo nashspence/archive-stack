@@ -55,8 +55,13 @@ from stove0_protocol import (
     WorkPayload,
     canonical_json_sha256,
 )
+from stove0_target_protocol import (
+    TargetInputAuthority,
+    TargetOutputBindingSetIdentity,
+    TargetSettlementAuthority,
+    TargetSettlementAuthorityPayload,
+)
 from stove0_target_support import (
-    InputArtifact,
     InputArtifactContract,
     OperationContract,
     OperationContractPayload,
@@ -256,11 +261,9 @@ class PreviewPlanning:
         _plan: WorkflowPlan,
         _selections: dict[str, ArtifactSelection],
     ) -> TargetPreflightRequest:
-        return TargetPreflightRequest(
-            operation_id=self.operation.id,
-            operation_contract_sha256=self.operation.contract_sha256,
-            inputs=(
-                InputArtifact(
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
                     id="source",
                     role="fixture.source/v1",
                     collection=_root(),
@@ -268,7 +271,12 @@ class PreviewPlanning:
                     bytes=12,
                     sha256=_sha("4"),
                 ),
-            ),
+            )
+        )
+        return TargetPreflightRequest(
+            operation_id=self.operation.id,
+            operation_contract_sha256=self.operation.contract_sha256,
+            inputs=TargetInputAuthority.from_selection(selection),
             intent={"suffix": ".copy"},
             target_options={},
             observations=_plan.observations,
@@ -561,6 +569,18 @@ class FinishingController:
                 content_identity=_sha("b"),
                 derivation_sha256=_sha("c"),
             )
+            settlement = TargetSettlementAuthority.seal(
+                TargetSettlementAuthorityPayload(
+                    job_id=record.work_id,
+                    production_sha256=_sha("d"),
+                    output_collection=output,
+                    output_bindings=TargetOutputBindingSetIdentity(
+                        artifact_count=1,
+                        total_bytes=1,
+                        sha256=_sha("e"),
+                    ),
+                )
+            )
             replacement = WorkRecord.model_validate(
                 record.model_copy(
                     update={
@@ -568,6 +588,7 @@ class FinishingController:
                         "revision": record.revision + 1,
                         "claim": ClaimBinding(claim_id=record.work_id, fence=1),
                         "output": output,
+                        "target_settlement": settlement,
                     }
                 ).model_dump(mode="python")
             )

@@ -621,11 +621,10 @@ class S3StorageAdapter:
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.placement,
         )
-        if (
-            receipt.stored_bytes != request.stored_bytes
-            or receipt.stored_sha256 != request.stored_sha256
-        ):
-            return None
+        # Stable required identity assertions, rather than incidental stored
+        # bytes, define reconciliation identity.  This permits an interrupted
+        # create-only publication to recover an earlier randomized encrypted
+        # representation of the same exact plaintext authority.
         return receipt
 
     def _put_small_multipart(

@@ -301,7 +301,7 @@ def test_maintained_reference_components_do_not_import_product_internals() -> No
     assert not imports & {"riverhog_api", "riverhog_core", "stove0_api", "stove0_core"}
 
 
-def test_maintained_targets_finish_exact_dispositions_through_shared_runtime() -> None:
+def test_maintained_targets_seal_callback_authority_through_shared_runtime() -> None:
     for path in MAINTAINED_TARGETS:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         calls = [
@@ -313,10 +313,34 @@ def test_maintained_targets_finish_exact_dispositions_through_shared_runtime() -
         ]
         assert len(calls) == 1, path
         keyword_names = {item.arg for item in calls[0].keywords}
-        assert {"dispositions", "execution_sha256", "operation"} <= keyword_names, path
-        if calls[0].func.attr == "publish_success":
-            assert "artifacts" in keyword_names, path
+        assert {"execution_sha256", "operation"} <= keyword_names, path
         assert "stove0_target_support" in _import_roots(path)
+
+    direct_targets = MAINTAINED_TARGETS[:2]
+    assert all(
+        any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "declare_disposition"
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        )
+        for path in direct_targets
+    )
+    review_support = (
+        IMPLEMENTATION_ROOT
+        / "targets"
+        / "review"
+        / "support"
+        / "src"
+        / "stove0_review_target_support"
+        / "target.py"
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "declare_disposition"
+        for node in ast.walk(ast.parse(review_support.read_text(encoding="utf-8")))
+    )
 
 
 def test_review_planning_bridge_is_not_a_stove0_product_plugin() -> None:

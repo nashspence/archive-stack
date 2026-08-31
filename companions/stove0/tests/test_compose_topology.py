@@ -177,6 +177,12 @@ def test_reference_topology_uses_secret_files_and_explicit_lan_http_opt_in() -> 
     for name in ("api", "controller", "worker"):
         environment = services[name]["environment"]
         assert environment["RIVERHOG_ALLOW_INSECURE_HTTP"] == "true"
+        assert environment["STOVE0_TARGET_CALLBACK_BASE_URL"] == "http://api:8080"
+        assert environment["STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP"] == "true"
+        assert environment["STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE"] == (
+            "/run/secrets/stove0_target_callback_signing_key"
+        )
+        assert "stove0_target_callback_signing_key" in services[name]["secrets"]
         assert environment["RIVERHOG_TOKEN_FILE"].startswith("/run/secrets/")
         assert "RIVERHOG_TOKEN" not in environment
     text = COMPOSE.read_text(encoding="utf-8")

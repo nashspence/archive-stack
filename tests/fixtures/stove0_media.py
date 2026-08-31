@@ -21,11 +21,17 @@ from stove0_observer_protocol import (
     ObserverImplementation,
 )
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
     CollectionRootRef,
     canonical_json_sha256,
 )
-from stove0_target_protocol import InputArtifact, OperationContract, TargetPreflightRequest
+from stove0_target_protocol import (
+    InputArtifact,
+    OperationContract,
+    TargetInputAuthority,
+    TargetPreflightRequest,
+)
 
 
 def sha(character: str) -> str:
@@ -139,9 +145,9 @@ def media_preflight_request(
     return TargetPreflightRequest(
         operation_id=operation.id,
         operation_contract_sha256=operation.contract_sha256,
-        inputs=inputs,
+        inputs=TargetInputAuthority.from_selection(ArtifactSelection.seal(subjects)),
         intent=intent,
-        target_options=target_options or {},
+        target_options=dict(target_options or {}),
         observations=(ObservationEvidence(request=request, result=result),),
     )
 

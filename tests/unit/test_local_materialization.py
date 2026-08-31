@@ -4,15 +4,17 @@ import ast
 import hashlib
 import inspect
 import json
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from riverhog_cli import local as local_materialization
 from riverhog_protocol import (
-    PortableCollectionInventoryReader,
-    PortableCollectionRecord,
-    iter_portable_collection_inventory,
+    ImmutableFileIdentityDocument,
+    PortableCollectionFile,
+    PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
+    portable_collection_inventory_identity,
 )
 from riverhog_protocol.errors import InvalidState
 from typer.testing import CliRunner
@@ -46,6 +48,26 @@ MANIFEST = {
 JOB_FILES = [{"collection_id": COLLECTION_ID, **current} for current in MANIFEST["files"]]
 
 
+def _inventory(
+    *, collection_id: int = COLLECTION_ID, byte_count: int | None = None
+) -> tuple[PortableCollectionHeader, tuple[PortableCollectionFile, ...], str]:
+    header = PortableCollectionHeader(
+        collection=collection_id,
+        content_identity=str(MANIFEST["content_identity"]),
+        encryption_format=str(MANIFEST["encryption_format"]),
+        passphrase_id=str(MANIFEST["passphrase_id"]),
+        provenance_mode="omitted",
+        provenance_identity=None,
+    )
+    source = (
+        ({"path": "file.bin", "bytes": byte_count, "sha256": "a" * 64},)
+        if byte_count is not None
+        else tuple(MANIFEST["files"])
+    )
+    files = tuple(PortableCollectionFile.from_mapping(item) for item in source)
+    return header, files, portable_collection_inventory_identity(header, files)
+
+
 def _prepare_local(target: Path) -> None:
     local_materialization.local_state_schema(target / ".riverhog-local.sqlite3").upgrade()
 
@@ -68,8 +90,6 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_api_client.downloads", "download_retrieval_files"),
         ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.errors", "NotFound"),
-        ("riverhog_protocol.portable_collection", "PortableCollectionFile"),
-        ("riverhog_protocol.portable_collection", "PortableCollectionHeader"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
@@ -138,39 +158,53 @@ class FakeApi:
     def spawn(self) -> FakeApi:
         return self
 
-    def stream_portable_collection_inventory(self, collection_id: int):  # type: ignore[no-untyped-def]
+    def get_portable_collection_inventory(
+        self,
+        collection_id: int,
+        **kwargs: object,
+    ) -> PortableCollectionInventoryPage:
         assert collection_id == COLLECTION_ID
-        record = PortableCollectionRecord.from_mapping(MANIFEST)
-        reader = PortableCollectionInventoryReader(
-            iter_portable_collection_inventory(
-                record.header,
-                record.files,
-                inventory_identity=record.identity,
-                file_count=len(record.files),
-                file_bytes=sum(file.bytes for file in record.files),
-            )
+        assert kwargs["cursor"] is None
+        header, files, inventory_identity = _inventory()
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=header,
+                inventory_identity=inventory_identity,
+                file_count=len(files),
+                file_bytes=sum(file.bytes for file in files),
+            ),
+            files=[
+                ImmutableFileIdentityDocument.model_validate(file.to_mapping()) for file in files
+            ],
+            complete=True,
         )
 
-        class _Stream:
-            def __enter__(self):  # type: ignore[no-untyped-def]
-                return reader
-
-            def __exit__(self, *_args: object) -> None:
-                reader.require_complete()
-
-        return _Stream()
-
-    @contextmanager
-    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+    def get_collection_tags(
+        self, collection_id: int, *, page: int, per_page: int
+    ) -> dict[str, object]:
         assert collection_id == COLLECTION_ID
-        yield iter({"tag": tag} for tag in self.tags)
+        assert (page, per_page) == (1, 100)
+        return {
+            "collection_id": collection_id,
+            "metadata_revision": 1,
+            "inventory_identity": _inventory()[2],
+            "tag_count": len(self.tags),
+            "page": 1,
+            "pages": 1 if self.tags else 0,
+            "total": len(self.tags),
+            "tags": list(self.tags),
+        }
 
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
+        _header, files, inventory_identity = _inventory()
         return {
             "id": collection_id,
             "created_at": CREATED_AT,
             "tag_count": len(self.tags),
+            "inventory_identity": inventory_identity,
+            "files": len(files),
+            "bytes": sum(file.bytes for file in files),
         }
 
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
@@ -659,21 +693,22 @@ def test_local_list_pages_and_sorts_database_aggregates(
     db = local_materialization._connect(target)
     try:
         for collection_id, byte_count in ((1, 100), (2, 300), (3, 200)):
-            record = PortableCollectionRecord.create(
-                collection=collection_id,
-                content_identity="b" * 64,
-                encryption_format="age-v1-scrypt",
-                passphrase_id="collection-test-key-v1",
-                provenance_mode="omitted",
-                provenance_identity=None,
-                files=(("file.bin", byte_count, "a" * 64),),
+            _header, _files, inventory_identity = _inventory(
+                collection_id=collection_id, byte_count=byte_count
             )
-            local_materialization._store_inventory(
+            local_materialization._begin_inventory_refresh(
                 db,
-                record.header,
-                record.files,
-                inventory_identity=record.identity,
+                collection_id=collection_id,
+                inventory_identity=inventory_identity,
                 created_at=f"2026-07-19T20:55:0{collection_id}.000000Z",
+            )
+            local_materialization._store_inventory_page(
+                db,
+                collection_id=collection_id,
+                inventory_identity=inventory_identity,
+                files=_files,
+                next_cursor=None,
+                complete=True,
             )
             local_materialization._replace_local_tags(
                 db,
@@ -702,7 +737,7 @@ def test_local_list_pages_and_sorts_database_aggregates(
     )
     all_ids = runner.invoke(
         local_materialization.local_app,
-        ["list", "--sort", "bytes", "--order", "desc", "--all", "--ids"],
+        ["list", "--sort", "bytes", "--order", "desc", "--per-page", "3", "--ids"],
     )
 
     assert page.exit_code == 0

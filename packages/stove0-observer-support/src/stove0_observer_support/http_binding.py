@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 
@@ -23,6 +24,7 @@ from stove0_observer_support.runtime import (
 )
 
 _JSON_CONTENT_TYPE = "application/json"
+_LOG = logging.getLogger(__name__)
 _DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 _OBSERVER_HTTP_ERROR_STATUS = {
     "bad_request": 400,
@@ -78,6 +80,7 @@ class ObserverHttpBinding:
                 require_semantic_validators(self._semantic_validators, descriptor)
                 return _model_response(descriptor)
             except Exception:
+                _LOG.exception("content observer descriptor failed")
                 return _error(500, "observer_failed", "content observer descriptor failed")
         if normalized_method == "POST" and path == "/v1/observe":
             if len(body) > self.maximum_request_bytes:
@@ -90,6 +93,7 @@ class ObserverHttpBinding:
                 descriptor = ObserverDescriptor.model_validate(self.observer.descriptor())
                 require_semantic_validators(self._semantic_validators, descriptor)
             except Exception:
+                _LOG.exception("content observer descriptor failed")
                 return _error(500, "observer_failed", "content observer descriptor failed")
             try:
                 validate_observation_request(invocation.request, descriptor)
@@ -107,6 +111,7 @@ class ObserverHttpBinding:
                 )
                 return _model_response(result)
             except Exception:
+                _LOG.exception("content observer execution failed")
                 return _error(500, "observer_failed", "content observer execution failed")
         if path in {"/v1/observer", "/v1/observe"}:
             return _error(405, "method_not_allowed", "observer endpoint method is not allowed")

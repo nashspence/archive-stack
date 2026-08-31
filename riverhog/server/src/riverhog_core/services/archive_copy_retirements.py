@@ -22,11 +22,9 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
-    CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionMetadataPublicationRecord,
-    CollectionProofMaturationRecord,
     CollectionRecord,
     RetrievalJobObjectRecord,
     RetrievalJobRecord,
@@ -405,20 +403,6 @@ def _build_plan(
         )
         .order_by(ArchiveCopyRetirementRecord.store)
     ).all()
-    proof_maturation = db.scalar(
-        select(CollectionProofMaturationRecord.collection_id).where(
-            CollectionProofMaturationRecord.collection_id == collection_id,
-            CollectionProofMaturationRecord.store == store,
-            CollectionProofMaturationRecord.state == "upgrading",
-        )
-    )
-    attestation = db.scalar(
-        select(CollectionArchiveAttestationRecord.collection_id).where(
-            CollectionArchiveAttestationRecord.collection_id == collection_id,
-            CollectionArchiveAttestationRecord.store == store,
-            CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
-        )
-    )
     metadata_publication = db.scalar(
         select(CollectionMetadataPublicationRecord.collection_id).where(
             CollectionMetadataPublicationRecord.collection_id == collection_id,
@@ -455,10 +439,6 @@ def _build_plan(
         f"archive copy retirement is active: {retirement_store}"
         for retirement_store in other_retirements
     )
-    if proof_maturation is not None:
-        blockers.append(f"archive proof maturation is active: {store}")
-    if attestation is not None:
-        blockers.append(f"archive attestation is active: {store}")
     if metadata_publication is not None:
         blockers.append(f"collection metadata publication is active: {store}")
     if not retained:

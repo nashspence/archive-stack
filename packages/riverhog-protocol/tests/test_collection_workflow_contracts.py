@@ -6,6 +6,7 @@ import json
 import pytest
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
     CollectionRootIdentity,
     OperationIdentity,
@@ -65,22 +66,18 @@ def test_derivation_is_self_contained_and_canonical() -> None:
         fence=4,
         recipe=recipe,
         operation=operation,
-        inputs=roots(),
-        output_tags=("archive-video",),
+        input_set_sha256=SHA_A,
+        artifact_set_sha256=SHA_B,
+        output_tag_set_sha256=SHA_C,
         execution_envelope_sha256=SHA_A,
         execution_sha256=SHA_B,
         controller_evidence=CONTROLLER_EVIDENCE,
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        dispositions=(
-            ArtifactDisposition(11, SHA_A, "camera/a.mov", "transformed", ("video/a.mkv",)),
-            ArtifactDisposition(
-                12,
-                SHA_B,
-                "camera/b.mov",
-                "rejected",
-                code="invalid_container",
-                message="Container could not be decoded.",
-            ),
+        disposition_set=ArtifactDispositionSetIdentity(
+            disposition_count=2,
+            output_edge_count=1,
+            output_artifact_count=1,
+            sha256=SHA_D,
         ),
     )
 
@@ -115,7 +112,7 @@ def test_successful_disposition_cannot_hide_an_omission() -> None:
         )
 
 
-def test_derivation_rejects_duplicate_input_dispositions() -> None:
+def test_derivation_binds_the_exact_sealed_authorities() -> None:
     recipe = RecipeIdentity("camera-archive/v1", 3, SHA_C)
     operation = OperationIdentity("archive-video/v1", SHA_D)
     intent = TransformIntent.seal(
@@ -125,26 +122,23 @@ def test_derivation_rejects_duplicate_input_dispositions() -> None:
         effective_intent={},
         output_tags=("archive-video",),
     )
-    duplicate = ArtifactDisposition(
-        11,
-        SHA_A,
-        "camera/a.mov",
-        "transformed",
-        ("video/a.mkv",),
+    derivation = CollectionDerivation(
+        execution_id=intent.transform_id,
+        claim_id=intent.transform_id,
+        fence=4,
+        recipe=recipe,
+        operation=operation,
+        input_set_sha256=SHA_A,
+        artifact_set_sha256=SHA_B,
+        output_tag_set_sha256=SHA_C,
+        execution_envelope_sha256=SHA_A,
+        execution_sha256=SHA_B,
+        controller_evidence=CONTROLLER_EVIDENCE,
+        controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
+        disposition_set=ArtifactDispositionSetIdentity(2, 1, 1, SHA_D),
     )
 
-    with pytest.raises(ValueError, match="at most once"):
-        CollectionDerivation(
-            execution_id=intent.transform_id,
-            claim_id=intent.transform_id,
-            fence=4,
-            recipe=recipe,
-            operation=operation,
-            inputs=roots(),
-            output_tags=("archive-video",),
-            execution_envelope_sha256=SHA_A,
-            execution_sha256=SHA_B,
-            controller_evidence=CONTROLLER_EVIDENCE,
-            controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-            dispositions=(duplicate, duplicate),
-        )
+    assert derivation.input_set_sha256 == SHA_A
+    assert derivation.artifact_set_sha256 == SHA_B
+    assert derivation.output_tag_set_sha256 == SHA_C
+    assert derivation.disposition_set.sha256 == SHA_D

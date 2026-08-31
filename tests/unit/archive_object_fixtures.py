@@ -13,10 +13,17 @@ from riverhog_age import ResumableAgeScryptSession, decrypt_age_scrypt, encrypt_
 from riverhog_archive_contracts import (
     ARCHIVE_ENCRYPTION_FORMAT,
     ArchiveRootCiphertextIdentity,
+    CollectionArchiveTerminalDocument,
+    CollectionArchiveVolumeDocument,
     CollectionEncryptionBinding,
     RecoveryDescriptor,
+    format_archive_sequence,
 )
-from riverhog_core.archive_manifest import build_collection_archive_manifest
+from riverhog_core.archive_manifest import (
+    build_collection_archive_authority,
+    build_collection_archive_terminal_document,
+    collection_tree_identity,
+)
 from riverhog_core.archive_store_registry import ArchiveStoreBinding
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -30,7 +37,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_metadata import (
     collection_content_identity,
-    collection_record_manifest,
+    collection_inventory_identity,
 )
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -55,7 +62,6 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     ArchiveStore,
     CollectionArchiveIdentity,
-    CollectionArchiveUploadReceipt,
     MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
@@ -64,11 +70,20 @@ from riverhog_core.runtime_config import (
     DEV_ARCHIVE_PASSPHRASE_ID,
     RuntimeConfig,
 )
+from riverhog_protocol.paths import tag_set_identity
 from riverhog_provenance import (
+    PROVENANCE_BINDING_SEGMENT_FILES_MAX,
+    PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
     FileProvenanceBinding,
-    ProvenanceArchive,
-    build_provenance_archive,
+    ProvenancePayloadIdentity,
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
+    ProvenanceVolumeDocument,
+    binding_segment_bytes,
     create_observation_journal,
+    format_provenance_sequence,
+    parse_binding_segment,
+    update_ordered_volume_commitment,
     validate_journal,
 )
 from riverhog_storage_adapter_protocol import ObjectPlacement
@@ -89,21 +104,148 @@ class FixtureArchive:
     pack_plaintext: bytes
     manifest_bytes: bytes
     archive_root_sha256: str
-    proof_bytes: bytes
-    proof_sha256: str
     stored_objects: dict[str, bytes]
     pack_age_state_json: str
     pack_parts_json: str
     pack_plan_sha256: str
     pack_index_sha256: str
-    provenance: ProvenanceArchive | None = None
+    volume_documents: tuple[CollectionArchiveVolumeDocument, ...]
+    archive_terminal: CollectionArchiveTerminalDocument
+    provenance: FixtureProvenance | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureArchiveReceipt:
+    objects: tuple[ArchiveObjectUploadReceipt, ...]
+
+    def require_object(self, object_id: str) -> ArchiveObjectUploadReceipt:
+        for current in self.objects:
+            if current.object_id == object_id:
+                return current
+        raise KeyError(object_id)
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureProvenanceVolume:
+    document: ProvenanceVolumeDocument
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureProvenance:
+    root: ProvenanceRootDocument
+    volumes: tuple[FixtureProvenanceVolume, ...]
+    terminal: ProvenanceTerminalDocument
+
+    @property
+    def identity(self) -> str:
+        return self.root.identity
+
+
+def _fixture_provenance(
+    *,
+    archive_generation: str,
+    tree_sha256: str,
+    bindings: Sequence[FileProvenanceBinding],
+    journals: dict[str, bytes],
+) -> FixtureProvenance:
+    ordered_bindings = sorted(bindings, key=lambda item: item.path.encode("utf-8"))
+    volumes: list[FixtureProvenanceVolume] = []
+    commitment = hashlib.sha256()
+
+    def append(document: ProvenanceVolumeDocument, payload: bytes) -> None:
+        update_ordered_volume_commitment(commitment, document)
+        volumes.append(FixtureProvenanceVolume(document=document, payload=payload))
+
+    for first in range(0, len(ordered_bindings), PROVENANCE_BINDING_SEGMENT_FILES_MAX):
+        current = ordered_bindings[first : first + PROVENANCE_BINDING_SEGMENT_FILES_MAX]
+        rows: list[dict[str, object]] = []
+        for binding in current:
+            row: dict[str, object] = {
+                "path": binding.path,
+                "bytes": binding.bytes,
+                "sha256": binding.sha256,
+                "status": binding.status,
+            }
+            if binding.status == "captured":
+                row.update(
+                    {
+                        "journal_id": binding.journal_id,
+                        "current_state_id": binding.current_state_id,
+                    }
+                )
+            else:
+                row["omission_reason"] = binding.omission_reason
+            rows.append(row)
+        payload = binding_segment_bytes(first_file_order=first, files=rows)
+        sequence = len(volumes)
+        append(
+            ProvenanceVolumeDocument(
+                archive_generation=archive_generation,
+                archive_tree_sha256=tree_sha256,
+                sequence=sequence,
+                payload=ProvenancePayloadIdentity(
+                    kind="bindings",
+                    path=(
+                        f"provenance/payloads/volume-{format_provenance_sequence(sequence)}.bin.age"
+                    ),
+                    bytes=len(payload),
+                    sha256=hashlib.sha256(payload).hexdigest(),
+                ),
+                first_file_order=first,
+                file_count=len(current),
+            ),
+            payload,
+        )
+
+    for journal_id, content in sorted(journals.items()):
+        summary = validate_journal(content)
+        if summary.journal_id != journal_id:
+            raise AssertionError("fixture provenance journal identity differs")
+        for offset in range(0, len(content), PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX):
+            payload = content[offset : offset + PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX]
+            sequence = len(volumes)
+            append(
+                ProvenanceVolumeDocument(
+                    archive_generation=archive_generation,
+                    archive_tree_sha256=tree_sha256,
+                    sequence=sequence,
+                    payload=ProvenancePayloadIdentity(
+                        kind="journal",
+                        path=(
+                            "provenance/payloads/volume-"
+                            f"{format_provenance_sequence(sequence)}.bin.age"
+                        ),
+                        bytes=len(payload),
+                        sha256=hashlib.sha256(payload).hexdigest(),
+                    ),
+                    journal_id=journal_id,
+                    journal_offset=offset,
+                    journal_bytes=len(content),
+                    journal_sha256=hashlib.sha256(content).hexdigest(),
+                ),
+                payload,
+            )
+    terminal = ProvenanceTerminalDocument(
+        archive_generation=archive_generation,
+        archive_tree_sha256=tree_sha256,
+        sequence=len(volumes),
+    )
+    update_ordered_volume_commitment(commitment, terminal)
+    root = ProvenanceRootDocument(
+        archive_generation=archive_generation,
+        archive_tree_sha256=tree_sha256,
+        ordered_volume_sha256=commitment.hexdigest(),
+    )
+    return FixtureProvenance(root=root, volumes=tuple(volumes), terminal=terminal)
 
 
 def make_archive(
     files: dict[str, bytes],
     *,
     collection_id: int = COLLECTION_ID,
-    provenance: ProvenanceArchive | None = None,
+    provenance_bindings: Sequence[FileProvenanceBinding] = (),
+    provenance_journals: dict[str, bytes] | None = None,
 ) -> FixtureArchive:
     archive_files = tuple(
         ArchiveFile(path=path, bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
@@ -142,26 +284,58 @@ def make_archive(
         revision="fixture-pack-version",
         completed_at=UPLOADED_AT,
     )
+    archive_generation = "a" * 64
+    tree_sha256 = str(collection_tree_identity(archive_files)["sha256"])
+    provenance = (
+        _fixture_provenance(
+            archive_generation=archive_generation,
+            tree_sha256=tree_sha256,
+            bindings=provenance_bindings,
+            journals=provenance_journals or {},
+        )
+        if provenance_bindings or provenance_journals
+        else None
+    )
     sealed_provenance: list[SealedProvenanceObject] = []
     provenance_ciphertexts: dict[str, bytes] = {}
     if provenance is not None:
-        for object_id, kind, relative_path, content in (
+        artifacts = [
             *(
                 (
-                    bundle.bundle_id,
-                    "provenance-bundle",
-                    bundle.relative_path,
-                    bundle.content,
+                    f"provenance-payload-{format_provenance_sequence(volume.document.sequence)}",
+                    (
+                        "provenance-bindings"
+                        if volume.document.payload.kind == "bindings"
+                        else "provenance-journal-segment"
+                    ),
+                    volume.document.payload.path,
+                    volume.payload,
                 )
-                for bundle in provenance.bundles
+                for volume in provenance.volumes
+            ),
+            *(
+                (
+                    f"provenance-volume-{format_provenance_sequence(volume.document.sequence)}",
+                    "provenance-volume-metadata",
+                    volume.document.metadata_path,
+                    volume.document.to_json_bytes(),
+                )
+                for volume in provenance.volumes
             ),
             (
-                "provenance-index",
-                "provenance-index",
-                "provenance/index.json.age",
-                provenance.index_bytes,
+                f"provenance-terminal-{format_provenance_sequence(provenance.terminal.sequence)}",
+                "provenance-terminal",
+                provenance.terminal.metadata_path,
+                provenance.terminal.to_json_bytes(),
             ),
-        ):
+            (
+                "provenance-root",
+                "provenance-root",
+                "provenance/root.json.age",
+                provenance.root.to_json_bytes(),
+            ),
+        ]
+        for object_id, kind, relative_path, content in artifacts:
             provenance_ciphertext = encrypt_age_scrypt(content, DEV_ARCHIVE_PASSPHRASE, log_n=1)
             provenance_ciphertexts[relative_path] = provenance_ciphertext
             sealed_provenance.append(
@@ -177,16 +351,30 @@ def make_archive(
                     completed_at=UPLOADED_AT,
                 )
             )
-    manifest = build_collection_archive_manifest(
+    manifest, volume_documents = build_collection_archive_authority(
+        archive_generation=archive_generation,
         files=archive_files,
         packs=((plan, sealed),),
         provenance_identity=provenance.identity if provenance is not None else None,
-        provenance_objects=sealed_provenance,
+        provenance_objects=[item for item in sealed_provenance if item.kind == "provenance-root"],
     )
-    proof = (
-        "OpenTimestamps test proof v1\n"
-        f"file: manifest.json\nsha256: {hashlib.sha256(manifest).hexdigest()}\n"
-    ).encode()
+    main_metadata_ciphertexts: dict[str, bytes] = {}
+    for document in volume_documents:
+        relative_path = (
+            f"metadata/volume-{format_archive_sequence(document.volume.sequence)}.json.age"
+        )
+        main_metadata_ciphertexts[relative_path] = encrypt_age_scrypt(
+            document.to_json_bytes(), DEV_ARCHIVE_PASSPHRASE, log_n=1
+        )
+    archive_terminal = build_collection_archive_terminal_document(
+        archive_generation=archive_generation,
+        tree_sha256=tree_sha256,
+        sequence=len(volume_documents),
+    )
+    terminal_path = f"metadata/volume-{format_archive_sequence(archive_terminal.sequence)}.json.age"
+    main_metadata_ciphertexts[terminal_path] = encrypt_age_scrypt(
+        archive_terminal.to_json_bytes(), DEV_ARCHIVE_PASSPHRASE, log_n=1
+    )
     manifest_ciphertext = encrypt_age_scrypt(manifest, DEV_ARCHIVE_PASSPHRASE, log_n=1)
     recovery_descriptor = RecoveryDescriptor(
         encryption=CollectionEncryptionBinding(
@@ -199,7 +387,6 @@ def make_archive(
             stored_sha256=hashlib.sha256(manifest_ciphertext).hexdigest(),
         ),
     ).to_json_bytes()
-    proof_ciphertext = encrypt_age_scrypt(proof, DEV_ARCHIVE_PASSPHRASE, log_n=1)
     parts_json = json.dumps(
         [
             {
@@ -221,19 +408,19 @@ def make_archive(
         pack_plaintext=plaintext,
         manifest_bytes=manifest,
         archive_root_sha256=hashlib.sha256(manifest).hexdigest(),
-        proof_bytes=proof,
-        proof_sha256=hashlib.sha256(proof).hexdigest(),
         stored_objects={
             f"volumes/{plan.volume_id}.tar.age": pack_ciphertext,
+            **main_metadata_ciphertexts,
             **provenance_ciphertexts,
             "manifest.json.age": manifest_ciphertext,
             "recovery.json": recovery_descriptor,
-            "manifest.json.ots.age": proof_ciphertext,
         },
         pack_age_state_json=state_json,
         pack_parts_json=parts_json,
         pack_plan_sha256=plan.plan_sha256,
         pack_index_sha256=plan.index_sha256,
+        volume_documents=volume_documents,
+        archive_terminal=archive_terminal,
         provenance=provenance,
     )
 
@@ -273,7 +460,8 @@ def make_captured_provenance_archive(
     return make_archive(
         files,
         collection_id=collection_id,
-        provenance=build_provenance_archive(bindings=bindings, journals=journals),
+        provenance_bindings=bindings,
+        provenance_journals=journals,
     )
 
 
@@ -281,7 +469,7 @@ def archive_receipt(
     archive: FixtureArchive,
     *,
     prefix: str = "archives/opaque-docs",
-) -> CollectionArchiveUploadReceipt:
+) -> FixtureArchiveReceipt:
     rows: list[ArchiveObjectUploadReceipt] = [
         ArchiveObjectUploadReceipt(
             object_id=archive.pack_plan.volume_id,
@@ -298,23 +486,50 @@ def archive_receipt(
             verified_at=UPLOADED_AT,
         )
     ]
+    for document in archive.volume_documents:
+        sequence = document.volume.sequence
+        sequence_token = format_archive_sequence(sequence)
+        object_id = f"volume-metadata-{sequence_token}"
+        relative_path = f"metadata/volume-{sequence_token}.json.age"
+        plaintext = document.to_json_bytes()
+        stored = archive.stored_objects[relative_path]
+        rows.append(
+            ArchiveObjectUploadReceipt(
+                object_id=object_id,
+                kind="volume-metadata",
+                object_path=f"{prefix}/{relative_path}",
+                plaintext_bytes=len(plaintext),
+                stored_bytes=len(stored),
+                sha256=hashlib.sha256(plaintext).hexdigest(),
+                stored_sha256=hashlib.sha256(stored).hexdigest(),
+                revision=f"fixture-{object_id}-version",
+                uploaded_at=UPLOADED_AT,
+                verified_at=UPLOADED_AT,
+            )
+        )
+    terminal = archive.archive_terminal
+    terminal_sequence = format_archive_sequence(terminal.sequence)
+    object_id = f"volume-terminal-{terminal_sequence}"
+    relative_path = f"metadata/volume-{terminal_sequence}.json.age"
+    plaintext = terminal.to_json_bytes()
+    stored = archive.stored_objects[relative_path]
+    rows.append(
+        ArchiveObjectUploadReceipt(
+            object_id=object_id,
+            kind="volume-terminal",
+            object_path=f"{prefix}/{relative_path}",
+            plaintext_bytes=len(plaintext),
+            stored_bytes=len(stored),
+            sha256=hashlib.sha256(plaintext).hexdigest(),
+            stored_sha256=hashlib.sha256(stored).hexdigest(),
+            revision=f"fixture-{object_id}-version",
+            uploaded_at=UPLOADED_AT,
+            verified_at=UPLOADED_AT,
+        )
+    )
     if archive.provenance is not None:
-        for object_id, kind, relative_path, plaintext in (
-            *(
-                (
-                    bundle.bundle_id,
-                    "provenance-bundle",
-                    bundle.relative_path,
-                    bundle.content,
-                )
-                for bundle in archive.provenance.bundles
-            ),
-            (
-                "provenance-index",
-                "provenance-index",
-                "provenance/index.json.age",
-                archive.provenance.index_bytes,
-            ),
+        for object_id, kind, relative_path, plaintext in _fixture_provenance_artifacts(
+            archive.provenance
         ):
             stored = archive.stored_objects[relative_path]
             rows.append(
@@ -359,23 +574,9 @@ def archive_receipt(
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             ),
-            ArchiveObjectUploadReceipt(
-                object_id="proof",
-                kind="proof",
-                object_path=f"{prefix}/manifest.json.ots.age",
-                plaintext_bytes=len(archive.proof_bytes),
-                stored_bytes=len(archive.stored_objects["manifest.json.ots.age"]),
-                sha256=archive.proof_sha256,
-                stored_sha256=hashlib.sha256(
-                    archive.stored_objects["manifest.json.ots.age"]
-                ).hexdigest(),
-                revision="fixture-proof-version",
-                uploaded_at=UPLOADED_AT,
-                verified_at=UPLOADED_AT,
-            ),
         )
     )
-    return CollectionArchiveUploadReceipt(objects=tuple(rows))
+    return FixtureArchiveReceipt(objects=tuple(rows))
 
 
 def add_archive_copy(
@@ -429,16 +630,30 @@ def add_archive_copy(
         )
     copy.objects.append(pack_record)
     provenance_artifacts = (
-        [(bundle.bundle_id, "provenance-bundle") for bundle in archive.provenance.bundles]
-        + [("provenance-index", "provenance-index")]
+        [
+            (object_id, kind)
+            for object_id, kind, _relative_path, _content in _fixture_provenance_artifacts(
+                archive.provenance
+            )
+        ]
         if archive.provenance is not None
         else []
     )
     artifacts = [
+        *(
+            (
+                f"volume-metadata-{format_archive_sequence(document.volume.sequence)}",
+                "volume-metadata",
+            )
+            for document in archive.volume_documents
+        ),
+        (
+            f"volume-terminal-{format_archive_sequence(archive.archive_terminal.sequence)}",
+            "volume-terminal",
+        ),
         *provenance_artifacts,
         ("manifest", "manifest"),
         ("recovery-descriptor", "recovery-descriptor"),
-        ("proof", "proof"),
     ]
     for order, (object_id, kind) in enumerate(artifacts, start=1):
         object_receipt = receipt.require_object(object_id)
@@ -462,6 +677,47 @@ def add_archive_copy(
     return copy
 
 
+def _fixture_provenance_artifacts(
+    provenance: FixtureProvenance,
+) -> list[tuple[str, str, str, bytes]]:
+    return [
+        *(
+            (
+                f"provenance-payload-{format_provenance_sequence(volume.document.sequence)}",
+                (
+                    "provenance-bindings"
+                    if volume.document.payload.kind == "bindings"
+                    else "provenance-journal-segment"
+                ),
+                volume.document.payload.path,
+                volume.payload,
+            )
+            for volume in provenance.volumes
+        ),
+        *(
+            (
+                f"provenance-volume-{format_provenance_sequence(volume.document.sequence)}",
+                "provenance-volume-metadata",
+                volume.document.metadata_path,
+                volume.document.to_json_bytes(),
+            )
+            for volume in provenance.volumes
+        ),
+        (
+            f"provenance-terminal-{format_provenance_sequence(provenance.terminal.sequence)}",
+            "provenance-terminal",
+            provenance.terminal.metadata_path,
+            provenance.terminal.to_json_bytes(),
+        ),
+        (
+            "provenance-root",
+            "provenance-root",
+            "provenance/root.json.age",
+            provenance.root.to_json_bytes(),
+        ),
+    ]
+
+
 def seed_archive_copy(
     path: Path,
     files: dict[str, bytes],
@@ -480,7 +736,7 @@ def seed_archive_copy(
         provenance_identity = (
             current.provenance.identity if current.provenance is not None else None
         )
-        _manifest, inventory_identity = collection_record_manifest(
+        _header, inventory_identity = collection_inventory_identity(
             collection_id=current.collection_id,
             content_identity=content_identity,
             encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
@@ -502,7 +758,9 @@ def seed_archive_copy(
             creation_idempotency_key="fixture-docs",
             creation_identity_sha256=f"{current.collection_id:064x}",
             creation_custody_mode="producer-retained",
+            archive_generation=json.loads(current.manifest_bytes)["archive_generation"],
             content_identity=content_identity,
+            tag_set_identity=tag_set_identity(("docs",)),
             encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
             passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
@@ -562,17 +820,20 @@ def _pack_member_offset(archive: FixtureArchive, path: str) -> int:
         return pack.getmember(path).offset_data
 
 
-def _provenance_mode(provenance: ProvenanceArchive | None) -> str:
+def _provenance_mode(provenance: FixtureProvenance | None) -> str:
     if provenance is None:
         return "omitted"
-    index = json.loads(provenance.index_bytes)
-    return (
-        "mixed" if any(current["status"] == "omitted" for current in index["files"]) else "captured"
-    )
+    for volume in provenance.volumes:
+        if volume.document.payload.kind != "bindings":
+            continue
+        _first, bindings = parse_binding_segment(volume.payload)
+        if any(current.get("status") == "omitted" for current in bindings):
+            return "mixed"
+    return "captured"
 
 
 def _archive_relative_path(object_path: str) -> str:
-    for prefix in ("volumes/", "provenance/"):
+    for prefix in ("provenance/", "volumes/", "metadata/"):
         if prefix in object_path:
             return object_path[object_path.index(prefix) :]
     return object_path.rsplit("/", 1)[-1]
@@ -598,8 +859,6 @@ class MemoryArchiveStore:
         self.deleted: list[tuple[str, ...]] = []
         self.discarded_uploads: list[str] = []
         self.published_metadata: list[tuple[int, str, bytes]] = []
-        self.replaced_proofs: list[bytes] = []
-        self.attestation_artifacts: dict[str, bytes] = {}
         self.objects: dict[str, bytes] = {}
         self.object_metadata: dict[str, dict[str, str]] = {}
         self.object_content_types: dict[str, str] = {}
@@ -730,14 +989,23 @@ class MemoryArchiveStore:
         _ = content_type
         assert placement == "immediate"
         existing = self.objects.get(object_path)
-        if existing is not None and (
-            existing != content
-            or self.object_metadata.get(object_path) != required_identity_assertions
-        ):
-            raise ArchiveObjectIdentityConflict(object_path)
+        if existing is not None:
+            if self.object_metadata.get(object_path) != required_identity_assertions:
+                raise ArchiveObjectIdentityConflict(object_path)
+            return self._immutable_receipt(object_path, existing)
         self.objects[object_path] = content
         self.object_content_types[object_path] = content_type
         self.object_metadata[object_path] = dict(required_identity_assertions)
+        return ImmutableObjectReceipt(
+            object_path=object_path,
+            revision=self._version(content),
+            entity_token=hashlib.md5(content, usedforsecurity=False).hexdigest(),
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
+            completed_at=UPLOADED_AT,
+        )
+
+    def _immutable_receipt(self, object_path: str, content: bytes) -> ImmutableObjectReceipt:
         return ImmutableObjectReceipt(
             object_path=object_path,
             revision=self._version(content),
@@ -831,111 +1099,6 @@ class MemoryArchiveStore:
         )
         return ArchiveArtifactRead(receipt=receipt, content=content)
 
-    def replace_archive_proof(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-        proof_bytes: bytes,
-        passphrase_id: str,
-    ) -> ArchiveObjectUploadReceipt:
-        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
-        assert collection_id == COLLECTION_ID
-        assert object.object_id == "proof"
-        assert self.archive is not None
-        self.replaced_proofs.append(proof_bytes)
-        ciphertext = encrypt_age_scrypt(proof_bytes, DEV_ARCHIVE_PASSPHRASE, log_n=1)
-        self.objects[object.object_path] = ciphertext
-        self.archive = replace(
-            self.archive,
-            proof_bytes=proof_bytes,
-            proof_sha256=hashlib.sha256(proof_bytes).hexdigest(),
-            stored_objects={
-                **self.archive.stored_objects,
-                "manifest.json.ots.age": ciphertext,
-            },
-        )
-        return ArchiveObjectUploadReceipt(
-            object_id="proof",
-            kind="proof",
-            object_path=object.object_path,
-            plaintext_bytes=len(proof_bytes),
-            stored_bytes=len(ciphertext),
-            sha256=hashlib.sha256(proof_bytes).hexdigest(),
-            stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
-            revision=self._version(ciphertext),
-            uploaded_at=UPLOADED_AT,
-            verified_at=UPLOADED_AT,
-        )
-
-    def publish_archive_attestation(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        checksums: bytes,
-        signature: bytes,
-        proof: bytes,
-    ) -> CollectionArchiveUploadReceipt:
-        assert collection_id == COLLECTION_ID
-        content_by_id = {
-            "checksums": checksums,
-            "signature": signature,
-            "signature-proof": proof,
-        }
-        self.attestation_artifacts.update(content_by_id)
-        filenames = {
-            "checksums": "SHA256SUMS",
-            "signature": "SHA256SUMS.minisig",
-            "signature-proof": "SHA256SUMS.minisig.ots",
-        }
-        return CollectionArchiveUploadReceipt(
-            objects=tuple(
-                _plaintext_receipt(
-                    object_id=object_id,
-                    object_path=f"{archive_storage_prefix}/{filenames[object_id]}",
-                    content=content,
-                    revision=self._version(content),
-                )
-                for object_id, content in content_by_id.items()
-            )
-        )
-
-    def read_archive_attestation_artifact(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-    ) -> ArchiveArtifactRead:
-        assert collection_id == COLLECTION_ID
-        content = self.attestation_artifacts[object.object_id]
-        return ArchiveArtifactRead(
-            receipt=_plaintext_receipt(
-                object_id=object.object_id,
-                object_path=object.object_path,
-                content=content,
-                revision=object.revision,
-            ),
-            content=content,
-        )
-
-    def replace_archive_attestation_proof(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-        proof_bytes: bytes,
-    ) -> ArchiveObjectUploadReceipt:
-        assert collection_id == COLLECTION_ID
-        assert object.object_id == "signature-proof"
-        self.attestation_artifacts[object.object_id] = proof_bytes
-        return _plaintext_receipt(
-            object_id=object.object_id,
-            object_path=object.object_path,
-            content=proof_bytes,
-            revision=self._version(proof_bytes),
-        )
-
     def prepare_archive_objects_read(
         self,
         *,
@@ -1018,26 +1181,4 @@ def archive_store_binding(store: MemoryArchiveStore) -> ArchiveStoreBinding:
         resumable_objects=store,
         immutable_objects=store,
         object_ranges=store,
-    )
-
-
-def _plaintext_receipt(
-    *,
-    object_id: str,
-    object_path: str,
-    content: bytes,
-    revision: str | None,
-) -> ArchiveObjectUploadReceipt:
-    digest = hashlib.sha256(content).hexdigest()
-    return ArchiveObjectUploadReceipt(
-        object_id=object_id,
-        kind=object_id,
-        object_path=object_path,
-        plaintext_bytes=len(content),
-        stored_bytes=len(content),
-        sha256=digest,
-        stored_sha256=digest,
-        revision=revision,
-        uploaded_at=UPLOADED_AT,
-        verified_at=UPLOADED_AT,
     )

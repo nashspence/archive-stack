@@ -1,30 +1,45 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Callable, Iterator
-from functools import partial
-from itertools import zip_longest
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, cast
 
 from http_api_contracts import closed_literal_values
-from riverhog_protocol import ProvenanceSort, ProvenanceStatus, SortOrder
+from riverhog_protocol import (
+    DERIVATION_EVIDENCE_PATH,
+    ProvenanceSort,
+    ProvenanceStatus,
+    SortOrder,
+)
 from riverhog_protocol.errors import BadRequest, InvalidState, NotFound
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_collection_id,
     normalize_relpath,
+    relpath_sort_key,
     text_search_key,
 )
 from riverhog_provenance import (
+    PROVENANCE_BINDING_SEGMENT_FILES_MAX,
+    PROVENANCE_JOURNAL_ENTRY_BYTES_MAX,
+    PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
     FileProvenanceBinding,
-    JournalSummary,
+    ProvenancePayloadIdentity,
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
     ProvenanceValidationError,
-    reconstruct_provenance_archive_identity,
-    validate_journal_chunks,
-    validate_provenance_archive,
-    verify_payload_binding,
+    ProvenanceVolumeDocument,
+    binding_segment_bytes,
+    bounded_binding_segment_bytes,
+    format_provenance_sequence,
+    update_ordered_volume_commitment,
 )
-from sqlalchemy import and_, asc, delete, desc, func, insert, select, update
+from riverhog_provenance.journal import (
+    resolve_incremental_journal_current_state,
+    validate_incremental_journal_entry,
+)
+from sqlalchemy import and_, asc, case, delete, desc, func, or_, select, tuple_, update
 from sqlalchemy.orm import Session
 from state_schema import read_snapshot
 from time_formats import utc_timestamp_now
@@ -47,13 +62,15 @@ from riverhog_core.catalog_models import (
     CollectionProvenanceJournalAgentRecord,
     CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
+    CollectionProvenanceVerificationAgentRecord,
+    CollectionProvenanceVerificationEntityRecord,
+    CollectionProvenanceVerificationEntryRecord,
+    CollectionProvenanceVerificationExternalStateRecord,
+    CollectionProvenanceVerificationReachabilityRecord,
     CollectionProvenanceVerificationRecord,
     CollectionRecord,
 )
-from riverhog_core.provenance_projection import (
-    ProvenanceJournalProjection,
-    provenance_journal_projection,
-)
+from riverhog_core.checkpoint_sha256 import CheckpointSHA256
 from riverhog_core.runtime_config import RuntimeConfig
 
 _SORT_FIELDS = closed_literal_values(ProvenanceSort)
@@ -295,6 +312,49 @@ class SqlAlchemyProvenanceService:
                 raise NotFound(f"provenance journal not found: {journal_id}")
             yield from _iter_journal_chunks(session, collection_id, journal_id)
 
+    def iter_journal_range(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        offset: int,
+        size: int,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[bytes]:
+        """Yield one exact bounded range without reading preceding journal bytes."""
+
+        collection_id = _collection_id(collection_id)
+        if isinstance(offset, bool) or offset < 0:
+            raise BadRequest("provenance journal range offset is invalid")
+        if isinstance(size, bool) or size < 1:
+            raise BadRequest("provenance journal range size is invalid")
+        with read_snapshot(self._session_factory) as session:
+            _authorized_collection(session, collection_id, principal)
+            if not principal.allows_collection(PROVENANCE_EXPORT, collection_id):
+                raise NotFound(f"collection not found: {collection_id}")
+            if not _journal_is_in_artifact_scope(
+                session,
+                collection_id,
+                journal_id,
+                principal,
+            ):
+                raise NotFound(f"provenance journal not found: {journal_id}")
+            record = session.get(
+                CollectionProvenanceJournalRecord,
+                (collection_id, journal_id),
+            )
+            if record is None:
+                raise NotFound(f"provenance journal not found: {journal_id}")
+            if offset + size > record.bytes:
+                raise BadRequest("provenance journal range is outside the journal")
+            yield from _iter_journal_chunk_range(
+                session,
+                collection_id,
+                journal_id,
+                offset=offset,
+                size=size,
+            )
+
     def list_journal_agents(
         self,
         collection_id: int,
@@ -383,6 +443,8 @@ class SqlAlchemyProvenanceService:
                     next_attempt_at=now,
                     attempts=0,
                     cancel_requested=False,
+                    phase="metadata",
+                    checkpoint_json="{}",
                 )
                 session.add(record)
                 session.flush()
@@ -397,6 +459,12 @@ class SqlAlchemyProvenanceService:
                 record.cancel_requested = False
                 record.result_json = None
                 record.failure = None
+                record.phase = "cleanup"
+                record.checkpoint_json = json.dumps(
+                    {"cleanup_stage": "reachability", "restart_after_cleanup": True},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             return _verification_payload(record)
 
     def get_verification(
@@ -467,14 +535,7 @@ class SqlAlchemyProvenanceService:
             if collection_id is None:
                 break
             try:
-                result = self.verify(
-                    collection_id,
-                    principal=_INTERNAL_VERIFIER,
-                    cancel_requested=partial(
-                        self._verification_cancel_requested,
-                        collection_id,
-                    ),
-                )
+                result = self._advance_verification(collection_id)
             except _VerificationCanceled:
                 self._finish_verification(collection_id, state="canceled")
             except Exception as exc:
@@ -484,9 +545,60 @@ class SqlAlchemyProvenanceService:
                     failure=f"{type(exc).__name__}: {exc}"[:1000],
                 )
             else:
-                self._finish_verification(collection_id, state="succeeded", result=result)
+                if result is None:
+                    self._requeue_verification(collection_id)
+                else:
+                    self._finish_verification(collection_id, state="succeeded", result=result)
             processed += 1
         return processed
+
+    def _advance_verification(self, collection_id: int) -> dict[str, Any] | None:
+        """Advance one bounded, restartable verification checkpoint."""
+
+        with session_scope(self._session_factory) as session:
+            record = session.scalar(
+                select(CollectionProvenanceVerificationRecord)
+                .where(CollectionProvenanceVerificationRecord.collection_id == collection_id)
+                .with_for_update()
+            )
+            if record is None or record.cancel_requested or record.state == "canceling":
+                raise _VerificationCanceled
+            collection = _authorized_collection(session, collection_id, _INTERNAL_VERIFIER)
+            if record.phase == "metadata":
+                return _advance_verification_metadata(session, record, collection)
+            if record.phase == "identity-tree":
+                _advance_verification_tree(session, record)
+            elif record.phase == "identity-bindings":
+                _advance_verification_binding_identity(session, record, collection)
+            elif record.phase == "identity-journals":
+                _advance_verification_journal_identity(session, record, collection)
+            elif record.phase == "journal-entries":
+                _advance_verification_journal_entry(session, record)
+            elif record.phase == "references":
+                _advance_verification_projection_comparison(session, record)
+            elif record.phase == "reachability":
+                result = _advance_verification_reachability(session, record, collection)
+                if result is not None:
+                    return result
+            elif record.phase == "cleanup":
+                return _advance_verification_cleanup(session, record, collection)
+            elif record.phase == "complete":
+                return _verification_result(record, collection)
+            else:  # pragma: no cover - constrained durable state
+                raise InvalidState("provenance verification phase is invalid")
+            return None
+
+    def _requeue_verification(self, collection_id: int) -> None:
+        with session_scope(self._session_factory) as session:
+            record = session.get(CollectionProvenanceVerificationRecord, collection_id)
+            if record is None:
+                return
+            if record.cancel_requested or record.state == "canceling":
+                record.state = "canceled"
+                record.finished_at = utc_timestamp_now()
+                return
+            record.state = "queued"
+            record.next_attempt_at = utc_timestamp_now()
 
     def _claim_due_verification(self) -> int | None:
         now = utc_timestamp_now()
@@ -515,11 +627,6 @@ class SqlAlchemyProvenanceService:
             record.failure = None
             return record.collection_id
 
-    def _verification_cancel_requested(self, collection_id: int) -> bool:
-        with session_scope(self._session_factory) as session:
-            record = session.get(CollectionProvenanceVerificationRecord, collection_id)
-            return record is None or record.cancel_requested or record.state == "canceling"
-
     def _finish_verification(
         self,
         collection_id: int,
@@ -542,373 +649,139 @@ class SqlAlchemyProvenanceService:
             )
             record.failure = failure
 
-    def verify(
-        self,
-        collection_id: int,
-        *,
-        principal: ApplicationPrincipal,
-        cancel_requested: Callable[[], bool] | None = None,
-    ) -> dict[str, Any]:
-        collection_id = _collection_id(collection_id)
-        if principal.has_artifact_scope:
-            raise NotFound(f"collection not found: {collection_id}")
-        if cancel_requested is not None and cancel_requested():
-            raise _VerificationCanceled
-        with read_snapshot(self._session_factory) as session:
-            collection = _authorized_collection(session, collection_id, principal)
-            files = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionFileRecord)
-                    .where(CollectionFileRecord.collection_id == collection_id)
-                )
-                or 0
-            )
-            bindings = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionFileProvenanceRecord)
-                    .where(CollectionFileProvenanceRecord.collection_id == collection_id)
-                )
-                or 0
-            )
-            journals = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionProvenanceJournalRecord)
-                    .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
-                )
-                or 0
-            )
-            entities = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionProvenanceEntityRecord)
-                    .where(CollectionProvenanceEntityRecord.collection_id == collection_id)
-                )
-                or 0
-            )
-            external_state_references = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionProvenanceExternalStateReferenceRecord)
-                    .where(
-                        CollectionProvenanceExternalStateReferenceRecord.collection_id
-                        == collection_id
-                    )
-                )
-                or 0
-            )
-            mismatched_status = session.scalar(
-                select(CollectionFileRecord.path)
-                .outerjoin(
-                    CollectionFileProvenanceRecord,
-                    (
-                        CollectionFileProvenanceRecord.collection_id
-                        == CollectionFileRecord.collection_id
-                    )
-                    & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
-                )
-                .where(
-                    CollectionFileRecord.collection_id == collection_id,
-                    CollectionFileRecord.provenance_status
-                    != func.coalesce(
-                        CollectionFileProvenanceRecord.status,
-                        "omitted" if collection.provenance_mode == "omitted" else "missing",
-                    ),
-                )
-                .limit(1)
-            )
-            if mismatched_status is not None:
-                raise InvalidState("catalog file provenance status projection differs")
-            if collection.provenance_mode == "omitted":
-                nonomitted = session.scalar(
-                    select(CollectionFileProvenanceRecord.path)
-                    .where(
-                        CollectionFileProvenanceRecord.collection_id == collection_id,
-                        CollectionFileProvenanceRecord.status != "omitted",
-                    )
-                    .limit(1)
-                )
-                if journals or entities or external_state_references or nonomitted is not None:
-                    raise InvalidState("collection-wide provenance omission is inconsistent")
-                return {
-                    "collection_id": collection_id,
-                    "valid": True,
-                    "provenance_mode": "omitted",
-                    "provenance_identity": None,
-                    "files": files,
-                    "journals": 0,
-                    "entities": 0,
-                }
-            if bindings != files:
-                raise InvalidState("provenance does not account for every collection file")
 
-            def binding_factory() -> Iterator[FileProvenanceBinding]:
-                if cancel_requested is not None and cancel_requested():
-                    raise _VerificationCanceled
-                return _iter_file_provenance_bindings(session, collection_id)
-
-            def journal_factory() -> Iterator[tuple[str, bytes]]:
-                for journal in _iter_journal_bytes(session, collection_id):
-                    if cancel_requested is not None and cancel_requested():
-                        raise _VerificationCanceled
-                    yield journal
-
-            try:
-                identity = reconstruct_provenance_archive_identity(
-                    bindings=binding_factory,
-                    journals=journal_factory,
-                )
-            except ProvenanceValidationError as exc:
-                raise InvalidState(str(exc)) from exc
-            if identity != collection.provenance_identity:
-                raise InvalidState("catalog provenance identity does not match exact bytes")
-            projected_entities = 0
-            for journal_id in _iter_journal_ids(session, collection_id):
-                if cancel_requested is not None and cancel_requested():
-                    raise _VerificationCanceled
-                journal = session.scalar(
-                    select(CollectionProvenanceJournalRecord).where(
-                        CollectionProvenanceJournalRecord.collection_id == collection_id,
-                        CollectionProvenanceJournalRecord.journal_id == journal_id,
-                    )
-                )
-                if journal is None:
-                    raise InvalidState("catalog provenance journal disappeared during snapshot")
-                stored_bytes = int(
-                    session.scalar(
-                        select(
-                            func.coalesce(
-                                func.sum(
-                                    func.length(CollectionProvenanceJournalChunkRecord.content)
-                                ),
-                                0,
-                            )
-                        ).where(
-                            CollectionProvenanceJournalChunkRecord.collection_id == collection_id,
-                            CollectionProvenanceJournalChunkRecord.journal_id == journal_id,
-                        )
-                    )
-                    or 0
-                )
-                if stored_bytes != journal.bytes:
-                    raise InvalidState("catalog provenance journal byte count differs")
-                try:
-                    summary = validate_journal_chunks(
-                        _iter_journal_chunks(session, collection_id, journal_id)
-                    )
-                except ProvenanceValidationError as exc:
-                    raise InvalidState(str(exc)) from exc
-                projection = provenance_journal_projection(
-                    collection_id=collection_id,
-                    journal_id=journal_id,
-                    summary=summary,
-                )
-                _verify_journal_summary(journal, projection)
-                _verify_journal_payload_bindings(
-                    session,
-                    collection_id=collection_id,
-                    journal_id=journal_id,
-                    summary=summary,
-                )
-                _verify_journal_entities(session, collection_id, journal_id, projection)
-                _verify_journal_references(session, collection_id, journal_id, projection)
-                projected_entities += len(projection.entities)
-                session.expunge(journal)
-            if projected_entities != entities:
-                raise InvalidState("catalog provenance projection differs from exact journals")
-            reachable = _reachable_journals(
-                select(CollectionFileProvenanceRecord.journal_id.label("journal_id"))
-                .where(
-                    CollectionFileProvenanceRecord.collection_id == collection_id,
-                    CollectionFileProvenanceRecord.status == "captured",
-                    CollectionFileProvenanceRecord.journal_id.is_not(None),
-                )
-                .distinct(),
-                collection_id=collection_id,
-                name="verify_reachable_journals",
-            )
-            reachable_count = int(session.scalar(select(func.count()).select_from(reachable)) or 0)
-            if reachable_count != journals:
-                raise InvalidState("provenance contains an unreachable journal")
-            return {
-                "collection_id": collection_id,
-                "valid": True,
-                "provenance_mode": collection.provenance_mode,
-                "provenance_identity": identity,
-                "files": files,
-                "journals": journals,
-                "entities": entities,
-            }
-
-    def rebuild_catalog_projection(
-        self,
-        collection_id: int,
-        *,
-        index_content: bytes,
-        bundles: dict[str, bytes],
-    ) -> dict[str, Any]:
-        """Rebuild disposable PostgreSQL provenance rows from immutable archive bytes."""
-
-        collection_id = _collection_id(collection_id)
-        validated = validate_provenance_archive(index_content, bundles)
-        with session_scope(self._session_factory) as session:
-            collection = session.get(CollectionRecord, collection_id)
-            if collection is None:
-                raise NotFound(f"collection not found: {collection_id}")
-            mode = (
-                "mixed"
-                if any(item.status == "omitted" for item in validated.bindings)
-                else "captured"
-            )
-            if (
-                collection.provenance_mode != mode
-                or collection.provenance_identity != validated.identity
-            ):
-                raise InvalidState("immutable provenance identity differs from the collection")
-            files = {
-                item.path: item
-                for item in session.scalars(
-                    select(CollectionFileRecord).where(
-                        CollectionFileRecord.collection_id == collection_id
-                    )
-                )
-            }
-            if set(files) != {item.path for item in validated.bindings}:
-                raise InvalidState("immutable provenance does not account for every catalog file")
-            for binding in validated.bindings:
-                file = files[binding.path]
-                if file.bytes != binding.bytes or file.sha256 != binding.sha256:
-                    raise InvalidState(
-                        f"immutable provenance payload binding differs from catalog: {binding.path}"
-                    )
-
-            session.execute(
-                delete(CollectionProvenanceExternalStateReferenceRecord).where(
-                    CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id
-                )
-            )
-            session.execute(
-                delete(CollectionProvenanceEntityRecord).where(
-                    CollectionProvenanceEntityRecord.collection_id == collection_id
-                )
-            )
-            session.execute(
-                delete(CollectionFileProvenanceRecord).where(
-                    CollectionFileProvenanceRecord.collection_id == collection_id
-                )
-            )
-            session.execute(
-                delete(CollectionProvenanceJournalRecord).where(
-                    CollectionProvenanceJournalRecord.collection_id == collection_id
-                )
-            )
-            journal_records: list[CollectionProvenanceJournalRecord] = []
-            projections: dict[str, ProvenanceJournalProjection] = {}
-            for journal_id, content in sorted(validated.journal_bytes.items()):
-                summary = validated.journals[journal_id]
-                projection = provenance_journal_projection(
-                    collection_id=collection_id,
-                    journal_id=journal_id,
-                    summary=summary,
-                )
-                projections[journal_id] = projection
-                journal_records.append(
-                    CollectionProvenanceJournalRecord(
-                        collection_id=collection_id,
-                        journal_id=journal_id,
-                        bytes=len(content),
-                        sha256=summary.journal_sha256,
-                        entries=summary.entries,
-                        agent_count=len(summary.agent_ids),
-                        entity_counts_json=projection.entity_counts_json,
-                        current_state_id=summary.current_state_id,
-                        current_path=summary.current_path,
-                        current_bytes=summary.current_bytes,
-                        current_sha256=summary.current_sha256,
-                    )
-                )
-            session.add_all(journal_records)
-            session.flush()
-            for journal_id, content in sorted(validated.journal_bytes.items()):
-                for ordinal, offset in enumerate(
-                    range(0, len(content), _PROVENANCE_JOURNAL_CHUNK_BYTES)
-                ):
-                    session.add(
-                        CollectionProvenanceJournalChunkRecord(
-                            collection_id=collection_id,
-                            journal_id=journal_id,
-                            ordinal=ordinal,
-                            content=content[offset : offset + _PROVENANCE_JOURNAL_CHUNK_BYTES],
-                        )
-                    )
-            session.flush()
-            session.add_all(
-                CollectionFileProvenanceRecord(
-                    collection_id=collection_id,
-                    path=item.path,
-                    status=item.status,
-                    journal_id=item.journal_id,
-                    current_state_id=item.current_state_id,
-                    omission_reason=item.omission_reason,
-                )
-                for item in validated.bindings
-            )
-            session.flush()
-            binding_status = (
-                select(CollectionFileProvenanceRecord.status)
-                .where(
-                    CollectionFileProvenanceRecord.collection_id
-                    == CollectionFileRecord.collection_id,
-                    CollectionFileProvenanceRecord.path == CollectionFileRecord.path,
-                )
-                .correlate(CollectionFileRecord)
-                .scalar_subquery()
-            )
-            session.execute(
-                update(CollectionFileRecord)
-                .where(CollectionFileRecord.collection_id == collection_id)
-                .values(provenance_status=func.coalesce(binding_status, "missing"))
-            )
-            for journal_id in sorted(validated.journal_bytes):
-                session.add_all(projections[journal_id].entities)
-                session.add_all(projections[journal_id].external_state_references)
-                session.execute(
-                    insert(CollectionProvenanceJournalAgentRecord),
-                    [
-                        {
-                            "collection_id": collection_id,
-                            "journal_id": journal_id,
-                            "agent_id": agent_id,
-                        }
-                        for agent_id in sorted(validated.journals[journal_id].agent_ids)
-                    ],
-                )
-            session.flush()
-            entities = int(
-                session.scalar(
-                    select(func.count(CollectionProvenanceEntityRecord.entity_id)).where(
-                        CollectionProvenanceEntityRecord.collection_id == collection_id
-                    )
-                )
-                or 0
-            )
-            return {
-                "collection_id": collection_id,
-                "provenance_mode": mode,
-                "provenance_identity": validated.identity,
-                "files": len(validated.bindings),
-                "journals": len(journal_records),
-                "entities": entities,
-            }
+def _verification_checkpoint(
+    record: CollectionProvenanceVerificationRecord,
+) -> dict[str, Any]:
+    try:
+        value = json.loads(record.checkpoint_json)
+    except json.JSONDecodeError as exc:
+        raise InvalidState("provenance verification checkpoint is invalid") from exc
+    if not isinstance(value, dict):
+        raise InvalidState("provenance verification checkpoint is invalid")
+    return value
 
 
-def _iter_file_provenance_bindings(
+def _set_verification_checkpoint(
+    record: CollectionProvenanceVerificationRecord,
+    value: dict[str, Any],
+) -> None:
+    record.checkpoint_json = json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _advance_verification_metadata(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> dict[str, Any] | None:
+    collection_id = record.collection_id
+    files = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionFileRecord)
+            .where(CollectionFileRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+    bindings = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionFileProvenanceRecord)
+            .where(CollectionFileProvenanceRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+    journals = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionProvenanceJournalRecord)
+            .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+    entities = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionProvenanceEntityRecord)
+            .where(CollectionProvenanceEntityRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+    references = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionProvenanceExternalStateReferenceRecord)
+            .where(CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+    mismatch = session.scalar(
+        select(CollectionFileRecord.path)
+        .outerjoin(
+            CollectionFileProvenanceRecord,
+            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
+            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+        )
+        .where(
+            CollectionFileRecord.collection_id == collection_id,
+            CollectionFileRecord.provenance_status
+            != func.coalesce(
+                CollectionFileProvenanceRecord.status,
+                "omitted" if collection.provenance_mode == "omitted" else "missing",
+            ),
+        )
+        .limit(1)
+    )
+    if mismatch is not None:
+        raise InvalidState("catalog file provenance status projection differs")
+    checkpoint: dict[str, Any] = {
+        "files": files,
+        "journals": journals,
+        "entities": entities,
+        "references": references,
+        "archive_generation": collection.archive_generation,
+        "provenance_identity": collection.provenance_identity,
+        "provenance_mode": collection.provenance_mode,
+    }
+    if collection.provenance_mode == "omitted":
+        nonomitted = session.scalar(
+            select(CollectionFileProvenanceRecord.path)
+            .where(
+                CollectionFileProvenanceRecord.collection_id == collection_id,
+                CollectionFileProvenanceRecord.status != "omitted",
+            )
+            .limit(1)
+        )
+        if journals or entities or references or nonomitted is not None:
+            raise InvalidState("collection-wide provenance omission is inconsistent")
+        record.phase = "complete"
+        _set_verification_checkpoint(record, checkpoint)
+        return _verification_result(record, collection)
+    if bindings != files:
+        raise InvalidState("provenance does not account for every collection file")
+    checkpoint.update(
+        {
+            "after_path": None,
+            "file_order": 0,
+            "tree_hash_state": CheckpointSHA256().export_state(),
+        }
+    )
+    record.phase = "identity-tree"
+    _set_verification_checkpoint(record, checkpoint)
+    return None
+
+
+def _verification_binding_rows(
     session: Session,
     collection_id: int,
-) -> Iterator[FileProvenanceBinding]:
-    path_order = CollectionFileRecord.path_sort_key
+    *,
+    after_path: str | None,
+    limit: int,
+) -> list[tuple[CollectionFileRecord, CollectionFileProvenanceRecord]]:
+    terminal_rank = case(
+        (CollectionFileRecord.path == DERIVATION_EVIDENCE_PATH, 1),
+        else_=0,
+    )
     statement = (
         select(CollectionFileRecord, CollectionFileProvenanceRecord)
         .join(
@@ -917,27 +790,1029 @@ def _iter_file_provenance_bindings(
             & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
         )
         .where(CollectionFileRecord.collection_id == collection_id)
-        .order_by(path_order)
-        .execution_options(yield_per=100)
+        .order_by(terminal_rank, CollectionFileRecord.path_sort_key)
+        .limit(limit)
     )
-    for file, binding in session.execute(statement):
-        yield FileProvenanceBinding(
-            path=file.path,
-            bytes=file.bytes,
-            sha256=file.sha256,
-            status=binding.status,
-            journal_id=binding.journal_id,
-            current_state_id=binding.current_state_id,
-            omission_reason=binding.omission_reason,
+    if after_path is not None:
+        after_rank = 1 if after_path == DERIVATION_EVIDENCE_PATH else 0
+        statement = statement.where(
+            or_(
+                terminal_rank > after_rank,
+                and_(
+                    terminal_rank == after_rank,
+                    CollectionFileRecord.path_sort_key > relpath_sort_key(after_path),
+                ),
+            )
+        )
+    return list(session.execute(statement).tuples())
+
+
+def _advance_verification_tree(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+) -> None:
+    checkpoint = _verification_checkpoint(record)
+    digest = CheckpointSHA256.from_state(str(checkpoint["tree_hash_state"]))
+    rows = _verification_binding_rows(
+        session,
+        record.collection_id,
+        after_path=checkpoint.get("after_path"),
+        limit=PROVENANCE_BINDING_SEGMENT_FILES_MAX,
+    )
+    if rows:
+        for file, _binding in rows:
+            digest.update(f"{file.path}\t{file.bytes}\t{file.sha256}\n".encode())
+        checkpoint["after_path"] = rows[-1][0].path
+        checkpoint["file_order"] = int(checkpoint["file_order"]) + len(rows)
+        checkpoint["tree_hash_state"] = digest.export_state()
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    if int(checkpoint["file_order"]) != int(checkpoint["files"]):
+        raise InvalidState("provenance tree verification omitted collection files")
+    checkpoint.update(
+        {
+            "tree_sha256": digest.hexdigest(),
+            "after_path": None,
+            "file_order": 0,
+            "volume_sequence": 0,
+            "volume_hash_state": CheckpointSHA256().export_state(),
+        }
+    )
+    checkpoint.pop("tree_hash_state", None)
+    record.phase = "identity-bindings"
+    _set_verification_checkpoint(record, checkpoint)
+
+
+def _file_binding(
+    file: CollectionFileRecord,
+    binding: CollectionFileProvenanceRecord,
+) -> FileProvenanceBinding:
+    return FileProvenanceBinding(
+        path=file.path,
+        bytes=file.bytes,
+        sha256=file.sha256,
+        status=cast(Any, binding.status),
+        journal_id=binding.journal_id,
+        current_state_id=binding.current_state_id,
+        omission_reason=binding.omission_reason,
+    )
+
+
+def _advance_verification_binding_identity(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> None:
+    checkpoint = _verification_checkpoint(record)
+    rows = _verification_binding_rows(
+        session,
+        record.collection_id,
+        after_path=checkpoint.get("after_path"),
+        limit=PROVENANCE_BINDING_SEGMENT_FILES_MAX,
+    )
+    if not rows:
+        if int(checkpoint["file_order"]) != int(checkpoint["files"]):
+            raise InvalidState("provenance binding identity omitted collection files")
+        checkpoint.update(
+            {
+                "after_journal_id": None,
+                "current_journal_id": None,
+                "journal_offset": 0,
+                "journal_count": 0,
+            }
+        )
+        record.phase = "identity-journals"
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    bindings = [_file_binding(file, binding) for file, binding in rows]
+    _payload, used = bounded_binding_segment_bytes(
+        first_file_order=int(checkpoint["file_order"]),
+        files=[_binding_mapping(binding) for binding in bindings],
+    )
+    rows = rows[:used]
+    bindings = bindings[:used]
+    first_order = int(checkpoint["file_order"])
+    sequence = int(checkpoint["volume_sequence"])
+    document = _binding_volume_document(
+        archive_generation=collection.archive_generation,
+        tree_sha256=str(checkpoint["tree_sha256"]),
+        sequence=sequence,
+        first_file_order=first_order,
+        bindings=bindings,
+    )
+    digest = CheckpointSHA256.from_state(str(checkpoint["volume_hash_state"]))
+    _update_volume_digest(digest, document)
+    checkpoint.update(
+        {
+            "after_path": rows[-1][0].path,
+            "file_order": first_order + len(rows),
+            "volume_sequence": sequence + 1,
+            "volume_hash_state": digest.export_state(),
+        }
+    )
+    _set_verification_checkpoint(record, checkpoint)
+
+
+def _next_verification_journal(
+    session: Session,
+    collection_id: int,
+    after_journal_id: str | None,
+) -> CollectionProvenanceJournalRecord | None:
+    statement = select(CollectionProvenanceJournalRecord).where(
+        CollectionProvenanceJournalRecord.collection_id == collection_id
+    )
+    if after_journal_id is not None:
+        statement = statement.where(CollectionProvenanceJournalRecord.journal_id > after_journal_id)
+    return session.scalar(statement.order_by(CollectionProvenanceJournalRecord.journal_id).limit(1))
+
+
+def _advance_verification_journal_identity(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> None:
+    checkpoint = _verification_checkpoint(record)
+    journal_id = checkpoint.get("current_journal_id")
+    journal = (
+        session.get(
+            CollectionProvenanceJournalRecord,
+            (record.collection_id, str(journal_id)),
+        )
+        if journal_id is not None
+        else _next_verification_journal(
+            session,
+            record.collection_id,
+            checkpoint.get("after_journal_id"),
+        )
+    )
+    if journal is None:
+        if int(checkpoint["journal_count"]) != int(checkpoint["journals"]):
+            raise InvalidState("provenance identity omitted journals")
+        digest = CheckpointSHA256.from_state(str(checkpoint["volume_hash_state"]))
+        update_ordered_volume_commitment(
+            digest,
+            ProvenanceTerminalDocument(
+                archive_generation=collection.archive_generation,
+                archive_tree_sha256=str(checkpoint["tree_sha256"]),
+                sequence=int(checkpoint["volume_sequence"]),
+            ),
+        )
+        root = ProvenanceRootDocument(
+            archive_generation=collection.archive_generation,
+            archive_tree_sha256=str(checkpoint["tree_sha256"]),
+            ordered_volume_sha256=digest.hexdigest(),
+        )
+        if root.identity != collection.provenance_identity:
+            raise InvalidState("catalog provenance identity does not match exact bytes")
+        checkpoint.update(
+            {
+                "after_journal_id": None,
+                "current_journal_id": None,
+                "journal_offset": 0,
+                "journal_sequence": 0,
+                "journal_previous_entry_id": None,
+                "journal_previous_json_sha256": None,
+                "journal_primary_lineage_id": None,
+                "journal_primary_binding_json": None,
+                "journal_entity_counts": {},
+                "journal_hash_state": CheckpointSHA256().export_state(),
+            }
+        )
+        checkpoint.pop("volume_hash_state", None)
+        record.phase = "journal-entries"
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    if journal_id is None:
+        checkpoint["current_journal_id"] = journal.journal_id
+        checkpoint["journal_offset"] = 0
+    offset = int(checkpoint["journal_offset"])
+    if offset == journal.bytes:
+        checkpoint["after_journal_id"] = journal.journal_id
+        checkpoint["current_journal_id"] = None
+        checkpoint["journal_offset"] = 0
+        checkpoint["journal_count"] = int(checkpoint["journal_count"]) + 1
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    size = min(PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX, journal.bytes - offset)
+    payload = b"".join(
+        _iter_journal_chunk_range(
+            session,
+            record.collection_id,
+            journal.journal_id,
+            offset=offset,
+            size=size,
+        )
+    )
+    if len(payload) != size:
+        raise InvalidState("catalog provenance journal byte count differs")
+    sequence = int(checkpoint["volume_sequence"])
+    document = ProvenanceVolumeDocument(
+        archive_generation=collection.archive_generation,
+        archive_tree_sha256=str(checkpoint["tree_sha256"]),
+        sequence=sequence,
+        payload=ProvenancePayloadIdentity(
+            kind="journal",
+            path=(f"provenance/payloads/volume-{format_provenance_sequence(sequence)}.bin.age"),
+            bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        ),
+        journal_id=journal.journal_id,
+        journal_offset=offset,
+        journal_bytes=journal.bytes,
+        journal_sha256=journal.sha256,
+    )
+    digest = CheckpointSHA256.from_state(str(checkpoint["volume_hash_state"]))
+    _update_volume_digest(digest, document)
+    checkpoint.update(
+        {
+            "journal_offset": offset + size,
+            "volume_sequence": sequence + 1,
+            "volume_hash_state": digest.export_state(),
+        }
+    )
+    _set_verification_checkpoint(record, checkpoint)
+
+
+def _verification_journal_entry_bytes(
+    session: Session,
+    journal: CollectionProvenanceJournalRecord,
+    *,
+    offset: int,
+) -> bytes:
+    rows = session.execute(
+        select(
+            CollectionProvenanceJournalChunkRecord.byte_offset,
+            CollectionProvenanceJournalChunkRecord.content,
+        )
+        .where(
+            CollectionProvenanceJournalChunkRecord.collection_id == journal.collection_id,
+            CollectionProvenanceJournalChunkRecord.journal_id == journal.journal_id,
+            CollectionProvenanceJournalChunkRecord.byte_offset
+            + func.length(CollectionProvenanceJournalChunkRecord.content)
+            > offset,
+        )
+        .order_by(CollectionProvenanceJournalChunkRecord.byte_offset)
+        .limit(PROVENANCE_JOURNAL_ENTRY_BYTES_MAX // _PROVENANCE_JOURNAL_CHUNK_BYTES + 2)
+    )
+    content = bytearray()
+    expected = offset
+    found_boundary = False
+    for row_offset, raw_content in rows:
+        row_start = int(row_offset)
+        raw = bytes(raw_content)
+        start = max(0, expected - row_start)
+        if row_start > expected or start >= len(raw):
+            raise InvalidState("catalog provenance journal chunks are not contiguous")
+        content.extend(raw[start:])
+        expected = row_start + len(raw)
+        boundary = content.find(b"\x1e", 1)
+        if boundary >= 0:
+            del content[boundary:]
+            found_boundary = True
+            break
+        if len(content) > PROVENANCE_JOURNAL_ENTRY_BYTES_MAX:
+            raise InvalidState("provenance journal entry exceeds its bounded record contract")
+        if expected >= journal.bytes:
+            break
+    if not content or (expected < journal.bytes and not found_boundary):
+        raise InvalidState("provenance journal entry boundary is unavailable")
+    if len(content) > PROVENANCE_JOURNAL_ENTRY_BYTES_MAX:
+        raise InvalidState("provenance journal entry exceeds its bounded record contract")
+    return bytes(content)
+
+
+def _put_verification_agent(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    journal_id: str,
+    agent_id: str,
+) -> None:
+    key = (record.collection_id, journal_id, agent_id)
+    if session.get(CollectionProvenanceVerificationAgentRecord, key) is None:
+        session.add(
+            CollectionProvenanceVerificationAgentRecord(
+                collection_id=record.collection_id,
+                journal_id=journal_id,
+                agent_id=agent_id,
+            )
         )
 
 
-def _iter_journal_bytes(
+def _put_verification_entity(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    journal_id: str,
+    *,
+    entity_type: str,
+    entity_id: str,
+    entry_id: str,
+    document_json: str,
+) -> None:
+    key = (record.collection_id, journal_id, entity_type, entity_id)
+    existing = session.get(CollectionProvenanceVerificationEntityRecord, key)
+    if existing is None:
+        session.add(
+            CollectionProvenanceVerificationEntityRecord(
+                collection_id=record.collection_id,
+                journal_id=journal_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                entry_id=entry_id,
+                document_json=document_json,
+            )
+        )
+        return
+    if entity_type == "states" and existing.document_json != document_json:
+        raise InvalidState(f"provenance journal redefines state {entity_id}")
+    existing.entry_id = entry_id
+    existing.document_json = document_json
+
+
+def _validate_verification_binding(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    journal_id: str,
+    *,
+    binding_json: str,
+) -> None:
+    binding = json.loads(binding_json)
+    operation = binding.get("operation")
+    if operation == "unbind":
+        return
+    established_by = binding.get("established_by_capture_id") or binding.get(
+        "established_by_activity_id"
+    )
+    if (
+        not isinstance(established_by, str)
+        or session.scalar(
+            select(CollectionProvenanceVerificationEntityRecord.entity_id)
+            .where(
+                CollectionProvenanceVerificationEntityRecord.collection_id == record.collection_id,
+                CollectionProvenanceVerificationEntityRecord.journal_id == journal_id,
+                CollectionProvenanceVerificationEntityRecord.entity_type.in_(
+                    ("captures", "activities")
+                ),
+                CollectionProvenanceVerificationEntityRecord.entity_id == established_by,
+            )
+            .limit(1)
+        )
+        is None
+    ):
+        raise InvalidState("provenance payload binding has no exact establishing event")
+    state = binding.get("state")
+    if (
+        not isinstance(state, dict)
+        or state.get("scope") != "local"
+        or not isinstance(state.get("id"), str)
+        or session.get(
+            CollectionProvenanceVerificationEntityRecord,
+            (record.collection_id, journal_id, "states", str(state.get("id"))),
+        )
+        is None
+    ):
+        raise InvalidState("provenance payload binding references an absent local state")
+
+
+def _finish_verification_journal(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    journal: CollectionProvenanceJournalRecord,
+    checkpoint: dict[str, Any],
+) -> None:
+    digest = CheckpointSHA256.from_state(str(checkpoint["journal_hash_state"]))
+    binding_json = checkpoint.get("journal_primary_binding_json")
+    primary_lineage_id = checkpoint.get("journal_primary_lineage_id")
+    if not isinstance(binding_json, str) or not isinstance(primary_lineage_id, str):
+        raise InvalidState("provenance journal has no terminal primary binding")
+    binding = json.loads(binding_json)
+    state = binding.get("state")
+    if not isinstance(state, dict) or not isinstance(state.get("id"), str):
+        raise InvalidState("provenance journal primary binding is invalid")
+    state_row = session.get(
+        CollectionProvenanceVerificationEntityRecord,
+        (record.collection_id, journal.journal_id, "states", str(state["id"])),
+    )
+    if state_row is None:
+        raise InvalidState("provenance journal current state is absent")
+    current_state_id, current_path, current_bytes, current_sha256 = (
+        resolve_incremental_journal_current_state(
+            primary_lineage_id=primary_lineage_id,
+            binding_json=binding_json,
+            state_json=state_row.document_json,
+        )
+    )
+    agent_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionProvenanceVerificationAgentRecord)
+            .where(
+                CollectionProvenanceVerificationAgentRecord.collection_id == record.collection_id,
+                CollectionProvenanceVerificationAgentRecord.journal_id == journal.journal_id,
+            )
+        )
+        or 0
+    )
+    entity_counts_json = json.dumps(
+        checkpoint["journal_entity_counts"], sort_keys=True, separators=(",", ":")
+    )
+    if (
+        digest.hexdigest() != journal.sha256
+        or int(checkpoint["journal_offset"]) != journal.bytes
+        or int(checkpoint["journal_sequence"]) != journal.entries
+        or agent_count != journal.agent_count
+        or entity_counts_json != journal.entity_counts_json
+        or current_state_id != journal.current_state_id
+        or current_path != journal.current_path
+        or current_bytes != journal.current_bytes
+        or current_sha256 != journal.current_sha256
+    ):
+        raise InvalidState("catalog provenance journal summary differs from exact bytes")
+
+
+def _advance_verification_journal_entry(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+) -> None:
+    checkpoint = _verification_checkpoint(record)
+    journal_id = checkpoint.get("current_journal_id")
+    journal = (
+        session.get(
+            CollectionProvenanceJournalRecord,
+            (record.collection_id, str(journal_id)),
+        )
+        if journal_id is not None
+        else _next_verification_journal(
+            session,
+            record.collection_id,
+            checkpoint.get("after_journal_id"),
+        )
+    )
+    if journal is None:
+        record.phase = "references"
+        checkpoint.update({"comparison_stage": "agents", "comparison_cursor": None})
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    if journal_id is None:
+        checkpoint.update(
+            {
+                "current_journal_id": journal.journal_id,
+                "journal_offset": 0,
+                "journal_sequence": 0,
+                "journal_previous_entry_id": None,
+                "journal_previous_json_sha256": None,
+                "journal_primary_lineage_id": None,
+                "journal_primary_binding_json": None,
+                "journal_entity_counts": {},
+                "journal_hash_state": CheckpointSHA256().export_state(),
+            }
+        )
+    offset = int(checkpoint["journal_offset"])
+    if offset == journal.bytes:
+        _finish_verification_journal(session, record, journal, checkpoint)
+        checkpoint.update(
+            {
+                "after_journal_id": journal.journal_id,
+                "current_journal_id": None,
+                "journal_offset": 0,
+                "journal_sequence": 0,
+                "journal_previous_entry_id": None,
+                "journal_previous_json_sha256": None,
+                "journal_primary_lineage_id": None,
+                "journal_primary_binding_json": None,
+                "journal_entity_counts": {},
+                "journal_hash_state": CheckpointSHA256().export_state(),
+            }
+        )
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    encoded = _verification_journal_entry_bytes(session, journal, offset=offset)
+    try:
+        projected = validate_incremental_journal_entry(
+            encoded,
+            sequence=int(checkpoint["journal_sequence"]),
+            journal_id=journal.journal_id,
+            previous_entry_id=checkpoint.get("journal_previous_entry_id"),
+            previous_json_sha256=checkpoint.get("journal_previous_json_sha256"),
+        )
+    except ProvenanceValidationError as exc:
+        raise InvalidState(str(exc)) from exc
+    entry_id = str(projected.frame.document["id"])
+    entry_key = (record.collection_id, journal.journal_id, entry_id)
+    if session.get(CollectionProvenanceVerificationEntryRecord, entry_key) is not None:
+        raise InvalidState(f"provenance journal repeats entry identity {entry_id}")
+    session.add(
+        CollectionProvenanceVerificationEntryRecord(
+            collection_id=record.collection_id,
+            journal_id=journal.journal_id,
+            entry_id=entry_id,
+            json_sha256=projected.frame.sha256,
+        )
+    )
+    if projected.primary_lineage_id is not None:
+        if checkpoint.get("journal_primary_lineage_id") is not None:
+            raise InvalidState("provenance journal repeats its initialization policy")
+        checkpoint["journal_primary_lineage_id"] = projected.primary_lineage_id
+    for agent_id in projected.agents:
+        _put_verification_agent(session, record, journal.journal_id, agent_id)
+    for entity_type, entity_id, document_json in projected.entities:
+        _put_verification_entity(
+            session,
+            record,
+            journal.journal_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entry_id=entry_id,
+            document_json=document_json,
+        )
+    session.flush()
+    for role, operation, binding_json in projected.bindings:
+        _validate_verification_binding(
+            session,
+            record,
+            journal.journal_id,
+            binding_json=binding_json,
+        )
+        if role == "co_resident_primary_payload":
+            checkpoint["journal_primary_binding_json"] = (
+                None if operation == "unbind" else binding_json
+            )
+    for reference in projected.external_states:
+        key = (
+            record.collection_id,
+            journal.journal_id,
+            reference.journal_id,
+            reference.entry_id,
+            reference.state_id,
+        )
+        existing = session.get(CollectionProvenanceVerificationExternalStateRecord, key)
+        if existing is not None:
+            if existing.entry_json_sha256 != reference.entry_json_sha256:
+                raise InvalidState("provenance external-state identity is redefined")
+        else:
+            session.add(
+                CollectionProvenanceVerificationExternalStateRecord(
+                    collection_id=record.collection_id,
+                    from_journal_id=journal.journal_id,
+                    to_journal_id=reference.journal_id,
+                    entry_id=reference.entry_id,
+                    state_id=reference.state_id,
+                    entry_json_sha256=reference.entry_json_sha256,
+                )
+            )
+    counts = checkpoint["journal_entity_counts"]
+    if not isinstance(counts, dict):
+        raise InvalidState("provenance verification entity-count checkpoint is invalid")
+    for entity_type, count in projected.entity_counts:
+        counts[entity_type] = int(counts.get(entity_type, 0)) + count
+    digest = CheckpointSHA256.from_state(str(checkpoint["journal_hash_state"]))
+    digest.update(encoded)
+    checkpoint.update(
+        {
+            "journal_offset": offset + len(encoded),
+            "journal_sequence": int(checkpoint["journal_sequence"]) + 1,
+            "journal_previous_entry_id": entry_id,
+            "journal_previous_json_sha256": projected.frame.sha256,
+            "journal_hash_state": digest.export_state(),
+        }
+    )
+    _set_verification_checkpoint(record, checkpoint)
+
+
+def _keyset_after(columns: tuple[Any, ...], cursor: object) -> Any:
+    if not isinstance(cursor, list) or len(cursor) != len(columns):
+        return None
+    return tuple_(*columns) > tuple(cursor)
+
+
+def _comparison_rows(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    *,
+    stage: str,
+    cursor: object,
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]], int]:
+    collection_id = record.collection_id
+    limit = 512
+    key_columns: tuple[Any, ...]
+    actual_columns: tuple[Any, ...]
+    expected: Any
+    actual: Any
+    if stage == "agents":
+        key_columns = (
+            CollectionProvenanceVerificationAgentRecord.journal_id,
+            CollectionProvenanceVerificationAgentRecord.agent_id,
+        )
+        expected = select(*key_columns).where(
+            CollectionProvenanceVerificationAgentRecord.collection_id == collection_id
+        )
+        actual_columns = (
+            CollectionProvenanceJournalAgentRecord.journal_id,
+            CollectionProvenanceJournalAgentRecord.agent_id,
+        )
+        actual = select(*actual_columns).where(
+            CollectionProvenanceJournalAgentRecord.collection_id == collection_id
+        )
+    elif stage == "entities":
+        key_columns = (
+            CollectionProvenanceVerificationEntityRecord.journal_id,
+            CollectionProvenanceVerificationEntityRecord.entity_type,
+            CollectionProvenanceVerificationEntityRecord.entity_id,
+        )
+        expected = select(
+            *key_columns,
+            CollectionProvenanceVerificationEntityRecord.entry_id,
+            CollectionProvenanceVerificationEntityRecord.document_json,
+        ).where(CollectionProvenanceVerificationEntityRecord.collection_id == collection_id)
+        actual_columns = (
+            CollectionProvenanceEntityRecord.journal_id,
+            CollectionProvenanceEntityRecord.entity_type,
+            CollectionProvenanceEntityRecord.entity_id,
+        )
+        actual = select(
+            *actual_columns,
+            CollectionProvenanceEntityRecord.entry_id,
+            CollectionProvenanceEntityRecord.document_json,
+        ).where(CollectionProvenanceEntityRecord.collection_id == collection_id)
+    elif stage == "external-states":
+        key_columns = (
+            CollectionProvenanceVerificationExternalStateRecord.from_journal_id,
+            CollectionProvenanceVerificationExternalStateRecord.to_journal_id,
+            CollectionProvenanceVerificationExternalStateRecord.entry_id,
+            CollectionProvenanceVerificationExternalStateRecord.state_id,
+        )
+        expected = select(
+            *key_columns,
+            CollectionProvenanceVerificationExternalStateRecord.entry_json_sha256,
+        ).where(CollectionProvenanceVerificationExternalStateRecord.collection_id == collection_id)
+        actual_columns = (
+            CollectionProvenanceExternalStateReferenceRecord.from_journal_id,
+            CollectionProvenanceExternalStateReferenceRecord.to_journal_id,
+            CollectionProvenanceExternalStateReferenceRecord.entry_id,
+            CollectionProvenanceExternalStateReferenceRecord.state_id,
+        )
+        actual = select(
+            *actual_columns,
+            CollectionProvenanceExternalStateReferenceRecord.entry_json_sha256,
+        ).where(CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id)
+    else:
+        raise InvalidState("provenance verification comparison stage is invalid")
+    after_expected = _keyset_after(key_columns, cursor)
+    after_actual = _keyset_after(actual_columns, cursor)
+    if after_expected is not None:
+        expected = expected.where(after_expected)
+        actual = actual.where(after_actual)
+    return (
+        list(session.execute(expected.order_by(*key_columns).limit(limit)).tuples()),
+        list(session.execute(actual.order_by(*actual_columns).limit(limit)).tuples()),
+        len(key_columns),
+    )
+
+
+def _advance_verification_projection_comparison(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+) -> None:
+    checkpoint = _verification_checkpoint(record)
+    stage = str(checkpoint.get("comparison_stage", "agents"))
+    expected, actual, key_length = _comparison_rows(
+        session,
+        record,
+        stage=stage,
+        cursor=checkpoint.get("comparison_cursor"),
+    )
+    if expected != actual:
+        raise InvalidState(f"catalog provenance {stage} projection differs from exact journals")
+    if expected:
+        checkpoint["comparison_cursor"] = list(expected[-1][:key_length])
+        _set_verification_checkpoint(record, checkpoint)
+        return
+    if stage == "agents":
+        checkpoint.update({"comparison_stage": "entities", "comparison_cursor": None})
+    elif stage == "entities":
+        checkpoint.update({"comparison_stage": "external-states", "comparison_cursor": None})
+    else:
+        checkpoint.update(
+            {
+                "reachability_stage": "seed",
+                "reachability_after_journal_id": None,
+            }
+        )
+        checkpoint.pop("comparison_stage", None)
+        checkpoint.pop("comparison_cursor", None)
+        record.phase = "reachability"
+    _set_verification_checkpoint(record, checkpoint)
+
+
+def _put_verification_reachable(
     session: Session,
     collection_id: int,
-) -> Iterator[tuple[str, bytes]]:
-    for journal_id in _iter_journal_ids(session, collection_id):
-        yield journal_id, _journal_bytes(session, collection_id, journal_id)
+    journal_id: str,
+) -> None:
+    if (
+        session.get(
+            CollectionProvenanceVerificationReachabilityRecord,
+            (collection_id, journal_id),
+        )
+        is None
+    ):
+        session.add(
+            CollectionProvenanceVerificationReachabilityRecord(
+                collection_id=collection_id,
+                journal_id=journal_id,
+            )
+        )
+
+
+def _advance_verification_reachability(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> dict[str, Any] | None:
+    checkpoint = _verification_checkpoint(record)
+    stage = str(checkpoint.get("reachability_stage", "seed"))
+    if stage == "seed":
+        after = checkpoint.get("reachability_after_journal_id")
+        seed_statement = (
+            select(CollectionFileProvenanceRecord.journal_id)
+            .where(
+                CollectionFileProvenanceRecord.collection_id == record.collection_id,
+                CollectionFileProvenanceRecord.status == "captured",
+                CollectionFileProvenanceRecord.journal_id.is_not(None),
+            )
+            .distinct()
+            .order_by(CollectionFileProvenanceRecord.journal_id)
+            .limit(512)
+        )
+        if isinstance(after, str):
+            seed_statement = seed_statement.where(CollectionFileProvenanceRecord.journal_id > after)
+        journal_ids = [str(value) for value in session.scalars(seed_statement)]
+        if journal_ids:
+            for journal_id in journal_ids:
+                _put_verification_reachable(session, record.collection_id, journal_id)
+            checkpoint["reachability_after_journal_id"] = journal_ids[-1]
+            _set_verification_checkpoint(record, checkpoint)
+            return None
+        checkpoint["reachability_stage"] = "expand"
+        _set_verification_checkpoint(record, checkpoint)
+        return None
+    reachable = session.scalar(
+        select(CollectionProvenanceVerificationReachabilityRecord)
+        .where(
+            CollectionProvenanceVerificationReachabilityRecord.collection_id
+            == record.collection_id,
+            CollectionProvenanceVerificationReachabilityRecord.expanded.is_(False),
+        )
+        .order_by(CollectionProvenanceVerificationReachabilityRecord.journal_id)
+        .limit(1)
+    )
+    if reachable is not None:
+        if (
+            session.scalar(
+                select(CollectionProvenanceVerificationEntryRecord.entry_id)
+                .where(
+                    CollectionProvenanceVerificationEntryRecord.collection_id
+                    == record.collection_id,
+                    CollectionProvenanceVerificationEntryRecord.journal_id == reachable.journal_id,
+                )
+                .limit(1)
+            )
+            is None
+        ):
+            raise InvalidState("provenance captured closure references an absent journal")
+        columns = (
+            CollectionProvenanceVerificationExternalStateRecord.to_journal_id,
+            CollectionProvenanceVerificationExternalStateRecord.entry_id,
+            CollectionProvenanceVerificationExternalStateRecord.state_id,
+        )
+        reference_statement = (
+            select(CollectionProvenanceVerificationExternalStateRecord)
+            .where(
+                CollectionProvenanceVerificationExternalStateRecord.collection_id
+                == record.collection_id,
+                CollectionProvenanceVerificationExternalStateRecord.from_journal_id
+                == reachable.journal_id,
+            )
+            .order_by(*columns)
+            .limit(512)
+        )
+        cursor = (
+            reachable.after_to_journal_id,
+            reachable.after_entry_id,
+            reachable.after_state_id,
+        )
+        if all(isinstance(value, str) for value in cursor):
+            reference_statement = reference_statement.where(tuple_(*columns) > cursor)
+        references = list(session.scalars(reference_statement))
+        if references:
+            for reference in references:
+                entry = session.get(
+                    CollectionProvenanceVerificationEntryRecord,
+                    (
+                        record.collection_id,
+                        reference.to_journal_id,
+                        reference.entry_id,
+                    ),
+                )
+                state = session.get(
+                    CollectionProvenanceVerificationEntityRecord,
+                    (
+                        record.collection_id,
+                        reference.to_journal_id,
+                        "states",
+                        reference.state_id,
+                    ),
+                )
+                if (
+                    entry is None
+                    or entry.json_sha256 != reference.entry_json_sha256
+                    or state is None
+                ):
+                    raise InvalidState("provenance external state does not resolve exactly")
+                _put_verification_reachable(
+                    session,
+                    record.collection_id,
+                    reference.to_journal_id,
+                )
+            last = references[-1]
+            reachable.after_to_journal_id = last.to_journal_id
+            reachable.after_entry_id = last.entry_id
+            reachable.after_state_id = last.state_id
+            return None
+        reachable.expanded = True
+        return None
+    reachable_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionProvenanceVerificationReachabilityRecord)
+            .where(
+                CollectionProvenanceVerificationReachabilityRecord.collection_id
+                == record.collection_id
+            )
+        )
+        or 0
+    )
+    if reachable_count != int(checkpoint["journals"]):
+        raise InvalidState("provenance contains an unreachable journal")
+    record.phase = "cleanup"
+    checkpoint["cleanup_stage"] = "reachability"
+    checkpoint["restart_after_cleanup"] = False
+    _set_verification_checkpoint(record, checkpoint)
+    return None
+
+
+def _verification_result(
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> dict[str, Any]:
+    checkpoint = _verification_checkpoint(record)
+    return {
+        "collection_id": record.collection_id,
+        "valid": True,
+        "provenance_mode": collection.provenance_mode,
+        "provenance_identity": collection.provenance_identity,
+        "files": int(checkpoint["files"]),
+        "journals": int(checkpoint["journals"]),
+        "entities": int(checkpoint["entities"]),
+    }
+
+
+_VERIFICATION_CLEANUP_STAGES: tuple[tuple[str, type[Any], tuple[Any, ...]], ...] = (
+    (
+        "reachability",
+        CollectionProvenanceVerificationReachabilityRecord,
+        (
+            CollectionProvenanceVerificationReachabilityRecord.collection_id,
+            CollectionProvenanceVerificationReachabilityRecord.journal_id,
+        ),
+    ),
+    (
+        "external-states",
+        CollectionProvenanceVerificationExternalStateRecord,
+        (
+            CollectionProvenanceVerificationExternalStateRecord.collection_id,
+            CollectionProvenanceVerificationExternalStateRecord.from_journal_id,
+            CollectionProvenanceVerificationExternalStateRecord.to_journal_id,
+            CollectionProvenanceVerificationExternalStateRecord.entry_id,
+            CollectionProvenanceVerificationExternalStateRecord.state_id,
+        ),
+    ),
+    (
+        "entities",
+        CollectionProvenanceVerificationEntityRecord,
+        (
+            CollectionProvenanceVerificationEntityRecord.collection_id,
+            CollectionProvenanceVerificationEntityRecord.journal_id,
+            CollectionProvenanceVerificationEntityRecord.entity_type,
+            CollectionProvenanceVerificationEntityRecord.entity_id,
+        ),
+    ),
+    (
+        "entries",
+        CollectionProvenanceVerificationEntryRecord,
+        (
+            CollectionProvenanceVerificationEntryRecord.collection_id,
+            CollectionProvenanceVerificationEntryRecord.journal_id,
+            CollectionProvenanceVerificationEntryRecord.entry_id,
+        ),
+    ),
+    (
+        "agents",
+        CollectionProvenanceVerificationAgentRecord,
+        (
+            CollectionProvenanceVerificationAgentRecord.collection_id,
+            CollectionProvenanceVerificationAgentRecord.journal_id,
+            CollectionProvenanceVerificationAgentRecord.agent_id,
+        ),
+    ),
+)
+
+
+def _advance_verification_cleanup(
+    session: Session,
+    record: CollectionProvenanceVerificationRecord,
+    collection: CollectionRecord,
+) -> dict[str, Any] | None:
+    checkpoint = _verification_checkpoint(record)
+    stage = str(checkpoint.get("cleanup_stage", "reachability"))
+    stages = [name for name, _model, _columns in _VERIFICATION_CLEANUP_STAGES]
+    if stage not in stages:
+        raise InvalidState("provenance verification cleanup checkpoint is invalid")
+    stage_index = stages.index(stage)
+    _name, model, columns = _VERIFICATION_CLEANUP_STAGES[stage_index]
+    keys = list(
+        session.execute(
+            select(*columns).where(columns[0] == record.collection_id).order_by(*columns).limit(512)
+        ).tuples()
+    )
+    if keys:
+        session.execute(delete(model).where(tuple_(*columns).in_(keys)))
+        return None
+    if stage_index + 1 < len(_VERIFICATION_CLEANUP_STAGES):
+        checkpoint["cleanup_stage"] = stages[stage_index + 1]
+        _set_verification_checkpoint(record, checkpoint)
+        return None
+    restart = bool(checkpoint.pop("restart_after_cleanup", False))
+    checkpoint.pop("cleanup_stage", None)
+    if restart:
+        record.phase = "metadata"
+        record.checkpoint_json = "{}"
+        return None
+    record.phase = "complete"
+    _set_verification_checkpoint(record, checkpoint)
+    return _verification_result(record, collection)
+
+
+def _binding_volume_document(
+    *,
+    archive_generation: str,
+    tree_sha256: str,
+    sequence: int,
+    first_file_order: int,
+    bindings: list[FileProvenanceBinding],
+) -> ProvenanceVolumeDocument:
+    payload = binding_segment_bytes(
+        first_file_order=first_file_order,
+        files=[_binding_mapping(binding) for binding in bindings],
+    )
+    return ProvenanceVolumeDocument(
+        archive_generation=archive_generation,
+        archive_tree_sha256=tree_sha256,
+        sequence=sequence,
+        payload=ProvenancePayloadIdentity(
+            kind="bindings",
+            path=(f"provenance/payloads/volume-{format_provenance_sequence(sequence)}.bin.age"),
+            bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        ),
+        first_file_order=first_file_order,
+        file_count=len(bindings),
+    )
+
+
+def _binding_mapping(binding: FileProvenanceBinding) -> dict[str, object]:
+    value: dict[str, object] = {
+        "path": binding.path,
+        "bytes": binding.bytes,
+        "sha256": binding.sha256,
+        "status": binding.status,
+    }
+    if binding.status == "captured":
+        value.update(
+            {
+                "journal_id": binding.journal_id,
+                "current_state_id": binding.current_state_id,
+            }
+        )
+    else:
+        value["omission_reason"] = binding.omission_reason
+    return value
+
+
+def _update_volume_digest(
+    digest: Any,
+    document: ProvenanceVolumeDocument,
+) -> None:
+    update_ordered_volume_commitment(digest, document)
 
 
 def _iter_journal_chunks(
@@ -957,8 +1832,47 @@ def _iter_journal_chunks(
     yield from session.scalars(statement)
 
 
-def _journal_bytes(session: Session, collection_id: int, journal_id: str) -> bytes:
-    return b"".join(_iter_journal_chunks(session, collection_id, journal_id))
+def _iter_journal_chunk_range(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+    *,
+    offset: int,
+    size: int,
+) -> Iterator[bytes]:
+    statement = (
+        select(
+            CollectionProvenanceJournalChunkRecord.byte_offset,
+            CollectionProvenanceJournalChunkRecord.content,
+        )
+        .where(
+            CollectionProvenanceJournalChunkRecord.collection_id == collection_id,
+            CollectionProvenanceJournalChunkRecord.journal_id == journal_id,
+            CollectionProvenanceJournalChunkRecord.byte_offset
+            + func.length(CollectionProvenanceJournalChunkRecord.content)
+            > offset,
+            CollectionProvenanceJournalChunkRecord.byte_offset < offset + size,
+        )
+        .order_by(CollectionProvenanceJournalChunkRecord.byte_offset)
+        .execution_options(yield_per=16)
+    )
+    expected = offset
+    remaining = size
+    for row in session.execute(statement):
+        content = bytes(row.content)
+        row_offset = int(row.byte_offset)
+        start = max(0, expected - row_offset)
+        if row_offset > expected or start >= len(content):
+            raise RuntimeError("provenance journal chunks are not contiguous")
+        current = content[start : start + remaining]
+        if current:
+            yield current
+            expected += len(current)
+            remaining -= len(current)
+        if remaining == 0:
+            return
+    if remaining:
+        raise RuntimeError("provenance journal range is unavailable")
 
 
 def _iter_journal_ids(session: Session, collection_id: int) -> Iterator[str]:
@@ -978,138 +1892,6 @@ def _iter_journal_ids(session: Session, collection_id: int) -> Iterator[str]:
             return
         yield from batch
         after = batch[-1]
-
-
-def _verify_journal_summary(
-    journal: CollectionProvenanceJournalRecord,
-    projection: ProvenanceJournalProjection,
-) -> None:
-    summary = projection.summary
-    if (
-        journal.journal_id != summary.journal_id
-        or journal.sha256 != summary.journal_sha256
-        or journal.entries != summary.entries
-        or journal.agent_count != len(summary.agent_ids)
-        or journal.entity_counts_json != projection.entity_counts_json
-        or journal.current_state_id != summary.current_state_id
-        or journal.current_path != summary.current_path
-        or journal.current_bytes != summary.current_bytes
-        or journal.current_sha256 != summary.current_sha256
-    ):
-        raise InvalidState("catalog provenance journal summary differs from exact bytes")
-
-
-def _verify_journal_payload_bindings(
-    session: Session,
-    *,
-    collection_id: int,
-    journal_id: str,
-    summary: JournalSummary,
-) -> None:
-    statement = (
-        select(CollectionFileRecord, CollectionFileProvenanceRecord)
-        .join(
-            CollectionFileProvenanceRecord,
-            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
-            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
-        )
-        .where(
-            CollectionFileRecord.collection_id == collection_id,
-            CollectionFileProvenanceRecord.journal_id == journal_id,
-        )
-        .order_by(CollectionFileRecord.path_sort_key)
-        .execution_options(yield_per=100)
-    )
-    for file, binding in session.execute(statement):
-        if binding.status != "captured" or binding.current_state_id != summary.current_state_id:
-            raise InvalidState("captured provenance binding differs from its exact journal")
-        try:
-            verify_payload_binding(
-                summary,
-                path=file.path,
-                byte_count=file.bytes,
-                sha256=file.sha256,
-            )
-        except ProvenanceValidationError as exc:
-            raise InvalidState(str(exc)) from exc
-
-
-def _verify_journal_entities(
-    session: Session,
-    collection_id: int,
-    journal_id: str,
-    projection: ProvenanceJournalProjection,
-) -> None:
-    actual = session.scalars(
-        select(CollectionProvenanceEntityRecord)
-        .where(
-            CollectionProvenanceEntityRecord.collection_id == collection_id,
-            CollectionProvenanceEntityRecord.journal_id == journal_id,
-        )
-        .order_by(
-            CollectionProvenanceEntityRecord.entity_type,
-            CollectionProvenanceEntityRecord.entity_id,
-        )
-        .execution_options(yield_per=100)
-    )
-    for expected, current in zip_longest(projection.entities, actual):
-        if (
-            expected is None
-            or current is None
-            or (
-                expected.entity_type,
-                expected.entity_id,
-                expected.entry_id,
-                expected.document_json,
-            )
-            != (
-                current.entity_type,
-                current.entity_id,
-                current.entry_id,
-                current.document_json,
-            )
-        ):
-            raise InvalidState("catalog provenance projection differs from exact journals")
-
-
-def _verify_journal_references(
-    session: Session,
-    collection_id: int,
-    journal_id: str,
-    projection: ProvenanceJournalProjection,
-) -> None:
-    actual = session.scalars(
-        select(CollectionProvenanceExternalStateReferenceRecord)
-        .where(
-            CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id,
-            CollectionProvenanceExternalStateReferenceRecord.from_journal_id == journal_id,
-        )
-        .order_by(
-            CollectionProvenanceExternalStateReferenceRecord.to_journal_id,
-            CollectionProvenanceExternalStateReferenceRecord.entry_id,
-            CollectionProvenanceExternalStateReferenceRecord.state_id,
-            CollectionProvenanceExternalStateReferenceRecord.entry_json_sha256,
-        )
-        .execution_options(yield_per=100)
-    )
-    for expected, current in zip_longest(projection.external_state_references, actual):
-        if (
-            expected is None
-            or current is None
-            or (
-                expected.to_journal_id,
-                expected.entry_id,
-                expected.state_id,
-                expected.entry_json_sha256,
-            )
-            != (
-                current.to_journal_id,
-                current.entry_id,
-                current.state_id,
-                current.entry_json_sha256,
-            )
-        ):
-            raise InvalidState("catalog provenance lineage differs from exact journals")
 
 
 def _canonical_text_order(session: Session, column: Any) -> Any:
@@ -1174,6 +1956,7 @@ def _authorized_collection(
     record = session.get(CollectionRecord, collection_id)
     if (
         record is None
+        or not record.is_published
         or not principal.allows_collection(CATALOG_READ, collection_id)
         or not principal.allows_collection(permission, collection_id)
     ):

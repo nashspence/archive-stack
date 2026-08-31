@@ -18,7 +18,7 @@ MISE_IMAGE = (
     "jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3"
 )
 MISE_CONTAINER_TOOLS = {
-    "riverhog": {"minisign", "uv"},
+    "riverhog": {"uv"},
     "riverhog-ftp-adapter": {"uv"},
     "riverhog-storage-adapter-aws": {"uv"},
     "riverhog-storage-adapter-backblaze": {"uv"},
@@ -355,10 +355,6 @@ def test_mise_artifacts_match_each_image_role() -> None:
                 "COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv"
                 in dockerfile
             )
-
-    riverhog = (REPO_ROOT / IMAGE_CONTRACTS["riverhog"]["dockerfile"]).read_text(encoding="utf-8")
-    assert '"$(mise which minisign)" /opt/riverhog-tools/bin/minisign' in riverhog
-    assert 'test "$(minisign -v)" = "minisign 0.12"' in riverhog
 
     test = (REPO_ROOT / IMAGE_CONTRACTS["test"]["dockerfile"]).read_text(encoding="utf-8")
     for binary in ("age", "age-keygen", "age-plugin-batchpass", "minisign", "uv"):

@@ -23,7 +23,7 @@ def test_pack_plan_cardinality_is_defined_by_the_storage_plan() -> None:
     ]
 
     digest = pack_upload_plan_sha256(
-        volume_id="pack-000000000001",
+        volume_id="pack-" + "0" * 63 + "1",
         plaintext_bytes=10_001,
         units=units,
     )

@@ -79,33 +79,19 @@ _READER = ApplicationPrincipal(
 # inventory and the physical-plan proof without failing the suite.
 _DATABASE_PLAN_OPERATIONS = {
     ("riverhog", "list_app_key_access"): "application-access",
-    ("riverhog", "stream_app_key_access"): "application-access",
     ("riverhog", "list_app_keys"): "application-keys",
-    ("riverhog", "stream_app_keys"): "application-keys",
     ("riverhog", "list_apps"): "applications",
-    ("riverhog", "stream_apps"): "applications",
     ("riverhog", "list_archive_copy_jobs"): "archive-copies",
-    ("riverhog", "stream_archive_copy_jobs"): "archive-copies",
     ("riverhog", "list_collection_provenance"): "provenance",
-    ("riverhog", "stream_collection_provenance"): "provenance",
     ("riverhog", "list_collection_upload_sessions"): "uploads",
-    ("riverhog", "stream_collection_upload_sessions"): "uploads",
     ("riverhog", "list_collections"): "collections",
-    ("riverhog", "stream_collections"): "collections",
     ("riverhog", "list_download_quotas"): "download-quotas",
-    ("riverhog", "stream_download_quotas"): "download-quotas",
     ("riverhog", "list_processing_claims"): "processing-claims",
-    ("riverhog", "stream_processing_claims"): "processing-claims",
     ("riverhog", "list_retrieval_cache_objects"): "retrieval-cache",
-    ("riverhog", "stream_retrieval_cache_objects"): "retrieval-cache",
     ("riverhog", "search"): "search",
-    ("riverhog", "stream_search"): "search",
     ("riverhog", "list_tags"): "tags",
-    ("riverhog", "stream_tags"): "tags",
     ("stove0", "list_evaluations"): "stove0-evaluations",
-    ("stove0", "stream_evaluations"): "stove0-evaluations",
     ("stove0", "list_work"): "stove0-work",
-    ("stove0", "stream_work"): "stove0-work",
 }
 _DATABASE_FILTER_SELECTORS = {
     "application-access": {"active", "app", "key", "permission", "q", "resource"},
@@ -133,9 +119,36 @@ _DATABASE_FILTER_SELECTORS = {
     "uploads": {"q", "state", "tag"},
 }
 _NON_PLAN_QUERY_OPERATIONS = {
+    ("riverhog", "acquire_collection_upload_session_work"): {"limit"},
     ("riverhog", "download_retrieval_file"): {"collection_id", "path"},
+    ("riverhog", "get_portable_collection_inventory"): {"cursor", "limit"},
     ("riverhog", "list_archive_stores"): {"order", "page", "per_page", "q", "sort"},
-    ("riverhog", "stream_archive_stores"): {"order", "q", "sort"},
+    ("riverhog", "list_processing_claim_artifacts"): {
+        "authority_sha256",
+        "start_ordinal",
+    },
+    ("riverhog", "list_processing_claim_disposition_outputs"): {
+        "authority_sha256",
+        "page",
+        "per_page",
+    },
+    ("riverhog", "list_processing_claim_dispositions"): {
+        "authority_sha256",
+        "page",
+        "per_page",
+    },
+    ("riverhog", "list_processing_claim_inputs"): {
+        "authority_sha256",
+        "start_ordinal",
+    },
+    ("riverhog", "list_processing_claim_outcomes"): {
+        "authority_sha256",
+        "start_ordinal",
+    },
+    ("riverhog", "list_processing_claim_output_tags"): {
+        "authority_sha256",
+        "start_ordinal",
+    },
     ("riverhog", "list_collection_upload_session_files"): {"page", "per_page"},
     ("riverhog", "list_collection_upload_session_tags"): {"page", "per_page"},
     ("riverhog", "list_collection_archive_copies"): {"page", "per_page"},
@@ -145,8 +158,9 @@ _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
     ("riverhog", "resourcesync_change_list"): {"after"},
     ("riverhog", "trace_collection_file_provenance"): {"page", "per_page"},
-    ("stove0", "get_artifact_selection"): {"page", "per_page"},
+    ("stove0", "get_artifact_selection"): {"continuation"},
     ("stove0", "get_recipe"): {"revision"},
+    ("stove0", "get_target_execution_inputs"): {"continuation"},
     ("stove0", "list_events"): {"after", "limit"},
 }
 
@@ -220,16 +234,16 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             f"""
             INSERT INTO collections (
                 id, creation_idempotency_key, creation_identity_sha256,
-                creation_custody_mode, content_identity, encryption_format,
+                creation_custody_mode, content_identity, tag_set_identity, encryption_format,
                 passphrase_id, provenance_mode, provenance_identity, inventory_identity,
-                metadata_revision, metadata_updated_at, ingest_source,
+                archive_generation, metadata_revision, metadata_updated_at, ingest_source,
                 created_by_app, created_at, file_count, file_bytes
             )
-            SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha},
+            SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha}, {sha},
                    CASE WHEN g = {rows} THEN 'age-v1-scrypt' ELSE 'age-v1-other' END,
                    CASE WHEN g = {rows} THEN 'qualification-key-v1'
                         ELSE 'qualification-key-v2' END,
-                   'omitted', NULL, {sha}, 1, {timestamp},
+                   'omitted', NULL, {sha}, {sha}, 1, {timestamp},
                    'fixture-' || lpad(g::text, 6, '0'), 'qualification', {timestamp},
                    1, g
             FROM generate_series(1, {rows}) AS g
@@ -282,7 +296,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             f"""
             INSERT INTO collection_uploads (
                 collection_id, idempotency_key, creation_identity_sha256,
-                tag_set_identity,
+                archive_generation, tag_set_identity,
                 ingest_source, provenance_mode, provenance_omission_reason,
                 provenance_identity, encryption_format, passphrase_id,
                 initiated_by_app, initiated_by_key_id, event_context_json,
@@ -290,12 +304,11 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 opened_at, last_activity_at, closed_at, archive_phase,
                 archive_phase_updated_at, archive_attempt_count,
                 archive_next_attempt_at, archive_last_attempt_at, archive_failure,
-                archive_storage_prefix, collection_manifest_bytes_b64,
-                collection_manifest_proof_bytes_b64, planner_checkpoint_json,
+                archive_storage_prefix, planner_checkpoint_json,
                 file_count, file_bytes, custodied_file_count, custodied_file_bytes,
                 search_text
             )
-            SELECT {rows} + g, 'upload-' || g, {sha}, {sha},
+            SELECT {rows} + g, 'upload-' || g, {sha}, {sha}, {sha},
                    'source-' || lpad(g::text, 6, '0'), 'omitted',
                    'qualification fixture', NULL, 'age-v1-scrypt',
                    'qualification-key-v1', 'qualification', NULL, NULL,
@@ -305,7 +318,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                    'archive', {timestamp}, {timestamp}, NULL,
                    CASE WHEN g = {rows} THEN 'planning' ELSE 'orphaned' END,
                    {timestamp}, 0, NULL, NULL, NULL, 'qualification/' || g,
-                   NULL, NULL, '{{}}', g % 32, g * 1024, 0, 0,
+                   '{{}}', g % 32, g * 1024, 0, 0,
                    'source-' || lpad(g::text, 6, '0')
             FROM generate_series(1, {rows}) AS g
             """,
@@ -418,12 +431,16 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             f"""
             INSERT INTO collection_processing_claims (
                 id, work_id, consumer_app, purpose, work_document_json,
-                work_document_sha256, execution_id, retirement_grace_seconds,
+                work_document_sha256, execution_id,
+                input_count, artifact_count, artifact_bytes, output_tag_count,
+                outcome_count, outcome_state, outcome_validation_count,
+                retirement_grace_seconds,
                 state, fence, expires_at, created_at, updated_at
             )
             SELECT repeat(md5('claim-' || g), 2), repeat(md5('work-' || g), 2),
                    'qualification', 'archive-' || g, '{{}}', {sha},
-                   repeat(md5('execution-' || g), 2), 0,
+                   repeat(md5('execution-' || g), 2),
+                   0, 0, 0, 0, 0, 'receiving', 0, 0,
                    CASE WHEN g % 2 = 0 THEN 'active' ELSE 'settled' END,
                    1, '2027-08-28T00:00:00.000000Z', {timestamp}, {timestamp}
             FROM generate_series(1, {rows}) AS g

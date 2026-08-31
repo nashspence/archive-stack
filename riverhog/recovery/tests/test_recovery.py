@@ -15,8 +15,12 @@ from riverhog_archive_contracts import (
     ArchiveRootCiphertextIdentity,
     CollectionEncryptionBinding,
     RecoveryDescriptor,
+    format_archive_sequence,
 )
-from riverhog_core.archive_manifest import build_collection_archive_manifest
+from riverhog_core.archive_manifest import (
+    build_collection_archive_authority,
+    build_collection_archive_terminal_document,
+)
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
@@ -26,16 +30,21 @@ from riverhog_core.domain.archive import (
     VerifiedRawFile,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
-from riverhog_core.raw_verification import raw_file_volume_set_sha256
+from riverhog_core.raw_verification import raw_file_ordered_volume_commitment
 from riverhog_provenance import (
+    PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
     FileProvenanceBinding,
-    build_portable_provenance_set,
-    build_provenance_archive,
+    ProvenancePayloadIdentity,
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
+    ProvenanceVolumeDocument,
+    binding_segment_bytes,
     create_derivative_journal_from_identity,
     create_observation_journal,
+    format_provenance_sequence,
     prepare_file_provenance,
+    update_ordered_volume_commitment,
     validate_journal,
-    validate_portable_provenance_set,
 )
 from riverhog_recover import RecoveryError, recover_archive
 
@@ -72,28 +81,6 @@ def _part(plaintext: bytes, ciphertext: bytes) -> tuple[StoredArchivePart, ...]:
             stored_sha256=_sha256(ciphertext),
         ),
     )
-
-
-def _write_ots_command(path: Path) -> Path:
-    path.write_text(
-        """#!/usr/bin/env python3
-import hashlib
-import sys
-from pathlib import Path
-
-if len(sys.argv) != 5 or sys.argv[1] != "verify" or sys.argv[3] != "-f":
-    raise SystemExit(2)
-proof = Path(sys.argv[2]).read_text(encoding="utf-8")
-manifest = Path(sys.argv[4]).read_bytes()
-expected = f"sha256:{hashlib.sha256(manifest).hexdigest()}\\n"
-if proof != expected:
-    print("proof does not match manifest", file=sys.stderr)
-    raise SystemExit(1)
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o700)
-    return path
 
 
 def _write_archive(
@@ -142,7 +129,7 @@ def _write_archive(
     raw_ciphertexts: dict[str, bytes] = {}
     offset = 0
     for sequence, plaintext in enumerate((b"first-", b"second"), start=1):
-        volume_id = f"segment-{sequence:012d}"
+        volume_id = f"segment-{format_archive_sequence(sequence)}"
         relative_path = f"volumes/{volume_id}.bin.age"
         ciphertext = encrypt_age_scrypt(plaintext, passphrase, log_n=1)
         raw_ciphertexts[relative_path] = ciphertext
@@ -167,7 +154,7 @@ def _write_archive(
         path=raw_file.path,
         bytes=raw_file.bytes,
         sha256=raw_file.sha256,
-        volume_set_sha256=raw_file_volume_set_sha256(
+        ordered_volume_sha256=raw_file_ordered_volume_commitment(
             file=raw_file,
             volumes=raw_volumes,
         ),
@@ -213,47 +200,119 @@ def _write_archive(
         journal_set = dict(provenance_journals or {summary.journal_id: exact_journal})
         if journal_set.get(summary.journal_id) != exact_journal:
             raise ValueError("recovery fixture current journal is missing from its exact set")
-        provenance = build_provenance_archive(
-            bindings=bindings,
-            journals=journal_set,
+        tree_digest = hashlib.sha256()
+        for current in files:
+            tree_digest.update(f"{current.path}\t{current.bytes}\t{current.sha256}\n".encode())
+        tree_sha256 = tree_digest.hexdigest()
+        binding_payload = binding_segment_bytes(
+            first_file_order=0,
+            files=[
+                {
+                    "path": binding.path,
+                    "bytes": binding.bytes,
+                    "sha256": binding.sha256,
+                    "status": binding.status,
+                    **(
+                        {
+                            "journal_id": binding.journal_id,
+                            "current_state_id": binding.current_state_id,
+                        }
+                        if binding.status == "captured"
+                        else {"omission_reason": binding.omission_reason}
+                    ),
+                }
+                for binding in bindings
+            ],
         )
-        sealed: list[SealedProvenanceObject] = []
-        for object_id, kind, relative_path, plaintext in (
-            *(
-                (
-                    bundle.bundle_id,
-                    "provenance-bundle",
-                    bundle.relative_path,
-                    bundle.content,
-                )
-                for bundle in provenance.bundles
-            ),
-            (
-                "provenance-index",
-                "provenance-index",
-                "provenance/index.json.age",
-                provenance.index_bytes,
-            ),
-        ):
-            ciphertext = encrypt_age_scrypt(plaintext, passphrase, log_n=1)
-            provenance_ciphertexts[relative_path] = ciphertext
-            sealed.append(
-                SealedProvenanceObject(
-                    object_id=object_id,
-                    kind=kind,
-                    relative_path=relative_path,
-                    plaintext_bytes=len(plaintext),
-                    plaintext_sha256=_sha256(plaintext),
-                    stored_bytes=len(ciphertext),
-                    stored_sha256=_sha256(ciphertext),
-                    revision=f"{object_id}-version",
-                    completed_at="2026-08-08T00:00:00Z",
-                )
+        volume_documents: list[ProvenanceVolumeDocument] = []
+        volume_payloads: list[bytes] = []
+        sequence = 0
+        volume_documents.append(
+            ProvenanceVolumeDocument(
+                archive_generation="a" * 64,
+                archive_tree_sha256=tree_sha256,
+                sequence=sequence,
+                payload=ProvenancePayloadIdentity(
+                    kind="bindings",
+                    path=f"provenance/payloads/volume-{format_provenance_sequence(sequence)}.bin.age",
+                    bytes=len(binding_payload),
+                    sha256=_sha256(binding_payload),
+                ),
+                first_file_order=0,
+                file_count=len(bindings),
             )
-        provenance_identity = provenance.identity
-        provenance_objects = tuple(sealed)
+        )
+        volume_payloads.append(binding_payload)
+        sequence += 1
+        for journal_id, content in sorted(journal_set.items()):
+            for offset in range(0, len(content), PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX):
+                payload = content[offset : offset + PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX]
+                volume_documents.append(
+                    ProvenanceVolumeDocument(
+                        archive_generation="a" * 64,
+                        archive_tree_sha256=tree_sha256,
+                        sequence=sequence,
+                        payload=ProvenancePayloadIdentity(
+                            kind="journal",
+                            path=(
+                                "provenance/payloads/volume-"
+                                f"{format_provenance_sequence(sequence)}.bin.age"
+                            ),
+                            bytes=len(payload),
+                            sha256=_sha256(payload),
+                        ),
+                        journal_id=journal_id,
+                        journal_offset=offset,
+                        journal_bytes=len(content),
+                        journal_sha256=_sha256(content),
+                    )
+                )
+                volume_payloads.append(payload)
+                sequence += 1
+        ordered = hashlib.sha256()
+        for document, payload in zip(volume_documents, volume_payloads, strict=True):
+            metadata_bytes = document.to_json_bytes()
+            update_ordered_volume_commitment(ordered, document)
+            provenance_ciphertexts[document.metadata_path] = encrypt_age_scrypt(
+                metadata_bytes, passphrase, log_n=1
+            )
+            provenance_ciphertexts[document.payload.path] = encrypt_age_scrypt(
+                payload, passphrase, log_n=1
+            )
+        provenance_terminal = ProvenanceTerminalDocument(
+            archive_generation="a" * 64,
+            archive_tree_sha256=tree_sha256,
+            sequence=len(volume_documents),
+        )
+        update_ordered_volume_commitment(ordered, provenance_terminal)
+        provenance_ciphertexts[provenance_terminal.metadata_path] = encrypt_age_scrypt(
+            provenance_terminal.to_json_bytes(), passphrase, log_n=1
+        )
+        provenance_root = ProvenanceRootDocument(
+            archive_generation="a" * 64,
+            archive_tree_sha256=tree_sha256,
+            ordered_volume_sha256=ordered.hexdigest(),
+        )
+        root_plaintext = provenance_root.to_json_bytes()
+        root_ciphertext = encrypt_age_scrypt(root_plaintext, passphrase, log_n=1)
+        provenance_ciphertexts["provenance/root.json.age"] = root_ciphertext
+        provenance_identity = provenance_root.identity
+        provenance_objects = (
+            SealedProvenanceObject(
+                object_id="provenance-root",
+                kind="provenance-root",
+                relative_path="provenance/root.json.age",
+                plaintext_bytes=len(root_plaintext),
+                plaintext_sha256=provenance_root.identity,
+                stored_bytes=len(root_ciphertext),
+                stored_sha256=_sha256(root_ciphertext),
+                revision="provenance-root-version",
+                completed_at="2026-08-08T00:00:00Z",
+            ),
+        )
 
-    manifest = build_collection_archive_manifest(
+    manifest, volume_documents = build_collection_archive_authority(
+        archive_generation="a" * 64,
         files=files,
         packs=((pack_plan, sealed_pack),),
         raw_volumes=raw_volumes,
@@ -261,8 +320,6 @@ def _write_archive(
         provenance_identity=provenance_identity,
         provenance_objects=provenance_objects,
     )
-    proof = f"sha256:{_sha256(manifest)}\n".encode()
-
     encrypted_manifest = encrypt_age_scrypt(manifest, passphrase, log_n=1)
     descriptor = RecoveryDescriptor(
         encryption=CollectionEncryptionBinding(
@@ -277,24 +334,34 @@ def _write_archive(
     ).to_json_bytes()
     ciphertext: dict[str, bytes] = {
         "manifest.json.age": encrypted_manifest,
-        "manifest.json.ots.age": encrypt_age_scrypt(proof, passphrase, log_n=1),
         "recovery.json": descriptor,
         sealed_pack.relative_path: pack_ciphertext,
         **raw_ciphertexts,
         **provenance_ciphertexts,
     }
+    for document in volume_documents:
+        relative_path = (
+            f"metadata/volume-{format_archive_sequence(document.volume.sequence)}.json.age"
+        )
+        ciphertext[relative_path] = encrypt_age_scrypt(
+            document.to_json_bytes(),
+            passphrase,
+            log_n=1,
+        )
+    tree_sha256 = str(__import__("json").loads(manifest)["tree"]["sha256"])
+    archive_terminal = build_collection_archive_terminal_document(
+        archive_generation="a" * 64,
+        tree_sha256=tree_sha256,
+        sequence=len(volume_documents),
+    )
+    terminal_path = f"metadata/volume-{format_archive_sequence(archive_terminal.sequence)}.json.age"
+    ciphertext[terminal_path] = encrypt_age_scrypt(
+        archive_terminal.to_json_bytes(), passphrase, log_n=1
+    )
     for relative, content in ciphertext.items():
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
-    (root / "SHA256SUMS").write_text(
-        "".join(
-            f"{_sha256(content)}  {relative}\n"
-            for relative, content in sorted(ciphertext.items())
-            if not relative.startswith("volumes/")
-        ),
-        encoding="utf-8",
-    )
     return expected, exact_journal
 
 
@@ -302,13 +369,11 @@ def test_recovers_complete_collection_without_server_or_database(tmp_path: Path)
     archive = tmp_path / "archive"
     expected, _journal = _write_archive(archive)
     output = tmp_path / "recovered"
-    ots = _write_ots_command(tmp_path / "ots-fixture")
 
     summary = recover_archive(
         archive,
         output,
         passphrases={PASSPHRASE_ID: PASSPHRASE},
-        ots_command=str(ots),
     )
 
     assert summary.files == len(expected)
@@ -328,7 +393,6 @@ def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_pat
         passphrase=second_passphrase,
         passphrase_id=second_id,
     )
-    ots = _write_ots_command(tmp_path / "ots-fixture")
     passphrases = {
         PASSPHRASE_ID: PASSPHRASE,
         second_id: second_passphrase,
@@ -342,7 +406,6 @@ def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_pat
             archive,
             output,
             passphrases=passphrases,
-            ots_command=str(ots),
         )
         assert {path: (output / path).read_bytes() for path in expected} == expected
 
@@ -351,7 +414,6 @@ def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_pat
             second_archive,
             tmp_path / "missing-key-output",
             passphrases={PASSPHRASE_ID: PASSPHRASE},
-            ots_command=str(ots),
         )
 
 
@@ -365,7 +427,6 @@ def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path)
         encoding="utf-8",
     )
     passphrases_file.chmod(0o600)
-    ots = _write_ots_command(tmp_path / "ots-fixture")
 
     completed = subprocess.run(
         [
@@ -376,8 +437,6 @@ def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path)
             str(output),
             "--passphrases-file",
             str(passphrases_file),
-            "--ots-command",
-            str(ots),
         ],
         check=False,
         capture_output=True,
@@ -442,26 +501,62 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
 ) -> None:
     archive = tmp_path / "archive"
     _write_archive(archive)
-    damaged = archive / "volumes/segment-000000000001.bin.age"
+    damaged = archive / f"volumes/segment-{format_archive_sequence(1)}.bin.age"
     damaged.write_bytes(damaged.read_bytes() + b"damage")
     output = tmp_path / "recovered"
-    ots = _write_ots_command(tmp_path / "ots-fixture")
-
     with pytest.raises(RecoveryError, match="stored volume byte count mismatch"):
         recover_archive(
             archive,
             output,
             passphrases={PASSPHRASE_ID: PASSPHRASE},
-            ots_command=str(ots),
         )
 
     assert not output.exists()
 
 
+def test_recovery_resumes_after_last_durable_volume_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "archive"
+    expected, _journal = _write_archive(archive)
+    damaged = archive / f"volumes/segment-{format_archive_sequence(1)}.bin.age"
+    original = damaged.read_bytes()
+    damaged.write_bytes(original + b"damage")
+    output = tmp_path / "recovered"
+    with pytest.raises(RecoveryError, match="stored volume byte count mismatch"):
+        recover_archive(
+            archive,
+            output,
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
+        )
+
+    checkpoint = tmp_path / ".recovered.riverhog-recovery" / "state.sqlite3"
+    assert checkpoint.is_file()
+    damaged.write_bytes(original)
+    original_recover_pack = recovery_module._recover_pack
+    pack_calls = 0
+
+    def recover_pack(*args: object, **kwargs: object) -> object:
+        nonlocal pack_calls
+        pack_calls += 1
+        return original_recover_pack(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(recovery_module, "_recover_pack", recover_pack)
+    recover_archive(
+        archive,
+        output,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
+    )
+
+    assert pack_calls == 0
+    assert not checkpoint.parent.exists()
+    assert {path: (output / path).read_bytes() for path in expected} == expected
+
+
 def test_recovery_descriptor_rejects_changed_root_before_decryption(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     _write_archive(archive)
-    (archive / "SHA256SUMS").unlink()
     root = archive / "manifest.json.age"
     root.write_bytes(root.read_bytes() + b"changed")
 
@@ -470,7 +565,6 @@ def test_recovery_descriptor_rejects_changed_root_before_decryption(tmp_path: Pa
             archive,
             tmp_path / "output",
             passphrases={PASSPHRASE_ID: PASSPHRASE},
-            ots_command=str(_write_ots_command(tmp_path / "ots-fixture")),
         )
 
 
@@ -520,28 +614,27 @@ def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
         client_summary.journal_id
     }
     output = tmp_path / "recovered"
-    ots = _write_ots_command(tmp_path / "ots-fixture")
 
     summary = recover_archive(
         archive,
         output,
         passphrases={PASSPHRASE_ID: PASSPHRASE},
-        ots_command=str(ots),
     )
 
     provenance_root = output / ".riverhog" / "provenance"
-    index = (provenance_root / "index.json").read_bytes()
+    restored_root = ProvenanceRootDocument.from_json_bytes(
+        (provenance_root / "root.json").read_bytes()
+    )
     restored_journals = {
         journal_id: (provenance_root / "journals" / f"{journal_id}.json-seq").read_bytes()
         for journal_id in journals
     }
-    validated = validate_portable_provenance_set(index, restored_journals)
     assert summary.provenance_mode == "mixed"
     assert summary.provenance_journals == 2
     assert restored_journals == journals
-    assert index == build_portable_provenance_set(
-        bindings=validated.bindings,
-        journals=restored_journals,
+    assert restored_root.ordered_volume_sha256
+    assert len(list((provenance_root / "metadata").glob("*.json"))) == (
+        len(list((provenance_root / "payloads").glob("*.bin"))) + 1
     )
     prepared = prepare_file_provenance(
         output / "notes" / "alpha.txt",

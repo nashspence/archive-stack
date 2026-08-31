@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
 from riverhog_age import CHUNK_SIZE
+from riverhog_archive_contracts import ARCHIVE_PACK_FILES_MAX
 from riverhog_protocol.pack_ingress import (
     PackUnitDescriptor,
     PackUnitPayloadReader,
@@ -15,6 +16,7 @@ from riverhog_protocol.pack_ingress import (
     pack_upload_plan_sha256,
 )
 from riverhog_protocol.paths import normalize_relpath
+from riverhog_protocol.transport import COLLECTION_UPLOAD_UNIT_SOURCE_MAX
 
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -30,7 +32,7 @@ PACK_INDEX_PATH = ".riverhog/pack-index.json"
 PACK_PADDING_PREFIX = ".riverhog/padding/"
 RESERVED_ARCHIVE_PREFIX = ".riverhog/"
 DEFAULT_PACK_SOURCE_BYTES = 32 * 1024 * 1024
-DEFAULT_PACK_FILES = 50_000
+DEFAULT_PACK_FILES = ARCHIVE_PACK_FILES_MAX
 DEFAULT_PACK_MEMBER_BYTES = 16 * 1024 * 1024
 DEFAULT_PART_PLAINTEXT_BYTES = 64 * 1024 * 1024
 _TAR_BLOCK_SIZE = 512
@@ -94,6 +96,8 @@ def plan_pack_volume(
     """Plan the canonical sealed v1 pack layout for finalized members."""
 
     normalized = _normalized_files(files, max_member_bytes=max_member_bytes)
+    if len(normalized) > ARCHIVE_PACK_FILES_MAX:
+        raise ValueError("pack files exceed the archive-volume limit")
     if sequence < 0:
         raise ValueError("pack sequence must be non-negative")
     if part_plaintext_bytes < 1:
@@ -101,7 +105,9 @@ def plan_pack_volume(
     if part_plaintext_bytes % CHUNK_SIZE:
         raise ValueError("pack archive-part target must align to the age chunk size")
 
-    volume_id = f"pack-{sequence:012d}"
+    if sequence >= 1 << 256:
+        raise ValueError("pack sequence exceeds its v1 representation")
+    volume_id = f"pack-{sequence:064x}"
     members: list[PackMemberPlan] = []
     units: list[PackUploadUnitPlan] = []
     unit_sources: list[ArchiveFile] = []
@@ -129,7 +135,10 @@ def plan_pack_volume(
         unit_sources.append(current)
 
         has_more_files = file_index < len(normalized) - 1
-        if has_more_files and cursor - unit_start >= part_plaintext_bytes:
+        if has_more_files and (
+            cursor - unit_start >= part_plaintext_bytes
+            or len(unit_sources) >= COLLECTION_UPLOAD_UNIT_SOURCE_MAX
+        ):
             padding, cursor = _alignment_padding(
                 volume_id=volume_id,
                 unit=unit_index,
@@ -241,7 +250,7 @@ def parse_pack_volume_plan(content: bytes | str) -> PackVolumePlan:
         raise ValueError("pack volume plan fields are invalid")
     sequence = _canonical_nonnegative_int(payload.get("sequence"), label="pack sequence")
     volume_id = str(payload.get("volume_id", ""))
-    if volume_id != f"pack-{sequence:012d}":
+    if sequence >= 1 << 256 or volume_id != f"pack-{sequence:064x}":
         raise ValueError("pack volume plan identity is invalid")
     max_member_bytes = _canonical_positive_int(
         payload.get("max_member_bytes"), label="pack member byte limit"

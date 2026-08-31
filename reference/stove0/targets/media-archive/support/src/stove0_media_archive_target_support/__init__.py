@@ -10,6 +10,7 @@ from stove0_media_archive_target_support.projection import (
     RetainedXmpSidecar,
     ffmpeg_container_metadata_args,
     render_projection_xmp,
+    resolve_media_archive_preflight_projection,
     resolve_media_archive_projection,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "RetainedXmpSidecar",
     "ffmpeg_container_metadata_args",
     "render_projection_xmp",
+    "resolve_media_archive_preflight_projection",
     "resolve_media_archive_projection",
 ]

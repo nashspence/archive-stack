@@ -24,6 +24,8 @@ def plan_raw_volumes(
 ) -> tuple[RawVolumePlan, ...]:
     if starting_sequence < 0:
         raise ValueError("raw volume starting sequence must be non-negative")
+    if starting_sequence >= 1 << 256:
+        raise ValueError("raw volume starting sequence exceeds its v1 representation")
     if max_plaintext_bytes <= 0:
         raise ValueError("raw volume plaintext limit must be positive")
     plans: list[RawVolumePlan] = []
@@ -41,7 +43,7 @@ def plan_raw_volumes(
         if current.bytes == 0:
             plans.append(
                 RawVolumePlan(
-                    volume_id=f"segment-{starting_sequence + len(plans):012d}",
+                    volume_id=f"segment-{starting_sequence + len(plans):064x}",
                     sequence=starting_sequence + len(plans),
                     source_path=path,
                     file_offset=0,
@@ -54,9 +56,11 @@ def plan_raw_volumes(
         while offset < current.bytes:
             length = min(max_plaintext_bytes, current.bytes - offset)
             sequence = starting_sequence + len(plans)
+            if sequence >= 1 << 256:
+                raise ValueError("raw volume sequence exceeds its v1 representation")
             plans.append(
                 RawVolumePlan(
-                    volume_id=f"segment-{sequence:012d}",
+                    volume_id=f"segment-{sequence:064x}",
                     sequence=sequence,
                     source_path=path,
                     file_offset=offset,
@@ -109,7 +113,7 @@ def parse_raw_volume_plan(content: bytes | str) -> RawVolumePlan:
         raise ValueError("raw volume plan fields are invalid")
     sequence = _canonical_nonnegative_int(payload.get("sequence"), label="raw sequence")
     volume_id = str(payload.get("volume_id", ""))
-    if volume_id != f"segment-{sequence:012d}":
+    if sequence >= 1 << 256 or volume_id != f"segment-{sequence:064x}":
         raise ValueError("raw volume plan identity is invalid")
     source_path = normalize_relpath(str(payload.get("source_path", "")))
     if source_path.startswith(RESERVED_ARCHIVE_PREFIX):

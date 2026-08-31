@@ -6,13 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from riverhog_age import CHUNK_SIZE
+from riverhog_archive_contracts import ARCHIVE_PACK_FILES_MAX, ARCHIVE_VOLUME_PARTS_MAX
 from riverhog_protocol.pack_ingress import RESERVED_ARCHIVE_PREFIX, canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
 from riverhog_core.archive_manifest import collection_tree_identity
 from riverhog_core.domain.archive import ArchiveFile, PackVolumePlan, RawVolumePlan
 from riverhog_core.pack_volume import (
-    DEFAULT_PACK_FILES,
     DEFAULT_PACK_MEMBER_BYTES,
     DEFAULT_PACK_SOURCE_BYTES,
     DEFAULT_PART_PLAINTEXT_BYTES,
@@ -32,7 +32,7 @@ _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 @dataclass(frozen=True, slots=True)
 class CollectionVolumePolicy:
     pack_source_bytes: int = DEFAULT_PACK_SOURCE_BYTES
-    pack_files: int = DEFAULT_PACK_FILES
+    pack_files: int = ARCHIVE_PACK_FILES_MAX
     pack_member_bytes: int = DEFAULT_PACK_MEMBER_BYTES
     pack_part_plaintext_bytes: int = DEFAULT_PART_PLAINTEXT_BYTES
     raw_volume_plaintext_bytes: int = DEFAULT_RAW_VOLUME_PLAINTEXT_BYTES
@@ -57,6 +57,16 @@ class CollectionVolumePolicy:
             raise ValueError("raw volume must contain at least one configured raw part")
         if self.raw_volume_plaintext_bytes % self.raw_part_plaintext_bytes:
             raise ValueError("raw volume size must be a multiple of the raw part size")
+        if self.raw_volume_plaintext_bytes // self.raw_part_plaintext_bytes > (
+            ARCHIVE_VOLUME_PARTS_MAX
+        ):
+            raise ValueError("raw volume contains too many construction parts")
+        if (
+            self.pack_source_bytes + self.pack_part_plaintext_bytes - 1
+        ) // self.pack_part_plaintext_bytes + 2 > ARCHIVE_VOLUME_PARTS_MAX:
+            raise ValueError("pack volume contains too many construction parts")
+        if self.pack_files > ARCHIVE_PACK_FILES_MAX:
+            raise ValueError("pack member target exceeds the v1 construction limit")
 
     @classmethod
     def from_env(cls, values: Mapping[str, str]) -> CollectionVolumePolicy:
@@ -76,7 +86,7 @@ class CollectionVolumePolicy:
             pack_files=_env_int(
                 values,
                 "RIVERHOG_PACK_FILES",
-                DEFAULT_PACK_FILES,
+                ARCHIVE_PACK_FILES_MAX,
             ),
             pack_member_bytes=_env_bytes(
                 values,

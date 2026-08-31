@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from http_api_contracts import (
     QuotedSha256Identity,
+    bounded_list_operation,
     operation_interface,
     parse_quoted_sha256_identity,
 )
@@ -23,12 +24,6 @@ from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
-from riverhog_api.complete_enumeration import (
-    CompleteEnumerationResponse,
-    bounded_list_operation,
-    complete_enumeration_operation,
-    complete_enumeration_response,
-)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.retrieval import (
     CreateRetrievalJobRequest,
@@ -61,7 +56,7 @@ def retrieval_cache_status(
 @router.get(
     "/retrieval-cache/objects",
     response_model=RetrievalCacheObjectListOut,
-    openapi_extra=bounded_list_operation(paired_operation_id="stream_retrieval_cache_objects"),
+    openapi_extra=bounded_list_operation(),
 )
 def list_retrieval_cache_objects(
     principal: CatalogReader,
@@ -95,61 +90,6 @@ def list_retrieval_cache_objects(
             order=order,
             principal=principal,
         )
-    )
-
-
-@router.get(
-    "/retrieval-cache/objects/stream",
-    response_class=CompleteEnumerationResponse,
-    openapi_extra=complete_enumeration_operation(
-        paired_operation_id="list_retrieval_cache_objects",
-        item_type=RetrievalCacheObjectOut,
-        schema_id="riverhog.retrieval-cache-object/v1",
-    ),
-)
-def stream_retrieval_cache_objects(
-    principal: CatalogReader,
-    container: ContainerDep,
-    q: str | None = Query(None),
-    tag: Annotated[CanonicalTag | None, Query()] = None,
-    collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
-    source_store: Annotated[ArchiveStoreName | None, Query()] = None,
-    state: Annotated[RetrievalCacheState | None, Query()] = None,
-    protection: Annotated[RetrievalCacheProtection | None, Query()] = None,
-    expires_before: str | None = Query(None),
-    expires_after: str | None = Query(None),
-    sort: Annotated[RetrievalCacheSort, Query()] = "cached_at",
-    order: Annotated[SortOrder, Query()] = "desc",
-) -> Response:
-    query = {
-        "q": q,
-        "tag": tag,
-        "collection_id": collection_id,
-        "source_store": source_store,
-        "state": state,
-        "protection": protection,
-        "expires_before": expires_before,
-        "expires_after": expires_after,
-        "sort": sort,
-        "order": order,
-    }
-    return complete_enumeration_response(
-        container.retrieval.iter_cache_objects(
-            q=q,
-            tag=tag,
-            collection_id=collection_id,
-            source_store=source_store,
-            state=state,
-            protection=protection,
-            expires_before=expires_before,
-            expires_after=expires_after,
-            sort=sort,
-            order=order,
-            principal=principal,
-        ),
-        query=query,
-        item_type=RetrievalCacheObjectOut,
-        schema_id="riverhog.retrieval-cache-object/v1",
     )
 
 

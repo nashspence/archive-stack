@@ -55,6 +55,7 @@ from stove0_recipe_config import (
 from stove0_target_protocol import (
     InputArtifact,
     OperationContract,
+    TargetInputAuthority,
     TargetPreflightRequest,
 )
 
@@ -459,25 +460,47 @@ class RecipePlanner:
         plan: WorkflowPlan,
         selections: Mapping[str, ArtifactSelection],
     ) -> TargetPreflightRequest:
+        selection = self.target_input_selection(plan, selections)
+        authority = TargetInputAuthority.from_selection(selection)
+        return TargetPreflightRequest(
+            protocol=self.targets.contract(plan.target_registration_id).protocol,
+            operation_id=plan.operation.id,
+            operation_contract_sha256=plan.operation.sha256,
+            inputs=authority,
+            intent=plan.work.effective_intent,
+            target_options=plan.requested_target_options,
+            observations=plan.observations,
+        )
+
+    def target_input_selection(
+        self,
+        plan: WorkflowPlan,
+        selections: Mapping[str, ArtifactSelection],
+    ) -> ArtifactSelection:
         self._recipe(plan.work)
         binding = plan.work.fork_join
         if isinstance(binding, BranchWorkBinding):
             selection = selections.get(binding.artifact_selection_sha256)
             if selection is None:
                 raise RuntimeError("branch preflight is missing its exact artifact selection")
-            artifacts = _target_inputs_from_selection(selection)
+            return selection
         elif isinstance(binding, JoinWorkBinding):
             artifacts = _join_target_inputs(binding, selections)
         else:
             raise RuntimeError("target execution requires explicit branch or join work")
-        return TargetPreflightRequest(
-            protocol=self.targets.contract(plan.target_registration_id).protocol,
-            operation_id=plan.operation.id,
-            operation_contract_sha256=plan.operation.sha256,
-            inputs=artifacts,
-            intent=plan.work.effective_intent,
-            target_options=plan.requested_target_options,
-            observations=plan.observations,
+        return ArtifactSelection.seal(
+            tuple(
+                ArtifactSubject(
+                    id=artifact.id,
+                    role=artifact.role,
+                    collection=artifact.collection,
+                    path=artifact.path,
+                    bytes=artifact.bytes,
+                    sha256=artifact.sha256,
+                    media_type=artifact.media_type,
+                )
+                for artifact in artifacts
+            )
         )
 
     def _project_operation(
@@ -526,23 +549,34 @@ class RecipePlanner:
                 or str(current.get("content_identity") or "") != root.content_identity
             ):
                 raise RuntimeError(f"collection root changed: {root.collection_id}")
-            with self.riverhog.stream_search(
-                collection=root.collection_id,
-                sort="file_ref",
-                order="asc",
-            ) as artifacts:
-                for raw in artifacts:
-                    path = str(raw.get("path") or "")
+            cursor: str | None = None
+            inventory_identity: str | None = None
+            while True:
+                page = self.riverhog.get_portable_collection_inventory(
+                    root.collection_id,
+                    cursor=cursor,
+                    limit=1000,
+                    inventory_identity=inventory_identity,
+                )
+                if inventory_identity is None:
+                    inventory_identity = page.authority.inventory_identity
+                elif page.authority.inventory_identity != inventory_identity:
+                    raise RuntimeError("collection inventory identity changed")
+                for artifact in page.files:
+                    path = artifact.path
                     if path.startswith("riverhog/"):
                         continue
                     rows.append(
                         {
                             "collection": root,
                             "path": path,
-                            "bytes": int(raw.get("bytes") or 0),
-                            "sha256": str(raw.get("sha256") or ""),
+                            "bytes": artifact.bytes,
+                            "sha256": artifact.sha256,
                         }
                     )
+                if page.complete:
+                    break
+                cursor = page.next_cursor
         return tuple(rows)
 
 

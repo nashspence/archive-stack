@@ -100,11 +100,13 @@ def _process_archive_maintenance(
     container: ServiceContainer,
     *,
     startup_recovery: bool = False,
-) -> None:
+) -> bool:
+    progressed = 0
     if startup_recovery:
         requeued_finalizations = (
             container.collection_uploads.requeue_interrupted_finalizations_for_startup(limit=100)
         )
+        progressed += requeued_finalizations
         if requeued_finalizations:
             _LOG.info(
                 "startup requeued interrupted collection finalizations: count=%s",
@@ -113,17 +115,20 @@ def _process_archive_maintenance(
         requeued_discards = (
             container.collection_uploads.requeue_interrupted_orphan_discards_for_startup(limit=100)
         )
+        progressed += requeued_discards
         if requeued_discards:
             _LOG.info(
                 "startup restored interrupted collection upload discards: count=%s",
                 requeued_discards,
             )
         requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(limit=100)
+        progressed += requeued_copies
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
         requeued_metadata = (
             container.archive_maintenance.requeue_interrupted_metadata_publications_for_startup()
         )
+        progressed += requeued_metadata
         if requeued_metadata:
             _LOG.info(
                 "startup requeued interrupted metadata-manifest publications: count=%s",
@@ -132,36 +137,31 @@ def _process_archive_maintenance(
         requeued_verifications = (
             container.provenance.requeue_interrupted_verifications_for_startup()
         )
+        progressed += requeued_verifications
         if requeued_verifications:
             _LOG.info(
                 "startup reconciled interrupted provenance verifications: count=%s",
                 requeued_verifications,
             )
-    container.collection_uploads.process_due_finalizations(limit=1)
-    container.collection_uploads.reap_expired_custody_transfers(limit=100)
-    container.collection_workflows.reap_expired_claims(limit=100)
-    container.archive_copies.process_due(limit=1)
-    container.archive_maintenance.process_due_metadata_publications(limit=10)
-    container.provenance.process_due_verifications(limit=1)
-
-
-def _process_proof_maturations(
-    container: ServiceContainer,
-    *,
-    startup_recovery: bool = False,
-) -> None:
-    if startup_recovery:
-        requeued = container.proof_maturations.requeue_interrupted_for_startup()
-        if requeued:
-            _LOG.info("startup requeued interrupted proof maturations: count=%s", requeued)
-        requeued_attestations = container.archive_attestations.requeue_interrupted_for_startup()
-        if requeued_attestations:
+        requeued_dispositions = (
+            container.collection_workflows.requeue_interrupted_disposition_sets_for_startup()
+        )
+        progressed += requeued_dispositions
+        if requeued_dispositions:
             _LOG.info(
-                "startup requeued interrupted archive attestations: count=%s",
-                requeued_attestations,
+                "startup resumed interrupted disposition sealing: count=%s",
+                requeued_dispositions,
             )
-    container.proof_maturations.process_due(limit=100)
-    container.archive_attestations.process_due(limit=100)
+    progressed += container.collection_uploads.process_due_provenance_journal_validations(limit=1)
+    progressed += container.collection_uploads.process_due_finalizations(limit=1)
+    progressed += container.collection_uploads.reap_expired_custody_transfers(limit=100)
+    progressed += container.collection_workflows.reap_expired_claims(limit=100)
+    progressed += container.collection_workflows.process_due_disposition_sets(limit=1)
+    progressed += container.collection_workflows.process_due_outcome_sets(limit=1)
+    progressed += container.archive_copies.process_due(limit=1)
+    progressed += container.archive_maintenance.process_due_metadata_publications(limit=10)
+    progressed += container.provenance.process_due_verifications(limit=1)
+    return progressed > 0
 
 
 def _abort_incomplete_archive_writes(
@@ -183,27 +183,28 @@ async def _run_archive_upload_reaper(
 ) -> None:
     interval_seconds = max(sweep_interval.total_seconds(), 0.1)
     startup_recovery = True
+    delay_seconds = 0.0
     while True:
         try:
-            if startup_recovery:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(interval_seconds)
+            await asyncio.sleep(delay_seconds)
             container = container_provider()
             if container is None:
+                delay_seconds = interval_seconds
                 continue
             current_startup_recovery = startup_recovery
             startup_recovery = False
             async with operation_lock:
-                await asyncio.to_thread(
+                progressed = await asyncio.to_thread(
                     _process_archive_maintenance,
                     container,
                     startup_recovery=current_startup_recovery,
                 )
+            delay_seconds = 0.0 if progressed else interval_seconds
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
             _LOG.exception("archive maintenance reaper sweep failed")
+            delay_seconds = interval_seconds
 
 
 async def _run_archive_write_reaper(
@@ -295,35 +296,6 @@ async def _run_retrieval_cache_reaper(
             _LOG.exception("retrieval-cache cleanup sweep failed")
 
 
-async def _run_proof_maturation_reaper(
-    container_provider: Callable[[], ServiceContainer | None],
-    *,
-    sweep_interval: timedelta,
-) -> None:
-    interval_seconds = max(sweep_interval.total_seconds(), 0.1)
-    startup_recovery = True
-    while True:
-        try:
-            if startup_recovery:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(interval_seconds)
-            container = container_provider()
-            if container is None:
-                continue
-            current_startup_recovery = startup_recovery
-            startup_recovery = False
-            await asyncio.to_thread(
-                _process_proof_maturations,
-                container,
-                startup_recovery=current_startup_recovery,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("proof maturation reaper sweep failed")
-
-
 def create_app(
     *,
     container: ServiceContainer | None = None,
@@ -332,7 +304,6 @@ def create_app(
     archive_write_reaper_interval: float | None = None,
     retrieval_restore_poll_interval: float | None = None,
     retrieval_cache_reaper_interval: float | None = None,
-    proof_maturation_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
         raise ValueError("create_app accepts either container or container_provider, not both")
@@ -361,11 +332,6 @@ def create_app(
         timedelta(seconds=retrieval_cache_reaper_interval)
         if retrieval_cache_reaper_interval is not None
         else config.retrieval_cache_sweep_interval
-    )
-    proof_maturation_sweep_interval = (
-        timedelta(seconds=proof_maturation_reaper_interval)
-        if proof_maturation_reaper_interval is not None
-        else config.proof_maturation_sweep_interval
     )
 
     def get_or_create_container() -> ServiceContainer:
@@ -410,12 +376,6 @@ def create_app(
                 sweep_interval=retrieval_cache_sweep_interval,
             )
         )
-        proof_maturation_task = asyncio.create_task(
-            _run_proof_maturation_reaper(
-                get_or_create_container,
-                sweep_interval=proof_maturation_sweep_interval,
-            )
-        )
         try:
             yield
         finally:
@@ -423,7 +383,6 @@ def create_app(
             archive_write_task.cancel()
             retrieval_restore_task.cancel()
             retrieval_cache_task.cancel()
-            proof_maturation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
             with contextlib.suppress(asyncio.CancelledError):
@@ -432,8 +391,6 @@ def create_app(
                 await retrieval_restore_task
             with contextlib.suppress(asyncio.CancelledError):
                 await retrieval_cache_task
-            with contextlib.suppress(asyncio.CancelledError):
-                await proof_maturation_task
             if owns_app_container and app_container is not None:
                 app_container.close()
                 default_container.cache_clear()

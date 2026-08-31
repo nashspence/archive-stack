@@ -161,6 +161,7 @@ install -d -m 0700 "${secret_root}" "${intake_root}"
 umask 077
 printf '%s\n' 'postgresql+psycopg://riverhog:riverhog@postgres:5432/stove0' > "${secret_root}/stove0-database-url"
 printf '%s\n' 'stove0-compose-smoke-token' > "${secret_root}/stove0-api-token"
+printf '%s\n' 'stove0-compose-target-callback-signing-key' > "${secret_root}/stove0-target-callback-signing-key"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-api-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-controller-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-worker-riverhog-token"
@@ -209,6 +210,7 @@ export STOVE0_TARGET_TMPFS_SIZE=256m
 export STOVE0_REVIEW_TMPFS_SIZE=256m
 export STOVE0_DATABASE_URL_FILE="${secret_root}/stove0-database-url"
 export STOVE0_API_TOKEN_FILE="${secret_root}/stove0-api-token"
+export STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE="${secret_root}/stove0-target-callback-signing-key"
 export STOVE0_API_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-api-riverhog-token"
 export STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-controller-riverhog-token"
 export STOVE0_WORKER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-worker-riverhog-token"
@@ -333,13 +335,20 @@ adapter_compose exec -T \
   ftp-adapter python -c "${adapter_run_code}"
 
 cache_code="from riverhog_api_client import ApiClient
+def collect(method, key, **kwargs):
+    page = 1
+    rows = []
+    while True:
+        payload = method(page=page, per_page=100, **kwargs)
+        rows.extend(payload[key])
+        if page >= payload['pages']:
+            return rows
+        page += 1
 with ApiClient() as client:
-    with client.stream_collections(tag='stove0-audio-archive') as rows:
-        collections = list(rows)
+    collections = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
     assert len(collections) == 1, collections
     input_id = collections[0]['id']
-    with client.stream_retrieval_cache_objects(collection_id=input_id) as rows:
-        cached = list(rows)
+    cached = collect(client.list_retrieval_cache_objects, 'objects', collection_id=input_id)
     assert cached, cached
     assert all(row['state'] == 'ready' for row in cached), cached
     assert all('new_archive' in row['lease_categories'] for row in cached), cached"
@@ -413,16 +422,21 @@ scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 
 lineage_code="import json, os
 from riverhog_api_client import ApiClient
+def collect(method, key, **kwargs):
+    page = 1
+    rows = []
+    while True:
+        payload = method(page=page, per_page=100, **kwargs)
+        rows.extend(payload[key])
+        if page >= payload['pages']:
+            return rows
+        page += 1
 with ApiClient() as client:
-    with client.stream_collections(tag='stove0-audio-archive') as rows:
-        inputs = list(rows)
-    with client.stream_collections(tag='archive-audio') as rows:
-        outputs = list(rows)
+    inputs = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
+    outputs = collect(client.list_collections, 'collections', tag='archive-audio')
     assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
-    with client.stream_search(collection=inputs[0]['id']) as rows:
-        input_files = [row for row in rows if not row['path'].startswith('riverhog/')]
-    with client.stream_search(collection=outputs[0]['id']) as rows:
-        output_files = [row for row in rows if not row['path'].startswith('riverhog/')]
+    input_files = [row for row in collect(client.search, 'files', collection=inputs[0]['id']) if not row['path'].startswith('riverhog/')]
+    output_files = [row for row in collect(client.search, 'files', collection=outputs[0]['id']) if not row['path'].startswith('riverhog/')]
     audio_count = int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
     assert len(input_files) == audio_count + 1
     archive_outputs = [row for row in output_files if row['path'].endswith('.opus')]
@@ -442,7 +456,21 @@ with ApiClient() as client:
     input_bytes = sum(row['bytes'] for row in input_files)
     derivation = client.get_collection_derivation(outputs[0]['id'])
     assert derivation['derivation']['format'] == 'riverhog-collection-derivation/v1'
-    assert [row['collection_id'] for row in derivation['derivation']['inputs']] == [inputs[0]['id']]
+    authority = derivation['derivation']['input_set_sha256']
+    ordinal = 0
+    roots = []
+    while True:
+        page = client.list_processing_claim_inputs(
+            derivation['derivation']['claim']['id'],
+            authority_sha256=authority,
+            start_ordinal=ordinal,
+        )
+        assert page.authority.sha256 == authority
+        roots.extend(page.inputs)
+        if page.next_ordinal is None:
+            break
+        ordinal = page.next_ordinal
+    assert [row.collection_id for row in roots] == [inputs[0]['id']]
     print(json.dumps({
         'format': 'stove0-final-image-scale/v1',
         'elapsed_seconds': elapsed_seconds,

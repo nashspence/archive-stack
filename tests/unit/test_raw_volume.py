@@ -19,8 +19,8 @@ def test_raw_volume_plan_is_canonical_restart_state() -> None:
     )
     plans = plan_raw_volumes((file,), starting_sequence=3, max_plaintext_bytes=10)
     assert [current.volume_id for current in plans] == [
-        "segment-000000000003",
-        "segment-000000000004",
+        "segment-" + f"{3:064x}",
+        "segment-" + f"{4:064x}",
     ]
     for plan in plans:
         payload = raw_volume_plan_payload(plan)

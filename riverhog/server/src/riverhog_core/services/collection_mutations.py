@@ -6,16 +6,19 @@ from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
-    CollectionArchiveAttestationRecord,
     CollectionDeletionRecord,
-    CollectionProofMaturationRecord,
     CollectionRecord,
 )
 
 
 def require_collection_archive_idle(session: Session, collection_id: int) -> None:
     session.scalar(
-        select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
+        select(CollectionRecord.id)
+        .where(
+            CollectionRecord.id == collection_id,
+            CollectionRecord.is_published.is_(True),
+        )
+        .with_for_update()
     )
     if session.get(CollectionDeletionRecord, collection_id) is not None:
         raise Conflict(f"collection deletion is in progress: {collection_id}")
@@ -29,37 +32,16 @@ def require_collection_archive_idle(session: Session, collection_id: int) -> Non
         raise Conflict(
             f"archive copy retirement is in progress: {collection_id} in {retirement.store}"
         )
-    maturation = session.scalar(
-        select(CollectionProofMaturationRecord)
-        .where(
-            CollectionProofMaturationRecord.collection_id == collection_id,
-            CollectionProofMaturationRecord.state == "upgrading",
-        )
-        .order_by(CollectionProofMaturationRecord.store)
-        .limit(1)
-    )
-    if maturation is not None:
-        raise Conflict(
-            f"archive proof maturation is in progress: {collection_id} in {maturation.store}"
-        )
-    attestation = session.scalar(
-        select(CollectionArchiveAttestationRecord)
-        .where(
-            CollectionArchiveAttestationRecord.collection_id == collection_id,
-            CollectionArchiveAttestationRecord.state.in_(("publishing", "upgrading")),
-        )
-        .order_by(CollectionArchiveAttestationRecord.store)
-        .limit(1)
-    )
-    if attestation is not None:
-        raise Conflict(
-            f"archive attestation is in progress: {collection_id} in {attestation.store}"
-        )
 
 
 def require_collection_mutation_allowed(session: Session, collection_id: int) -> None:
     session.scalar(
-        select(CollectionRecord.id).where(CollectionRecord.id == collection_id).with_for_update()
+        select(CollectionRecord.id)
+        .where(
+            CollectionRecord.id == collection_id,
+            CollectionRecord.is_published.is_(True),
+        )
+        .with_for_update()
     )
     if session.get(CollectionDeletionRecord, collection_id) is not None:
         raise Conflict(f"collection deletion is in progress: {collection_id}")

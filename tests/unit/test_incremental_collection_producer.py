@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,19 +21,17 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import TagRecord
 from riverhog_core.collection_plan import CollectionVolumePolicy
-from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadUnitWorkDocument,
-    CollectionUploadVolumeSetDocument,
+    CollectionUploadWorkBatchDocument,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
 from riverhog_protocol.paths import tag_set_identity
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
 
@@ -76,15 +73,12 @@ class _CustodyApi:
         _collection_id: int,
         **_kwargs: object,
     ) -> dict[str, object]:
-        return {"files": list(self.rows.values())}
-
-    @contextmanager
-    def stream_collection_upload_session_files(
-        self,
-        collection_id: int,
-    ) -> Iterator[Iterator[dict[str, object]]]:
-        payload = self.list_collection_upload_session_files(collection_id)
-        yield iter(payload["files"])  # type: ignore[arg-type]
+        return {
+            "page": 1,
+            "pages": 1 if self.rows else 0,
+            "total": len(self.rows),
+            "files": list(self.rows.values()),
+        }
 
     def register_collection_upload_session_files(
         self,
@@ -102,7 +96,7 @@ class _CustodyApi:
                 sha256=str(row["sha256"]),
                 archive_objects=(
                     CollectionUploadCustodyObjectDocument(
-                        volume_id=f"pack-{len(self.rows):012d}",
+                        volume_id=f"pack-{len(self.rows):064x}",
                         sealed_receipt_sha256="f" * 64,
                     ),
                 ),
@@ -111,13 +105,22 @@ class _CustodyApi:
             self.rows[path] = row
         return {"files": list(self.rows.values()), "volumes": []}
 
-    def list_collection_upload_session_volumes(
+    def acquire_collection_upload_session_work(
         self,
         collection_id: int,
-    ) -> CollectionUploadVolumeSetDocument:
-        return CollectionUploadVolumeSetDocument(collection_id=collection_id, volumes=())
+        *,
+        limit: int = 16,
+    ) -> CollectionUploadWorkBatchDocument:
+        del limit
+        return CollectionUploadWorkBatchDocument(
+            collection_id=collection_id,
+            planning_complete=True,
+            complete=True,
+            committed_payload_bytes=0,
+            work=[],
+        )
 
-    def put_collection_upload_session_provenance_journal(
+    def upload_collection_upload_session_provenance_journal(
         self, *_args: object, **_kwargs: object
     ) -> None:
         raise AssertionError("omitted-provenance fixture must not publish journals")
@@ -229,7 +232,7 @@ def test_incremental_producer_keeps_local_custody_when_receipt_identity_is_wrong
                     sha256=str(row["sha256"]),
                     archive_objects=(
                         CollectionUploadCustodyObjectDocument(
-                            volume_id="pack-000000000000",
+                            volume_id=f"pack-{0:064x}",
                             sealed_receipt_sha256="f" * 64,
                         ),
                     ),
@@ -287,7 +290,7 @@ class _ServiceApi:
     ) -> None:
         self.service = service
         self.principal = principal
-        self.volume_list_calls = 0
+        self.work_calls = 0
 
     def spawn(self) -> _ServiceApi:
         return self
@@ -335,14 +338,6 @@ class _ServiceApi:
             files.append(row)
         return {**payload, "files": files}
 
-    @contextmanager
-    def stream_collection_upload_session_files(
-        self,
-        collection_id: int,
-    ) -> Iterator[Iterator[dict[str, object]]]:
-        payload = self.list_collection_upload_session_files(collection_id)
-        yield iter(payload["files"])  # type: ignore[arg-type]
-
     def register_collection_upload_session_files(
         self,
         collection_id: int,
@@ -351,13 +346,15 @@ class _ServiceApi:
     ) -> dict[str, object]:
         return self.service.register_files(collection_id, files)
 
-    def list_collection_upload_session_volumes(
+    def acquire_collection_upload_session_work(
         self,
         collection_id: int,
-    ) -> CollectionUploadVolumeSetDocument:
-        self.volume_list_calls += 1
-        return CollectionUploadVolumeSetDocument.model_validate(
-            self.service.list_volumes(collection_id)
+        *,
+        limit: int = 16,
+    ) -> CollectionUploadWorkBatchDocument:
+        self.work_calls += 1
+        return CollectionUploadWorkBatchDocument.model_validate(
+            self.service.acquire_work(collection_id, limit=limit)
         )
 
     def get_collection_upload_session_unit(
@@ -395,13 +392,11 @@ class _ServiceApi:
         *,
         files_total: int,
         content_identity: str,
-        provenance_identity: str | None,
     ) -> dict[str, object]:
         return self.service.complete(
             collection_id,
             files_total=files_total,
             content_identity=content_identity,
-            provenance_identity=provenance_identity,
         )
 
     def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
@@ -409,11 +404,7 @@ class _ServiceApi:
         return self.service.get(collection_id)
 
 
-def _bounded_service_api(
-    tmp_path: Path,
-    *,
-    proof_stamper: ProofStamper,
-) -> tuple[_ServiceApi, MemoryArchiveStore]:
+def _bounded_service_api(tmp_path: Path) -> tuple[_ServiceApi, MemoryArchiveStore]:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     config = RuntimeConfig(database_url=database_url, archive_scrypt_work_factor=1)
     initialize_db(database_url)
@@ -430,7 +421,6 @@ def _bounded_service_api(
     service = SqlAlchemyCollectionUploadService(
         config,
         ArchiveStoreRegistry({"archive": binding}),
-        proof_stamper=proof_stamper,
         policy=CollectionVolumePolicy(
             pack_source_bytes=1024,
             pack_files=4,
@@ -453,7 +443,7 @@ def test_many_artifact_publication_retains_only_the_unsealed_pack_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
-    api, store = _bounded_service_api(tmp_path, proof_stamper=FixtureProofStamper())
+    api, store = _bounded_service_api(tmp_path)
     producer = IncrementalCollectionProducer(
         api,  # type: ignore[arg-type]
         producer_app="fixture-target",
@@ -495,4 +485,4 @@ def test_many_artifact_publication_retains_only_the_unsealed_pack_window(
     assert high_water <= 5  # four unsealed members plus the newly completed artifact
     assert not any(path.exists() for path in local.values())
     assert len([path for path in store.objects if "/volumes/" in path]) >= 7
-    assert api.volume_list_calls < len(local)
+    assert api.work_calls < len(local)

@@ -16,7 +16,6 @@ from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
-    CollectionProofMaturationRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
@@ -43,6 +42,9 @@ from tests.unit.archive_object_fixtures import (
 )
 
 FILES = {"document.txt": b"archive copy service\n", "notes.txt": b"small notes\n"}
+PACK_ID = f"pack-{0:064x}"
+VOLUME_METADATA_ID = f"volume-metadata-{0:064x}"
+VOLUME_TERMINAL_ID = f"volume-terminal-{1:064x}"
 INITIATOR = ApplicationPrincipal(
     app="operator",
     key_id="operator-key",
@@ -170,17 +172,24 @@ def test_archive_copy_preserves_the_independent_object_manifest(
         f"{prefix}/{relative_path}": content
         for relative_path, content in archive.stored_objects.items()
     }
-    expected_ids = ("pack-000000000000", "manifest", "recovery-descriptor", "proof")
+    expected_ids = (
+        archive.pack_plan.volume_id,
+        f"volume-metadata-{0:064x}",
+        f"volume-terminal-{1:064x}",
+        "manifest",
+        "recovery-descriptor",
+    )
     assert source.prepared == [expected_ids]
     assert source.cleaned == [expected_ids]
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
         assert copy is not None
         assert [(current.kind, current.object_id) for current in copy.objects] == [
-            ("pack", "pack-000000000000"),
+            ("pack", archive.pack_plan.volume_id),
+            ("volume-metadata", f"volume-metadata-{0:064x}"),
+            ("volume-terminal", f"volume-terminal-{1:064x}"),
             ("manifest", "manifest"),
             ("recovery-descriptor", "recovery-descriptor"),
-            ("proof", "proof"),
         ]
         pack = copy.objects[0]
         assert [current.path for current in pack.placements] == sorted(FILES)
@@ -190,8 +199,6 @@ def test_archive_copy_preserves_the_independent_object_manifest(
         assert job is not None
         assert job.state == "completed"
         assert job.completed_at is not None
-        maturation = session.get(CollectionProofMaturationRecord, (COLLECTION_ID, "b2"))
-        assert maturation is not None and maturation.state == "pending"
     shown = service.get(COLLECTION_ID, destination_store="b2")
     listed = service.list(
         page=1,
@@ -219,9 +226,9 @@ def test_archive_copy_preserves_the_independent_object_manifest(
     assert events[-1].data["context"] == {"workflow": "promotion"}
     transfer_messages = [message for message in caplog.messages if "transfer operation=" in message]
     assert any("operation=archive_copy_segment" in message for message in transfer_messages)
-    assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 3
+    assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 4
     assert all("integrity_seconds=" in message for message in transfer_messages)
-    assert all("pack-000000000000" not in message for message in transfer_messages)
+    assert all(PACK_ID not in message for message in transfer_messages)
 
 
 def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
@@ -293,12 +300,21 @@ def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> 
     assert archive.provenance is not None
 
     expected_ids = (
-        "pack-000000000000",
-        *(bundle.bundle_id for bundle in archive.provenance.bundles),
-        "provenance-index",
+        PACK_ID,
+        VOLUME_METADATA_ID,
+        VOLUME_TERMINAL_ID,
+        *(
+            f"provenance-payload-{item.document.sequence:064x}"
+            for item in archive.provenance.volumes
+        ),
+        *(
+            f"provenance-volume-{item.document.sequence:064x}"
+            for item in archive.provenance.volumes
+        ),
+        f"provenance-terminal-{len(archive.provenance.volumes):064x}",
+        "provenance-root",
         "manifest",
         "recovery-descriptor",
-        "proof",
     )
     prefix = "archives/b2/new-copy"
     assert destination.objects == {
@@ -311,12 +327,32 @@ def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> 
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
         assert copy is not None
         assert [(current.kind, current.object_id) for current in copy.objects] == [
-            ("pack", "pack-000000000000"),
-            *(("provenance-bundle", bundle.bundle_id) for bundle in archive.provenance.bundles),
-            ("provenance-index", "provenance-index"),
+            ("pack", PACK_ID),
+            ("volume-metadata", VOLUME_METADATA_ID),
+            ("volume-terminal", VOLUME_TERMINAL_ID),
+            *(
+                (
+                    "provenance-bindings"
+                    if item.document.payload.kind == "bindings"
+                    else "provenance-journal-segment",
+                    f"provenance-payload-{item.document.sequence:064x}",
+                )
+                for item in archive.provenance.volumes
+            ),
+            *(
+                (
+                    "provenance-volume-metadata",
+                    f"provenance-volume-{item.document.sequence:064x}",
+                )
+                for item in archive.provenance.volumes
+            ),
+            (
+                "provenance-terminal",
+                f"provenance-terminal-{len(archive.provenance.volumes):064x}",
+            ),
+            ("provenance-root", "provenance-root"),
             ("manifest", "manifest"),
             ("recovery-descriptor", "recovery-descriptor"),
-            ("proof", "proof"),
         ]
 
 
@@ -370,21 +406,22 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         assert checkpoints == []
         cached = session.get(
             RetrievalCacheObjectRecord,
-            ("deep", COLLECTION_ID, "pack-000000000000"),
+            ("deep", COLLECTION_ID, PACK_ID),
         )
         lease = session.get(
             RetrievalCacheLeaseRecord,
-            ("new-archive", "deep", COLLECTION_ID, "pack-000000000000"),
+            ("new-archive", "deep", COLLECTION_ID, PACK_ID),
         )
         assert cached is not None
         assert lease is not None
     assert set(destination.objects) == {
-        "archives/deep/new-copy/volumes/pack-000000000000.tar.age",
+        f"archives/deep/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age",
+        f"archives/deep/new-copy/metadata/volume-{0:064x}.json.age",
+        f"archives/deep/new-copy/metadata/volume-{1:064x}.json.age",
         "archives/deep/new-copy/manifest.json.age",
         "archives/deep/new-copy/recovery.json",
-        "archives/deep/new-copy/manifest.json.ots.age",
     }
-    pack_path = "archives/deep/new-copy/volumes/pack-000000000000.tar.age"
+    pack_path = f"archives/deep/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age"
     assert cache.store.objects[pack_path] == destination.objects[pack_path]
 
 
@@ -425,7 +462,7 @@ def test_restore_required_copy_uses_archive_only_when_new_archive_cache_is_disab
     selected = service._volume_object_store(
         store_name="deep",
         collection_id=COLLECTION_ID,
-        object_id="pack-000000000000",
+        object_id=PACK_ID,
     )
 
     assert selected is destination
@@ -446,7 +483,15 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None and job.state == "waiting"
-    assert source.prepared == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
+    assert source.prepared == [
+        (
+            PACK_ID,
+            VOLUME_METADATA_ID,
+            VOLUME_TERMINAL_ID,
+            "manifest",
+            "recovery-descriptor",
+        )
+    ]
     assert destination.objects == {}
 
 
@@ -501,7 +546,15 @@ def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
 
     assert service.process_due(limit=1) == 1
     assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
-    assert source.cleaned == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
+    assert source.cleaned == [
+        (
+            PACK_ID,
+            VOLUME_METADATA_ID,
+            VOLUME_TERMINAL_ID,
+            "manifest",
+            "recovery-descriptor",
+        )
+    ]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
 
 
@@ -518,7 +571,15 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
 
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
-    assert source.cleaned == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
+    assert source.cleaned == [
+        (
+            PACK_ID,
+            VOLUME_METADATA_ID,
+            VOLUME_TERMINAL_ID,
+            "manifest",
+            "recovery-descriptor",
+        )
+    ]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     filtered = service.list(
         page=1,
@@ -585,6 +646,8 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     release.set()
     worker.join(timeout=5)
     assert not worker.is_alive()
+    while service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceling":
+        assert service.process_due(limit=1) == 1
 
     canceled = service.get(COLLECTION_ID, destination_store="b2")
     assert canceled["state"] == "canceled"

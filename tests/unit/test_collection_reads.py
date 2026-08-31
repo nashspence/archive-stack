@@ -20,6 +20,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -43,6 +44,7 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     creation_identity_sha256=f"{collection_id:064x}",
                     creation_custody_mode="producer-retained",
                     content_identity=f"{collection_id:064x}",
+                    tag_set_identity=tag_set_identity(()),
                     encryption_format="age-v1-scrypt",
                     passphrase_id=f"fixture-archive-key-v{1 if collection_id % 2 else 2}",
                     provenance_mode="omitted",
@@ -65,7 +67,7 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                 )
             )
             for order, object_id in enumerate(
-                ("manifest", "proof", *(f"segment-{index}" for index in range(8)))
+                ("manifest", *(f"segment-{index}" for index in range(8)))
             ):
                 session.add(
                     CollectionArchiveObjectRecord(
@@ -73,7 +75,7 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                         store="archive",
                         object_id=object_id,
                         object_order=order,
-                        kind=object_id if object_id in {"manifest", "proof"} else "segment",
+                        kind=object_id if object_id == "manifest" else "segment",
                         object_path=f"archives/{collection_id}/{object_id}",
                         plaintext_bytes=1,
                         stored_bytes=1,

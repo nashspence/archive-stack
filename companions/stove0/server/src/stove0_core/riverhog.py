@@ -7,19 +7,29 @@ settlement verification. It never receives or exposes archive credentials.
 
 from __future__ import annotations
 
+import hashlib
 import secrets
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager
+import time
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from itertools import zip_longest
 from typing import Any, Literal, Protocol
 
 from riverhog_protocol import Conflict, NotFound
 from riverhog_protocol.collection_workflow_transport import (
+    DISPOSITION_BATCH_MAX,
+    ArtifactDispositionOutputPageDocument,
+    ArtifactDispositionPageDocument,
+    ArtifactDispositionSetDocument,
     CapabilityAction,
     CollectionDerivationResponseDocument,
     ProcessingClaimDocument,
+    ProcessingOutcomePageDocument,
     TransformCapabilityDocument,
 )
 from riverhog_protocol.collection_workflows import (
+    ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
@@ -29,6 +39,9 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
+from riverhog_protocol.paths import tag_set_identity
+from riverhog_protocol.portable_collection import PortableCollectionInventoryPage
 from stove0_observer_protocol import ObservationRequest, ObserverRuntimeAuthority
 from stove0_protocol import (
     ArtifactSubject,
@@ -41,9 +54,16 @@ from stove0_protocol import (
 )
 from stove0_target_protocol import (
     InputArtifact,
+    OperationContract,
+    OutputArtifact,
     OutputCollectionRef,
+    TargetOutputBinding,
+    TargetOutputBindingSetIdentity,
     TargetPlan,
     TargetRuntimeAuthority,
+    TargetSettlementAuthority,
+    TargetSettlementAuthorityPayload,
+    update_target_output_binding_commitment,
 )
 
 from stove0_core.coordinator import (
@@ -65,7 +85,7 @@ class RiverhogApi(Protocol):
         work_id: str,
         work_document: Mapping[str, Any],
         work_document_sha256: str,
-        inputs: Sequence[Mapping[str, Any]],
+        inputs: Iterable[Mapping[str, Any]],
         lease_seconds: int = 1800,
         purpose: str = "collection-work/v1",
     ) -> ProcessingClaimDocument: ...
@@ -87,7 +107,7 @@ class RiverhogApi(Protocol):
         fence: int,
         audience: str,
         actions: Sequence[CapabilityAction] = ("read-inputs",),
-        artifacts: Sequence[Mapping[str, Any]],
+        artifacts: Iterable[Mapping[str, Any]],
         ttl_seconds: int = 900,
     ) -> TransformCapabilityDocument: ...
 
@@ -101,7 +121,7 @@ class RiverhogApi(Protocol):
         controller_evidence_sha256: str,
         operation_id: str,
         operation_sha256: str,
-        input_artifacts: Sequence[Mapping[str, Any]],
+        input_artifacts: Iterable[Mapping[str, Any]],
         output_tags: Sequence[str],
         retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
@@ -124,10 +144,17 @@ class RiverhogApi(Protocol):
         claim_id: str,
         *,
         fence: int,
-        outcomes: Sequence[Mapping[str, Any]],
         retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
     ) -> ProcessingClaimDocument: ...
+
+    def list_processing_claim_outcomes(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int = 0,
+    ) -> ProcessingOutcomePageDocument: ...
 
     def abandon_processing_claim(
         self, claim_id: str, *, fence: int, reason: str
@@ -135,14 +162,68 @@ class RiverhogApi(Protocol):
 
     def get_collection(self, collection_id: int) -> dict[str, Any]: ...
 
-    def stream_collection_tags(
+    def get_collection_tags(
         self,
         collection_id: int,
-    ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]: ...
 
     def get_collection_derivation(
         self, collection_id: int
     ) -> CollectionDerivationResponseDocument: ...
+
+    def get_portable_collection_inventory(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        inventory_identity: str | None = None,
+    ) -> PortableCollectionInventoryPage: ...
+
+    def list_processing_claim_dispositions(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> ArtifactDispositionPageDocument: ...
+
+    def list_processing_claim_disposition_outputs(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> ArtifactDispositionOutputPageDocument: ...
+
+    def record_processing_claim_dispositions(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        dispositions: Sequence[Mapping[str, Any]],
+    ) -> ArtifactDispositionSetDocument: ...
+
+    def record_processing_claim_disposition_outputs(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        outputs: Sequence[Mapping[str, Any]],
+    ) -> ArtifactDispositionSetDocument: ...
+
+    def seal_processing_claim_dispositions(
+        self, claim_id: str, *, fence: int
+    ) -> ArtifactDispositionSetDocument: ...
+
+    def get_processing_claim_dispositions(
+        self, claim_id: str
+    ) -> ArtifactDispositionSetDocument: ...
 
     def begin_processing_claim_retirement(
         self, claim_id: str, *, fence: int
@@ -162,6 +243,87 @@ class RiverhogApi(Protocol):
     ) -> dict[str, Any]: ...
 
     def release_processing_claim(self, claim_id: str, *, fence: int) -> ProcessingClaimDocument: ...
+
+
+def _verify_disposition_authority(
+    api: RiverhogApi,
+    record: WorkRecord,
+    derivation: CollectionDerivation,
+) -> None:
+    assert record.claim is not None
+    assert record.target_status is not None
+    assert record.target_status.production is not None
+    production = record.target_status.production
+    if derivation.disposition_set != production.riverhog_disposition_set:
+        raise RuntimeError("target derivation differs from its production authority")
+    sealed = api.get_processing_claim_dispositions(record.claim.claim_id)
+    if (
+        sealed.state != "sealed"
+        or sealed.identity is None
+        or ArtifactDispositionSetIdentity.from_mapping(sealed.identity.model_dump(mode="json"))
+        != production.riverhog_disposition_set
+    ):
+        raise RuntimeError("Riverhog generic derivation authority changed")
+
+
+def _portable_payload_files(
+    api: RiverhogApi,
+    output: OutputCollectionRef,
+) -> Iterator[ImmutableFileIdentityDocument]:
+    cursor: str | None = None
+    identity: str | None = None
+    while True:
+        page = api.get_portable_collection_inventory(
+            output.collection_id,
+            cursor=cursor,
+            limit=1000,
+            inventory_identity=identity,
+        )
+        authority = page.authority
+        if identity is None:
+            identity = authority.inventory_identity
+        elif authority.inventory_identity != identity:
+            raise RuntimeError("Riverhog output inventory changed during settlement")
+        if (
+            authority.header.collection != output.collection_id
+            or authority.header.content_identity != output.content_identity
+        ):
+            raise RuntimeError("Riverhog output inventory binds another collection")
+        for file in page.files:
+            if not file.path.startswith("riverhog/"):
+                yield file
+        if page.complete:
+            return
+        if page.next_cursor is None:
+            raise RuntimeError("Riverhog output inventory ended without completion")
+        cursor = page.next_cursor
+
+
+def _collection_tags(api: RiverhogApi, collection_id: int) -> tuple[str, ...]:
+    page = 1
+    authority: tuple[int, str, int] | None = None
+    tags: list[str] = []
+    while True:
+        payload = api.get_collection_tags(collection_id, page=page, per_page=100)
+        current = (
+            int(payload.get("metadata_revision") or 0),
+            str(payload.get("inventory_identity") or ""),
+            int(payload.get("tag_count") or 0),
+        )
+        if authority is None:
+            authority = current
+        elif authority != current:
+            raise RuntimeError("Riverhog collection tags changed during bounded traversal")
+        raw_tags = payload.get("tags")
+        if not isinstance(raw_tags, list):
+            raise RuntimeError("Riverhog returned invalid collection tags")
+        tags.extend(str(tag) for tag in raw_tags)
+        if page >= int(payload.get("pages") or 0):
+            break
+        page += 1
+    if authority is None or len(tags) != authority[2] or tags != sorted(set(tags)):
+        raise RuntimeError("Riverhog collection tag traversal is incomplete")
+    return tuple(tags)
 
 
 class Stove0RiverhogClient:
@@ -188,6 +350,60 @@ class Stove0RiverhogClient:
         self.capability_ttl_seconds = capability_ttl_seconds
         self.workspace_assurance = workspace_assurance
         self.claim_purpose = purpose
+
+    def project_target_production(
+        self,
+        record: WorkRecord,
+        dispositions: Iterable[ArtifactDisposition],
+        edges: Iterable[ArtifactDispositionOutput],
+    ) -> ArtifactDispositionSetIdentity:
+        if record.claim is None:
+            raise ValueError("target production requires an active Riverhog claim")
+        fact_batch: list[Mapping[str, Any]] = []
+        for disposition in dispositions:
+            fact_batch.append(disposition.as_dict())
+            if len(fact_batch) == DISPOSITION_BATCH_MAX:
+                self.api.record_processing_claim_dispositions(
+                    record.claim.claim_id,
+                    fence=record.claim.fence,
+                    dispositions=fact_batch,
+                )
+                fact_batch = []
+        if fact_batch:
+            self.api.record_processing_claim_dispositions(
+                record.claim.claim_id,
+                fence=record.claim.fence,
+                dispositions=fact_batch,
+            )
+        edge_batch: list[Mapping[str, Any]] = []
+        for edge in edges:
+            edge_batch.append(edge.as_dict())
+            if len(edge_batch) == DISPOSITION_BATCH_MAX:
+                self.api.record_processing_claim_disposition_outputs(
+                    record.claim.claim_id,
+                    fence=record.claim.fence,
+                    outputs=edge_batch,
+                )
+                edge_batch = []
+        if edge_batch:
+            self.api.record_processing_claim_disposition_outputs(
+                record.claim.claim_id,
+                fence=record.claim.fence,
+                outputs=edge_batch,
+            )
+        status = self.api.seal_processing_claim_dispositions(
+            record.claim.claim_id,
+            fence=record.claim.fence,
+        )
+        deadline = time.monotonic() + self.claim_lease_seconds
+        while status.state == "sealing":
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Riverhog did not seal target derivation evidence")
+            time.sleep(0.1)
+            status = self.api.get_processing_claim_dispositions(record.claim.claim_id)
+        if status.state != "sealed" or status.identity is None:
+            raise RuntimeError(status.failure or "Riverhog did not seal derivation evidence")
+        return ArtifactDispositionSetIdentity.from_mapping(status.identity.model_dump(mode="json"))
 
     def acquire_claim(self, work: WorkIdentity) -> ClaimBinding:
         return self._acquire_document_claim(
@@ -280,7 +496,10 @@ class Stove0RiverhogClient:
             claim,
             audience=audience,
             actions=("read-inputs",),
-            artifacts=tuple(_artifact_identity(item) for item in request.subjects),
+            # Observation subjects are semantically ordered by their request-scoped
+            # IDs.  Capability scope is a different, generic Riverhog authority and
+            # must be projected into immutable collection-artifact order.
+            artifacts=tuple(sorted(_artifact_identity(item) for item in request.subjects)),
         )
         return ObserverRuntimeAuthority(
             riverhog_base_url=self.api.base_url,
@@ -295,6 +514,7 @@ class Stove0RiverhogClient:
         evidence: ControllerEvidence,
         plan: WorkflowPlan,
         target_plan: TargetPlan,
+        inputs: Iterable[ArtifactSubject],
     ) -> None:
         envelope = evidence.execution_envelope
         if envelope.workflow_plan != plan:
@@ -314,7 +534,7 @@ class Stove0RiverhogClient:
             controller_evidence_sha256=riverhog_canonical_json_sha256(document),
             operation_id=plan.operation.id,
             operation_sha256=plan.operation.sha256,
-            input_artifacts=[_artifact_identity(item).as_dict() for item in target_plan.inputs],
+            input_artifacts=(_artifact_identity(item).as_dict() for item in inputs),
             output_tags=plan.output_tags,
             retirement_policy=plan.retirement_policy,
             retirement_grace_seconds=plan.retirement_grace_seconds,
@@ -331,6 +551,7 @@ class Stove0RiverhogClient:
         claim: ClaimBinding,
         evidence: ControllerEvidence,
         target_plan: TargetPlan,
+        inputs: Iterable[ArtifactSubject],
     ) -> TargetInvocationAuthority:
         envelope = evidence.execution_envelope
         if envelope.claim_id != claim.claim_id or envelope.fence != claim.fence:
@@ -347,7 +568,7 @@ class Stove0RiverhogClient:
             claim,
             audience=("stove0.target/" + envelope.workflow_plan.target_registration_id),
             actions=actions,
-            artifacts=tuple(_artifact_identity(item) for item in target_plan.inputs),
+            artifacts=(_artifact_identity(item) for item in inputs),
         )
         principal = capability.get("principal_app")
         expected_principal = (
@@ -369,8 +590,10 @@ class Stove0RiverhogClient:
     def verify_and_settle(
         self,
         record: WorkRecord,
+        operation: OperationContract,
+        outputs: Iterable[OutputArtifact],
         parent_outcome: ParentOutcomeBinding | None = None,
-    ) -> OutputCollectionRef:
+    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]:
         if (
             record.phase != "verifying"
             or record.claim is None
@@ -380,10 +603,16 @@ class Stove0RiverhogClient:
             or record.target_status.state != "succeeded"
             or record.target_status.output_collection is None
             or record.target_status.derivation is None
+            or record.target_status.production is None
         ):
             raise ValueError("stove0 work is not ready for Riverhog settlement")
         target_output = record.target_status.output_collection
         derivation = CollectionDerivation.from_mapping(record.target_status.derivation)
+        _verify_disposition_authority(
+            self.api,
+            record,
+            derivation,
+        )
         self.api.settle_processing_claim(
             record.claim.claim_id,
             fence=record.claim.fence,
@@ -401,9 +630,7 @@ class Stove0RiverhogClient:
         verified = CollectionDerivation.from_mapping(stored_document)
         if verified != derivation or stored.get("document_sha256") != derivation.sha256:
             raise RuntimeError("Riverhog derivation differs from the target publication evidence")
-        with self.api.stream_collection_tags(target_output.collection_id) as memberships:
-            tags = tuple(sorted(str(item["tag"]) for item in memberships))
-        if tags != record.workflow_plan.output_tags:
+        if collection.get("tag_set_identity") != tag_set_identity(record.workflow_plan.output_tags):
             raise RuntimeError("Riverhog output tags differ from the sealed stove0 plan")
         output = OutputCollectionRef(
             collection_id=_positive_int(collection.get("id"), "collection id"),
@@ -416,13 +643,70 @@ class Stove0RiverhogClient:
         )
         if output != target_output:
             raise RuntimeError("Riverhog output root differs from the target publication receipt")
-        return output
+        settlement = self._settlement(record, output, outputs)
+        return output, settlement
+
+    def _settlement(
+        self,
+        record: WorkRecord,
+        output: OutputCollectionRef,
+        outputs: Iterable[OutputArtifact],
+    ) -> TargetSettlementAuthority:
+        assert record.target_status is not None
+        assert record.target_status.production is not None
+        production = record.target_status.production
+        digest = hashlib.sha256()
+        artifact_count = 0
+        total_bytes = 0
+        files = _portable_payload_files(self.api, output)
+        for declared, file in zip_longest(outputs, files):
+            if declared is None or file is None:
+                raise RuntimeError("Riverhog output collection differs from target production")
+            if (
+                declared.path != file.path
+                or declared.bytes != file.bytes
+                or declared.sha256 != file.sha256
+            ):
+                raise RuntimeError("Riverhog artifact differs from its target declaration")
+            binding = TargetOutputBinding(
+                output_id=declared.id,
+                role=declared.role,
+                collection=output,
+                path=declared.path,
+                bytes=declared.bytes,
+                sha256=declared.sha256,
+                media_type=declared.media_type,
+            )
+            update_target_output_binding_commitment(
+                digest,
+                ordinal=artifact_count,
+                binding=binding,
+            )
+            artifact_count += 1
+            total_bytes += declared.bytes
+        if (
+            artifact_count != production.outputs.artifact_count
+            or total_bytes != production.outputs.total_bytes
+        ):
+            raise RuntimeError("post-root output bindings differ from target production")
+        return TargetSettlementAuthority.seal(
+            TargetSettlementAuthorityPayload(
+                job_id=production.job_id,
+                production_sha256=production.production_sha256,
+                output_collection=output,
+                output_bindings=TargetOutputBindingSetIdentity(
+                    artifact_count=artifact_count,
+                    total_bytes=total_bytes,
+                    sha256=digest.hexdigest(),
+                ),
+            )
+        )
 
     def settle_outcomes(
         self,
         record: WorkRecord,
         evaluation: BranchSetEvaluation,
-    ) -> None:
+    ) -> bool:
         if (
             record.claim is None
             or record.branch_set_plan is None
@@ -430,14 +714,31 @@ class Stove0RiverhogClient:
             or evaluation.branch_set_sha256 != record.branch_set_plan.branch_set_sha256
         ):
             raise ValueError("stove0 coordination is not ready for Riverhog settlement")
-        payload = self.api.get_processing_claim(record.claim.claim_id)
-        outcomes = tuple(
-            sorted(
-                CollectionProcessingOutcomeIdentity.from_mapping(item)
-                for item in payload.get("outcomes", ())
-                if isinstance(item, Mapping)
-            )
+        payload = self.api.settle_processing_claim_outcomes(
+            record.claim.claim_id,
+            fence=record.claim.fence,
+            retirement_policy=record.branch_set_plan.retirement_policy,
+            retirement_grace_seconds=record.branch_set_plan.retirement_grace_seconds,
         )
+        if payload.state == "active":
+            return False
+        if payload.state != "settled" or payload.outcomes.authority is None:
+            raise RuntimeError("Riverhog did not seal the processing outcome authority")
+        outcomes: list[CollectionProcessingOutcomeIdentity] = []
+        ordinal = 0
+        while True:
+            page = self.api.list_processing_claim_outcomes(
+                record.claim.claim_id,
+                authority_sha256=payload.outcomes.authority.sha256,
+                start_ordinal=ordinal,
+            )
+            outcomes.extend(
+                CollectionProcessingOutcomeIdentity.from_mapping(item.model_dump(mode="json"))
+                for item in page.outcomes
+            )
+            if page.next_ordinal is None:
+                break
+            ordinal = page.next_ordinal
         expected: dict[str, tuple[CollectionRootIdentity, str]] = {
             f"branch/{item.branch_id}": (
                 CollectionRootIdentity(
@@ -464,15 +765,9 @@ class Stove0RiverhogClient:
         }
         if actual != expected:
             raise RuntimeError("Riverhog processing outcomes differ from Stove0 truth")
-        settled = self.api.settle_processing_claim_outcomes(
-            record.claim.claim_id,
-            fence=record.claim.fence,
-            outcomes=[item.as_dict() for item in outcomes],
-            retirement_policy=record.branch_set_plan.retirement_policy,
-            retirement_grace_seconds=record.branch_set_plan.retirement_grace_seconds,
-        )
-        if settled.get("state") != "settled" or _claim_binding(settled) != record.claim:
+        if _claim_binding(payload) != record.claim:
             raise RuntimeError("Riverhog did not settle the expected processing outcomes")
+        return True
 
     def abandon_preview_claim(
         self,
@@ -563,14 +858,14 @@ class Stove0RiverhogClient:
         *,
         identity: str,
         document: Mapping[str, object],
-        inputs: Sequence[Mapping[str, object]],
+        inputs: Iterable[Mapping[str, object]],
         purpose: str,
     ) -> ClaimBinding:
         payload = self.api.create_or_resume_processing_claim(
             work_id=identity,
             work_document=dict(document),
             work_document_sha256=riverhog_canonical_json_sha256(document),
-            inputs=[dict(item) for item in inputs],
+            inputs=(dict(item) for item in inputs),
             lease_seconds=self.claim_lease_seconds,
             purpose=purpose,
         )
@@ -587,14 +882,14 @@ class Stove0RiverhogClient:
         *,
         audience: str,
         actions: Sequence[CapabilityAction],
-        artifacts: Sequence[CollectionArtifactIdentity],
+        artifacts: Iterable[CollectionArtifactIdentity],
     ) -> TransformCapabilityDocument:
         payload = self.api.create_transform_capability(
             claim.claim_id,
             fence=claim.fence,
             audience=audience,
             actions=tuple(actions),
-            artifacts=[item.as_dict() for item in artifacts],
+            artifacts=(item.as_dict() for item in artifacts),
             ttl_seconds=self.capability_ttl_seconds,
         )
         if (

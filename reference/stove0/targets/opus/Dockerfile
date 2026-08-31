@@ -30,7 +30,6 @@ COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
-COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
 COPY reference/stove0/targets/media-archive/contracts reference/stove0/targets/media-archive/contracts
 COPY reference/stove0/targets/media-archive/support reference/stove0/targets/media-archive/support

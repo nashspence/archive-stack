@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -16,8 +17,8 @@ from riverhog_age import UploadState
 from riverhog_protocol import ArchiveCopySort, SortOrder
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import asc, delete, desc, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import asc, delete, desc, exists, func, or_, select
+from sqlalchemy.orm import Session, aliased, selectinload
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
@@ -36,7 +37,6 @@ from riverhog_core.catalog_models import (
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
     CollectionMetadataPublicationRecord,
-    CollectionProofMaturationRecord,
     CollectionRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
@@ -52,7 +52,6 @@ from riverhog_core.ports.archive_objects import (
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveStore,
-    CollectionArchiveIdentity,
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE
@@ -61,7 +60,7 @@ from riverhog_core.services.archive_copy_states import (
     ARCHIVE_COPY_STATES,
     ARCHIVE_COPY_TRANSFER_STATES,
 )
-from riverhog_core.services.archive_records import archive_copy_identity, archive_copy_is_complete
+from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.collection_mutations import require_collection_archive_idle
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
@@ -85,13 +84,18 @@ _COPY_OBJECT_KINDS = frozenset(
     {
         "pack",
         "segment",
-        "provenance-bundle",
-        "provenance-index",
+        "volume-metadata",
+        "volume-terminal",
+        "provenance-root",
+        "provenance-volume-metadata",
+        "provenance-terminal",
+        "provenance-bindings",
+        "provenance-journal-segment",
         "manifest",
         "recovery-descriptor",
-        "proof",
     }
 )
+_COPY_OBJECT_BATCH_MAX = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +218,7 @@ class SqlAlchemyArchiveCopyService:
         with session_scope(self._session_factory) as session:
             require_collection_archive_idle(session, normalized_collection_id)
             collection = session.get(CollectionRecord, normalized_collection_id)
-            if collection is None:
+            if collection is None or not collection.is_published:
                 raise NotFound(f"collection not found: {normalized_collection_id}")
             existing = session.get(
                 CollectionArchiveCopyRecord,
@@ -258,6 +262,12 @@ class SqlAlchemyArchiveCopyService:
                 job.next_attempt_at = current_text
                 job.completed_at = None
                 job.failure = None
+                job.read_requested_at = None
+                job.ready_at = None
+                job.expires_at = None
+                job.batch_start_order = None
+                job.batch_end_order = None
+                job.destination_discarded_at = None
                 self._emit(job, type="archive_copy.requested", session=session)
             return _job_payload(job)
 
@@ -420,7 +430,7 @@ class SqlAlchemyArchiveCopyService:
                     ArchiveCopyJobRecord.destination_store,
                 )
                 .where(
-                    ArchiveCopyJobRecord.state.in_(("requested", "waiting")),
+                    ArchiveCopyJobRecord.state.in_(("requested", "waiting", "canceling")),
                     or_(
                         ArchiveCopyJobRecord.next_attempt_at.is_(None),
                         ArchiveCopyJobRecord.next_attempt_at <= current_text,
@@ -463,6 +473,10 @@ class SqlAlchemyArchiveCopyService:
     def _process_one(self, *, collection_id: int, destination_store: str) -> None:
         current = utc_now()
         current_text = format_utc_timestamp(current)
+        finalize = False
+        canceling = False
+        source_records: list[CollectionArchiveObjectRecord]
+        data_objects: tuple[ArchiveObjectIdentity, ...]
         with session_scope(self._session_factory) as session:
             job = session.scalar(
                 select(ArchiveCopyJobRecord)
@@ -472,20 +486,112 @@ class SqlAlchemyArchiveCopyService:
                 )
                 .with_for_update()
             )
-            if job is None or job.state not in {"requested", "waiting"}:
+            if job is None:
                 return
-            source_copy = _required_copy(session, collection_id, job.source_store)
-            source_identity = archive_copy_identity(source_copy)
-            source_store_name = job.source_store
-            destination_store_name = job.destination_store
-            data_objects = tuple(
-                current for current in source_identity.objects if current.kind in _COPY_OBJECT_KINDS
+            if job.state == "canceling":
+                canceling = True
+            elif job.state not in {"requested", "waiting"}:
+                return
+            if canceling:
+                source_records = []
+                data_objects = ()
+                source_store_name = job.source_store
+                destination_store_name = job.destination_store
+                read_requested_at = job.read_requested_at
+                ready_at = job.ready_at
+                destination_storage_prefix = job.destination_storage_prefix
+            else:
+                _required_copy(session, collection_id, job.source_store)
+                source_store_name = job.source_store
+                destination_store_name = job.destination_store
+                destination_copy = session.get(
+                    CollectionArchiveCopyRecord,
+                    (collection_id, destination_store_name),
+                )
+                if destination_copy is None:
+                    destination_copy = CollectionArchiveCopyRecord(
+                        collection_id=collection_id,
+                        store=destination_store_name,
+                        state="uploading",
+                        archive_storage_prefix=job.destination_storage_prefix,
+                    )
+                    session.add(destination_copy)
+                    session.flush()
+                elif destination_copy.state not in {"pending", "uploading"}:
+                    raise Conflict("archive copy destination changed while transfer was active")
+                if job.batch_start_order is None:
+                    source_object = aliased(CollectionArchiveObjectRecord)
+                    destination_object = aliased(CollectionArchiveObjectRecord)
+                    orders = list(
+                        session.scalars(
+                            select(source_object.object_order)
+                            .where(
+                                source_object.collection_id == collection_id,
+                                source_object.store == source_store_name,
+                                source_object.kind.in_(_COPY_OBJECT_KINDS),
+                                ~exists(
+                                    select(1).where(
+                                        destination_object.collection_id == collection_id,
+                                        destination_object.store == destination_store_name,
+                                        destination_object.object_id == source_object.object_id,
+                                    )
+                                ),
+                            )
+                            .order_by(source_object.object_order)
+                            .limit(_COPY_OBJECT_BATCH_MAX)
+                        )
+                    )
+                    if not orders:
+                        finalize = True
+                    else:
+                        job.batch_start_order = orders[0]
+                        job.batch_end_order = orders[-1]
+                if finalize:
+                    source_records = []
+                else:
+                    assert job.batch_start_order is not None
+                    assert job.batch_end_order is not None
+                    source_records = list(
+                        session.scalars(
+                            select(CollectionArchiveObjectRecord)
+                            .options(selectinload(CollectionArchiveObjectRecord.placements))
+                            .where(
+                                CollectionArchiveObjectRecord.collection_id == collection_id,
+                                CollectionArchiveObjectRecord.store == source_store_name,
+                                CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
+                                CollectionArchiveObjectRecord.object_order >= job.batch_start_order,
+                                CollectionArchiveObjectRecord.object_order <= job.batch_end_order,
+                            )
+                            .order_by(CollectionArchiveObjectRecord.object_order)
+                        )
+                    )
+                    if not source_records or len(source_records) > _COPY_OBJECT_BATCH_MAX:
+                        raise Conflict("archive copy object window is invalid")
+                data_objects = tuple(_archive_object_identity(record) for record in source_records)
+                read_requested_at = job.read_requested_at
+                ready_at = job.ready_at
+                destination_storage_prefix = job.destination_storage_prefix
+                if not finalize:
+                    job.state = "checking"
+                    job.next_attempt_at = None
+
+        if canceling:
+            self._cleanup_source_read(
+                collection_id=collection_id,
+                destination_store=destination_store,
             )
-            read_requested_at = job.read_requested_at
-            ready_at = job.ready_at
-            destination_storage_prefix = job.destination_storage_prefix
-            job.state = "checking"
-            job.next_attempt_at = None
+            self._cleanup_canceled_destination(
+                collection_id=collection_id,
+                destination_store=destination_store,
+            )
+            return
+
+        if finalize:
+            self._finalize_completed_copy(
+                collection_id=collection_id,
+                destination_store=destination_store,
+            )
+            return
 
         source_store = self._archive_stores.require(source_store_name).store
         estimated_ready_at: str | None
@@ -552,13 +658,18 @@ class SqlAlchemyArchiveCopyService:
             )
             return
 
-        copied = self._copy_immutable_objects(
+        self._copy_immutable_objects(
             collection_id=collection_id,
             source_store_name=source_store_name,
             destination_store_name=destination_store_name,
-            source_identity=source_identity,
+            source_records=source_records,
             destination_storage_prefix=destination_storage_prefix,
         )
+        source_store.cleanup_archive_objects_read(
+            collection_id=collection_id,
+            objects=data_objects,
+        )
+        finalize = False
         with session_scope(self._session_factory) as session:
             job = session.scalar(
                 select(ArchiveCopyJobRecord)
@@ -572,71 +683,37 @@ class SqlAlchemyArchiveCopyService:
                 raise Conflict("archive copy job disappeared during transfer")
             if job.state != "copying":
                 raise Conflict("archive copy was canceled during transfer")
-            source_copy = _required_copy(session, collection_id, job.source_store)
-            self._record_completed_copy(
-                session,
-                source=source_copy,
+            source_object = aliased(CollectionArchiveObjectRecord)
+            destination_object = aliased(CollectionArchiveObjectRecord)
+            remaining = session.scalar(
+                select(source_object.object_id)
+                .where(
+                    source_object.collection_id == collection_id,
+                    source_object.store == job.source_store,
+                    source_object.kind.in_(_COPY_OBJECT_KINDS),
+                    ~exists(
+                        select(1).where(
+                            destination_object.collection_id == collection_id,
+                            destination_object.store == destination_store,
+                            destination_object.object_id == source_object.object_id,
+                        )
+                    ),
+                )
+                .limit(1)
+            )
+            job.batch_start_order = None
+            job.batch_end_order = None
+            job.read_requested_at = None
+            job.ready_at = None
+            job.expires_at = None
+            job.state = "requested"
+            job.next_attempt_at = current_text
+            finalize = remaining is None
+        if finalize:
+            self._finalize_completed_copy(
+                collection_id=collection_id,
                 destination_store=destination_store,
-                destination_storage_prefix=destination_storage_prefix,
-                copied=copied,
             )
-            session.execute(
-                delete(ArchiveCopyObjectUploadRecord).where(
-                    ArchiveCopyObjectUploadRecord.collection_id == collection_id,
-                    ArchiveCopyObjectUploadRecord.destination_store == destination_store,
-                )
-            )
-            collection = session.get(CollectionRecord, collection_id)
-            assert collection is not None
-            session.merge(
-                CollectionMetadataPublicationRecord(
-                    collection_id=collection_id,
-                    store=destination_store,
-                    desired_revision=collection.metadata_revision,
-                    state="pending",
-                    attempt_count=0,
-                    next_attempt_at=format_utc_timestamp(utc_now()),
-                )
-            )
-            session.merge(
-                CollectionProofMaturationRecord(
-                    collection_id=collection_id,
-                    store=destination_store,
-                    state=(
-                        "matured"
-                        if source_copy.proof_maturation is not None
-                        and source_copy.proof_maturation.state == "matured"
-                        else "pending"
-                    ),
-                    attempt_count=(
-                        source_copy.proof_maturation.attempt_count
-                        if source_copy.proof_maturation is not None
-                        and source_copy.proof_maturation.state == "matured"
-                        else 0
-                    ),
-                    next_attempt_at=format_utc_timestamp(utc_now()),
-                    matured_at=(
-                        source_copy.proof_maturation.matured_at
-                        if source_copy.proof_maturation is not None
-                        and source_copy.proof_maturation.state == "matured"
-                        else None
-                    ),
-                )
-            )
-            job.state = "completed"
-            job.completed_at = format_utc_timestamp(utc_now())
-            job.next_attempt_at = None
-            job.failure = None
-            self._emit(
-                job,
-                type="archive_copy.completed",
-                terminal=True,
-                session=session,
-            )
-        source_store.cleanup_archive_objects_read(
-            collection_id=collection_id,
-            objects=data_objects,
-        )
 
     def _plan_destination_upload(
         self,
@@ -694,29 +771,11 @@ class SqlAlchemyArchiveCopyService:
         collection_id: int,
         source_store_name: str,
         destination_store_name: str,
-        source_identity: CollectionArchiveIdentity,
+        source_records: Sequence[CollectionArchiveObjectRecord],
         destination_storage_prefix: str,
-    ) -> dict[str, _CopiedObject]:
-        with session_scope(self._session_factory) as session:
-            source_records = list(
-                session.scalars(
-                    select(CollectionArchiveObjectRecord)
-                    .options(selectinload(CollectionArchiveObjectRecord.placements))
-                    .where(
-                        CollectionArchiveObjectRecord.collection_id == collection_id,
-                        CollectionArchiveObjectRecord.store == source_store_name,
-                        CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
-                    )
-                    .order_by(CollectionArchiveObjectRecord.object_order)
-                )
-            )
-        identities = {
-            current.object_id: current
-            for current in source_identity.objects
-            if current.kind in _COPY_OBJECT_KINDS
-        }
-        if {current.object_id for current in source_records} != set(identities):
-            raise Conflict("archive copy catalog identity changed during transfer")
+    ) -> None:
+        if len(source_records) > _COPY_OBJECT_BATCH_MAX:
+            raise Conflict("archive copy object window exceeds its bounded contract")
         self._plan_destination_upload(
             collection_id=collection_id,
             destination_store=destination_store_name,
@@ -725,10 +784,18 @@ class SqlAlchemyArchiveCopyService:
         )
         source_store = self._archive_stores.require(source_store_name).store
         destination = self._archive_stores.require(destination_store_name)
-        copied: dict[str, _CopiedObject] = {}
         for record in source_records:
+            with session_scope(self._session_factory) as session:
+                if (
+                    session.get(
+                        CollectionArchiveObjectRecord,
+                        (collection_id, destination_store_name, record.object_id),
+                    )
+                    is not None
+                ):
+                    continue
             self._require_copy_active(collection_id, destination_store_name)
-            identity = identities[record.object_id]
+            identity = _archive_object_identity(record)
             if record.kind in {"pack", "segment"}:
                 result = self._copy_volume(
                     collection_id=collection_id,
@@ -752,8 +819,12 @@ class SqlAlchemyArchiveCopyService:
                     source=record,
                     identity=identity,
                 )
-            copied[result.object_id] = result
-        return copied
+            self._record_copied_object(
+                collection_id=collection_id,
+                destination_store=destination_store_name,
+                source=record,
+                receipt=result,
+            )
 
     def _copy_volume(
         self,
@@ -1145,10 +1216,16 @@ class SqlAlchemyArchiveCopyService:
             )
             content_type = {
                 "manifest": "application/vnd.riverhog.collection-manifest+age",
-                "proof": "application/vnd.riverhog.collection-manifest-proof+age",
                 "recovery-descriptor": "application/vnd.riverhog.recovery-descriptor+json",
-                "provenance-index": "application/vnd.riverhog.provenance-index+age",
-                "provenance-bundle": "application/vnd.riverhog.provenance-bundle+age",
+                "volume-metadata": "application/vnd.riverhog.collection-volume+age",
+                "volume-terminal": "application/vnd.riverhog.collection-volume+age",
+                "provenance-root": "application/vnd.riverhog-provenance-root.v1.age",
+                "provenance-volume-metadata": ("application/vnd.riverhog-provenance-volume.v1.age"),
+                "provenance-terminal": ("application/vnd.riverhog-provenance-terminal.v1.age"),
+                "provenance-bindings": ("application/vnd.riverhog-provenance-bindings.v1.age"),
+                "provenance-journal-segment": (
+                    "application/vnd.riverhog-provenance-journal-segment.v1.age"
+                ),
             }[source.kind]
             with self._resources.upload_requests.reserve() as upload_wait:
                 remote_started = time.perf_counter()
@@ -1227,127 +1304,254 @@ class SqlAlchemyArchiveCopyService:
             if job is None or job.state != "copying":
                 raise Conflict("archive copy was canceled during transfer")
 
-    def _record_completed_copy(
+    def _record_copied_object(
         self,
-        session: Session,
         *,
-        source: CollectionArchiveCopyRecord,
+        collection_id: int,
         destination_store: str,
-        destination_storage_prefix: str,
-        copied: Mapping[str, _CopiedObject],
+        source: CollectionArchiveObjectRecord,
+        receipt: _CopiedObject,
     ) -> None:
-        destination = session.get(
-            CollectionArchiveCopyRecord,
-            (source.collection_id, destination_store),
-        )
-        if destination is None:
-            destination = CollectionArchiveCopyRecord(
-                collection_id=source.collection_id,
-                store=destination_store,
-            )
-            session.add(destination)
-        destination.objects.clear()
         destination_binding = self._archive_stores.require(destination_store)
-        uploaded_at: list[str] = []
-        cache_receipts: list[tuple[CollectionArchiveObjectRecord, RetrievalCacheReceipt]] = []
         cache_required = (
             self._config.retrieval_cache_new_archive_enabled
             and self._retrieval_cache is not None
             and destination_binding.store.read_mode() == "restore_required"
         )
-        for current in sorted(source.objects, key=lambda value: value.object_order):
-            if current.kind not in _COPY_OBJECT_KINDS:
-                continue
-            receipt = copied.get(current.object_id)
-            if receipt is None:
-                raise Conflict("archive copy result omitted an immutable object")
-            if current.kind in {"pack", "segment"} and cache_required:
-                if receipt.retrieval_cache is None:
-                    raise RuntimeError(
-                        "restore-required archive copy is missing its retrieval cache receipt"
-                    )
+        if source.kind in {"pack", "segment"} and cache_required:
+            if receipt.retrieval_cache is None:
+                raise RuntimeError(
+                    "restore-required archive copy is missing its retrieval cache receipt"
+                )
+        with session_scope(self._session_factory) as session:
+            existing = session.get(
+                CollectionArchiveObjectRecord,
+                (collection_id, destination_store, source.object_id),
+            )
+            if existing is not None:
+                if _archive_object_identity(existing) != ArchiveObjectIdentity(
+                    object_id=receipt.object_id,
+                    kind=source.kind,
+                    object_path=receipt.object_path,
+                    plaintext_bytes=source.plaintext_bytes,
+                    stored_bytes=source.stored_bytes,
+                    sha256=source.sha256,
+                    stored_sha256=source.stored_sha256,
+                    revision=receipt.revision,
+                ):
+                    raise Conflict("archive copy destination object identity changed")
+                return
             copied_record = CollectionArchiveObjectRecord(
-                collection_id=source.collection_id,
+                collection_id=collection_id,
                 store=destination_store,
-                object_id=current.object_id,
-                object_order=current.object_order,
-                kind=current.kind,
+                object_id=source.object_id,
+                object_order=source.object_order,
+                kind=source.kind,
                 object_path=receipt.object_path,
-                plaintext_bytes=current.plaintext_bytes,
-                stored_bytes=current.stored_bytes,
-                sha256=current.sha256,
-                stored_sha256=current.stored_sha256,
+                plaintext_bytes=source.plaintext_bytes,
+                stored_bytes=source.stored_bytes,
+                sha256=source.sha256,
+                stored_sha256=source.stored_sha256,
                 revision=receipt.revision,
-                age_state_json=current.age_state_json,
+                age_state_json=source.age_state_json,
                 archive_parts_json=receipt.archive_parts_json,
-                plan_sha256=current.plan_sha256,
-                index_sha256=current.index_sha256,
+                plan_sha256=source.plan_sha256,
+                index_sha256=source.index_sha256,
                 uploaded_at=receipt.completed_at,
                 verified_at=receipt.completed_at,
             )
-            for placement in current.placements:
+            for placement in source.placements:
                 copied_record.placements.append(
                     CollectionArchiveFileObjectRecord(
-                        collection_id=source.collection_id,
+                        collection_id=collection_id,
                         store=destination_store,
                         path=placement.path,
                         sequence=placement.sequence,
-                        object_id=current.object_id,
+                        object_id=source.object_id,
                         file_offset=placement.file_offset,
                         object_offset=placement.object_offset,
                         bytes=placement.bytes,
                         member=placement.member,
                     )
                 )
-            destination.objects.append(copied_record)
+            session.add(copied_record)
+            session.flush()
             if receipt.retrieval_cache is not None:
-                cache_receipts.append((copied_record, receipt.retrieval_cache))
-            uploaded_at.append(receipt.completed_at)
-        session.flush()
-        cache_expires_at = format_utc_timestamp(
-            utc_now() + self._config.retrieval_cache_new_archive_lease
-        )
-        cache_leases: list[RetrievalCacheLeaseRecord] = []
-        for copied_record, cache_receipt in cache_receipts:
-            if (
-                cache_receipt.stored_bytes != copied_record.stored_bytes
-                or len(cache_receipt.stored_sha256) != 64
+                cache_receipt = receipt.retrieval_cache
+                if (
+                    cache_receipt.stored_bytes != copied_record.stored_bytes
+                    or len(cache_receipt.stored_sha256) != 64
+                ):
+                    raise RuntimeError(
+                        "retrieval cache receipt does not match its copied archive volume"
+                    )
+                session.merge(
+                    RetrievalCacheObjectRecord(
+                        source_store=destination_store,
+                        collection_id=collection_id,
+                        object_id=copied_record.object_id,
+                        object_path=cache_receipt.object_path,
+                        revision=cache_receipt.revision,
+                        stored_bytes=cache_receipt.stored_bytes,
+                        stored_sha256=cache_receipt.stored_sha256,
+                        cached_at=cache_receipt.cached_at,
+                        verified_at=cache_receipt.verified_at,
+                        state="ready",
+                    )
+                )
+                session.flush()
+                session.merge(
+                    RetrievalCacheLeaseRecord(
+                        owner="new-archive",
+                        source_store=destination_store,
+                        collection_id=collection_id,
+                        object_id=copied_record.object_id,
+                        expires_at=format_utc_timestamp(
+                            utc_now() + self._config.retrieval_cache_new_archive_lease
+                        ),
+                    )
+                )
+            checkpoint = session.get(
+                ArchiveCopyObjectUploadRecord,
+                (collection_id, destination_store, source.object_id),
+            )
+            if checkpoint is not None:
+                session.delete(checkpoint)
+
+    def _finalize_completed_copy(
+        self,
+        *,
+        collection_id: int,
+        destination_store: str,
+    ) -> None:
+        with session_scope(self._session_factory) as session:
+            job = session.scalar(
+                select(ArchiveCopyJobRecord)
+                .where(
+                    ArchiveCopyJobRecord.collection_id == collection_id,
+                    ArchiveCopyJobRecord.destination_store == destination_store,
+                )
+                .with_for_update()
+            )
+            if job is None or job.state != "requested":
+                return
+            _required_copy(session, collection_id, job.source_store)
+            destination = session.get(
+                CollectionArchiveCopyRecord,
+                (collection_id, destination_store),
+            )
+            if destination is None or destination.state not in {"pending", "uploading"}:
+                raise Conflict("archive copy destination is not ready for finalization")
+            source_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionArchiveObjectRecord)
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == job.source_store,
+                        CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
+                    )
+                )
+                or 0
+            )
+            destination_count = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionArchiveObjectRecord)
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == destination_store,
+                        CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
+                        CollectionArchiveObjectRecord.verified_at.is_not(None),
+                    )
+                )
+                or 0
+            )
+            if source_count == 0 or destination_count != source_count:
+                raise Conflict("archive copy destination is not exactly complete")
+            required_kinds = {
+                "manifest",
+                "recovery-descriptor",
+                "volume-metadata",
+                "volume-terminal",
+            }
+            present_kinds = set(
+                session.scalars(
+                    select(CollectionArchiveObjectRecord.kind)
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == destination_store,
+                        CollectionArchiveObjectRecord.kind.in_(required_kinds),
+                    )
+                    .distinct()
+                )
+            )
+            if present_kinds != required_kinds:
+                raise Conflict("archive copy result has no complete recoverable root")
+            if not session.scalar(
+                select(
+                    exists().where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == destination_store,
+                        CollectionArchiveObjectRecord.kind.in_(("pack", "segment")),
+                    )
+                )
             ):
-                raise RuntimeError(
-                    "retrieval cache receipt does not match its copied archive volume"
+                raise Conflict("archive copy result has no archive volume")
+            collection = session.get(CollectionRecord, collection_id)
+            assert collection is not None
+            if collection.provenance_mode != "omitted":
+                provenance_kinds = set(
+                    session.scalars(
+                        select(CollectionArchiveObjectRecord.kind)
+                        .where(
+                            CollectionArchiveObjectRecord.collection_id == collection_id,
+                            CollectionArchiveObjectRecord.store == destination_store,
+                            CollectionArchiveObjectRecord.kind.in_(
+                                (
+                                    "provenance-root",
+                                    "provenance-volume-metadata",
+                                    "provenance-terminal",
+                                )
+                            ),
+                        )
+                        .distinct()
+                    )
                 )
-            session.add(
-                RetrievalCacheObjectRecord(
-                    source_store=destination_store,
-                    collection_id=source.collection_id,
-                    object_id=copied_record.object_id,
-                    object_path=cache_receipt.object_path,
-                    revision=cache_receipt.revision,
-                    stored_bytes=cache_receipt.stored_bytes,
-                    stored_sha256=cache_receipt.stored_sha256,
-                    cached_at=cache_receipt.cached_at,
-                    verified_at=cache_receipt.verified_at,
-                    state="ready",
+                if provenance_kinds != {
+                    "provenance-root",
+                    "provenance-volume-metadata",
+                    "provenance-terminal",
+                }:
+                    raise Conflict("archive copy provenance authority is incomplete")
+            uploaded_at = session.scalar(
+                select(func.max(CollectionArchiveObjectRecord.uploaded_at)).where(
+                    CollectionArchiveObjectRecord.collection_id == collection_id,
+                    CollectionArchiveObjectRecord.store == destination_store,
                 )
             )
-            cache_leases.append(
-                RetrievalCacheLeaseRecord(
-                    owner="new-archive",
-                    source_store=destination_store,
-                    collection_id=source.collection_id,
-                    object_id=copied_record.object_id,
-                    expires_at=cache_expires_at,
+            if uploaded_at is None:
+                raise Conflict("archive copy has no completed object timestamp")
+            destination.state = "uploaded"
+            destination.archive_storage_prefix = job.destination_storage_prefix
+            destination.last_uploaded_at = str(uploaded_at)
+            destination.last_verified_at = str(uploaded_at)
+            destination.failure = None
+            session.merge(
+                CollectionMetadataPublicationRecord(
+                    collection_id=collection_id,
+                    store=destination_store,
+                    desired_revision=collection.metadata_revision,
+                    state="pending",
+                    attempt_count=0,
+                    next_attempt_at=format_utc_timestamp(utc_now()),
                 )
             )
-        session.flush()
-        session.add_all(cache_leases)
-        if not {"manifest", "recovery-descriptor", "proof"}.issubset(copied):
-            raise Conflict("archive copy result has no complete recoverable root")
-        destination.state = "uploaded"
-        destination.archive_storage_prefix = destination_storage_prefix
-        destination.last_uploaded_at = max(uploaded_at)
-        destination.last_verified_at = max(uploaded_at)
-        destination.failure = None
+            job.state = "completed"
+            job.completed_at = format_utc_timestamp(utc_now())
+            job.next_attempt_at = None
+            job.failure = None
+            self._emit(job, type="archive_copy.completed", terminal=True, session=session)
 
     def _record_failure(
         self,
@@ -1376,18 +1580,25 @@ class SqlAlchemyArchiveCopyService:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
             if job is None or job.read_requested_at is None:
                 return
-            source_copy = session.get(
-                CollectionArchiveCopyRecord,
-                (collection_id, job.source_store),
-            )
-            if source_copy is None or not archive_copy_is_complete(source_copy):
+            if job.batch_start_order is None or job.batch_end_order is None:
                 return
             source_store_name = job.source_store
             data_objects = tuple(
-                current
-                for current in archive_copy_identity(source_copy).objects
-                if current.kind in _COPY_OBJECT_KINDS
+                _archive_object_identity(current)
+                for current in session.scalars(
+                    select(CollectionArchiveObjectRecord)
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == source_store_name,
+                        CollectionArchiveObjectRecord.kind.in_(_COPY_OBJECT_KINDS),
+                        CollectionArchiveObjectRecord.object_order >= job.batch_start_order,
+                        CollectionArchiveObjectRecord.object_order <= job.batch_end_order,
+                    )
+                    .order_by(CollectionArchiveObjectRecord.object_order)
+                )
             )
+            if len(data_objects) > _COPY_OBJECT_BATCH_MAX:
+                raise Conflict("archive copy cleanup window exceeds its bounded contract")
         source_store = self._archive_stores.require(source_store_name).store
         try:
             source_store.cleanup_archive_objects_read(
@@ -1400,6 +1611,13 @@ class SqlAlchemyArchiveCopyService:
                 collection_id,
                 source_store_name,
             )
+            return
+        with session_scope(self._session_factory) as session:
+            job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+            if job is not None:
+                job.read_requested_at = None
+                job.ready_at = None
+                job.expires_at = None
 
     def _cleanup_canceled_destination(
         self,
@@ -1412,20 +1630,50 @@ class SqlAlchemyArchiveCopyService:
             if job is None or job.state != "canceling":
                 return
             destination_storage_prefix = job.destination_storage_prefix
-        try:
-            self._archive_stores.require(destination_store).store.discard_collection_archive_upload(
-                archive_storage_prefix=destination_storage_prefix,
-            )
-        except Exception:
-            _LOG.exception(
-                "failed to discard canceled archive copy: collection=%s destination=%s",
-                collection_id,
-                destination_store,
-            )
-            return
+            destination_discarded = job.destination_discarded_at is not None
+        if not destination_discarded:
+            try:
+                self._archive_stores.require(
+                    destination_store
+                ).store.discard_collection_archive_upload(
+                    archive_storage_prefix=destination_storage_prefix,
+                )
+            except Exception:
+                _LOG.exception(
+                    "failed to discard canceled archive copy: collection=%s destination=%s",
+                    collection_id,
+                    destination_store,
+                )
+                return
+            with session_scope(self._session_factory) as session:
+                job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
+                if job is None or job.state != "canceling":
+                    return
+                job.destination_discarded_at = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             job = session.get(ArchiveCopyJobRecord, (collection_id, destination_store))
             if job is None or job.state != "canceling":
+                return
+            destination_object_ids = list(
+                session.scalars(
+                    select(CollectionArchiveObjectRecord.object_id)
+                    .where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == destination_store,
+                    )
+                    .order_by(CollectionArchiveObjectRecord.object_order)
+                    .limit(_COPY_OBJECT_BATCH_MAX)
+                )
+            )
+            if destination_object_ids:
+                session.execute(
+                    delete(CollectionArchiveObjectRecord).where(
+                        CollectionArchiveObjectRecord.collection_id == collection_id,
+                        CollectionArchiveObjectRecord.store == destination_store,
+                        CollectionArchiveObjectRecord.object_id.in_(destination_object_ids),
+                    )
+                )
+                job.next_attempt_at = format_utc_timestamp(utc_now())
                 return
             session.execute(
                 delete(ArchiveCopyObjectUploadRecord).where(
@@ -1433,8 +1681,19 @@ class SqlAlchemyArchiveCopyService:
                     ArchiveCopyObjectUploadRecord.destination_store == destination_store,
                 )
             )
+            destination_copy = session.get(
+                CollectionArchiveCopyRecord,
+                (collection_id, destination_store),
+            )
+            if destination_copy is not None:
+                session.delete(destination_copy)
             job.state = "canceled"
             job.completed_at = format_utc_timestamp(utc_now())
+            job.batch_start_order = None
+            job.batch_end_order = None
+            job.read_requested_at = None
+            job.ready_at = None
+            job.expires_at = None
             self._emit(job, type="archive_copy.canceled", terminal=True, session=session)
 
     def _configured_store(self, value: str) -> str:
@@ -1520,17 +1779,48 @@ def _destination_object_path(
         relative = f"volumes/{source.object_id}.bin.age"
     elif source.kind == "manifest":
         relative = "manifest.json.age"
-    elif source.kind == "proof":
-        relative = "manifest.json.ots.age"
     elif source.kind == "recovery-descriptor":
         relative = "recovery.json"
-    elif source.kind == "provenance-index":
-        relative = "provenance/index.json.age"
-    elif source.kind == "provenance-bundle":
-        relative = f"provenance/{source.object_id}.tar.age"
+    elif source.kind == "volume-metadata":
+        sequence = _object_sequence(source.object_id, "volume-metadata-")
+        relative = f"metadata/volume-{sequence}.json.age"
+    elif source.kind == "volume-terminal":
+        sequence = _object_sequence(source.object_id, "volume-terminal-")
+        relative = f"metadata/volume-{sequence}.json.age"
+    elif source.kind == "provenance-root":
+        relative = "provenance/root.json.age"
+    elif source.kind == "provenance-volume-metadata":
+        sequence = _object_sequence(source.object_id, "provenance-volume-")
+        relative = f"provenance/metadata/volume-{sequence}.json.age"
+    elif source.kind == "provenance-terminal":
+        sequence = _object_sequence(source.object_id, "provenance-terminal-")
+        relative = f"provenance/metadata/volume-{sequence}.json.age"
+    elif source.kind in {"provenance-bindings", "provenance-journal-segment"}:
+        sequence = _object_sequence(source.object_id, "provenance-payload-")
+        relative = f"provenance/payloads/volume-{sequence}.bin.age"
     else:
         raise Conflict(f"archive copy object kind is not immutable: {source.kind}")
     return f"{prefix}/{relative}"
+
+
+def _archive_object_identity(record: CollectionArchiveObjectRecord) -> ArchiveObjectIdentity:
+    return ArchiveObjectIdentity(
+        object_id=record.object_id,
+        kind=record.kind,
+        object_path=record.object_path,
+        plaintext_bytes=record.plaintext_bytes,
+        stored_bytes=record.stored_bytes,
+        sha256=record.sha256,
+        stored_sha256=record.stored_sha256,
+        revision=record.revision,
+    )
+
+
+def _object_sequence(object_id: str, prefix: str) -> str:
+    raw = object_id.removeprefix(prefix)
+    if raw == object_id or re.fullmatch(r"[0-9a-f]{64}", raw) is None:
+        raise Conflict(f"archive object identity is invalid: {object_id}")
+    return raw
 
 
 def _volume_metadata(source: CollectionArchiveObjectRecord) -> dict[str, str]:

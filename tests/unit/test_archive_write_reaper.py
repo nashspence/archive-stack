@@ -57,6 +57,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads = SimpleNamespace(
         requeue_interrupted_finalizations_for_startup=Mock(return_value=2),
         requeue_interrupted_orphan_discards_for_startup=Mock(return_value=1),
+        process_due_provenance_journal_validations=Mock(return_value=0),
         process_due_finalizations=Mock(return_value=1),
         reap_expired_custody_transfers=Mock(return_value=1),
     )
@@ -69,7 +70,10 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         process_due_metadata_publications=Mock(return_value=0),
     )
     collection_workflows = SimpleNamespace(
+        requeue_interrupted_disposition_sets_for_startup=Mock(return_value=0),
         reap_expired_claims=Mock(return_value=0),
+        process_due_disposition_sets=Mock(return_value=0),
+        process_due_outcome_sets=Mock(return_value=0),
     )
     provenance = SimpleNamespace(
         requeue_interrupted_verifications_for_startup=Mock(return_value=0),
@@ -86,7 +90,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         ),
     )
 
-    api_app._process_archive_maintenance(container, startup_recovery=True)
+    assert api_app._process_archive_maintenance(container, startup_recovery=True) is True
 
     collection_uploads.requeue_interrupted_finalizations_for_startup.assert_called_once_with(
         limit=100
@@ -97,8 +101,63 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
     collection_uploads.reap_expired_custody_transfers.assert_called_once_with(limit=100)
     collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
+    collection_workflows.process_due_disposition_sets.assert_called_once_with(limit=1)
+    collection_workflows.process_due_outcome_sets.assert_called_once_with(limit=1)
     provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
     provenance.process_due_verifications.assert_called_once_with(limit=1)
+
+
+def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> None:
+    async def exercise() -> None:
+        finalizations = Mock(side_effect=[1, 1, 0])
+        zero = Mock(return_value=0)
+        container = cast(
+            ServiceContainer,
+            SimpleNamespace(
+                collection_uploads=SimpleNamespace(
+                    requeue_interrupted_finalizations_for_startup=zero,
+                    requeue_interrupted_orphan_discards_for_startup=zero,
+                    process_due_provenance_journal_validations=zero,
+                    process_due_finalizations=finalizations,
+                    reap_expired_custody_transfers=zero,
+                ),
+                collection_workflows=SimpleNamespace(
+                    requeue_interrupted_disposition_sets_for_startup=zero,
+                    reap_expired_claims=zero,
+                    process_due_disposition_sets=zero,
+                    process_due_outcome_sets=zero,
+                ),
+                archive_copies=SimpleNamespace(
+                    requeue_interrupted_copies_for_startup=zero,
+                    process_due=zero,
+                ),
+                archive_maintenance=SimpleNamespace(
+                    requeue_interrupted_metadata_publications_for_startup=zero,
+                    process_due_metadata_publications=zero,
+                ),
+                provenance=SimpleNamespace(
+                    requeue_interrupted_verifications_for_startup=zero,
+                    process_due_verifications=zero,
+                ),
+            ),
+        )
+        task = asyncio.create_task(
+            api_app._run_archive_upload_reaper(
+                lambda: container,
+                sweep_interval=timedelta(days=1),
+                operation_lock=asyncio.Lock(),
+            )
+        )
+        for _ in range(100):
+            if finalizations.call_count >= 3:
+                break
+            await asyncio.sleep(0.001)
+        assert finalizations.call_count == 3
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
 
 
 def test_archive_write_sweep_uses_the_configured_max_age(monkeypatch) -> None:

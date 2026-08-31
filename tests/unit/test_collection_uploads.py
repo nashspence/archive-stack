@@ -44,24 +44,32 @@ from riverhog_core.incremental_plan import (
 )
 from riverhog_core.ports.archive_objects import CompletedObjectReceipt
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
-from riverhog_core.proofs import ProofStamper
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
+from riverhog_protocol import (
+    COLLECTION_UPLOAD_PROVENANCE_APPEND_BYTES_MAX,
+    CollectionUploadProvenanceJournalCreateDocument,
+    CollectionUploadRawDigestBatchDocument,
+)
 from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import tag_set_identity
+from riverhog_protocol.raw_ingress import ordered_raw_part_commitment
 from riverhog_provenance import (
     FileProvenanceBinding,
-    build_provenance_archive,
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
+    ProvenanceVolumeDocument,
     create_observation_journal,
+    parse_binding_segment,
+    update_ordered_volume_commitment,
     validate_journal,
-    validate_provenance_archive,
 )
 from sqlalchemy import select
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.provenance_observer import native_provenance_observer
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -98,17 +106,6 @@ class _UnusedRangeStore:
         raise AssertionError("collection upload does not read archive ranges")
 
 
-class _FailOnceProofStamper:
-    def __init__(self) -> None:
-        self.attempts = 0
-
-    def stamp(self, manifest_path: Path) -> Path:
-        self.attempts += 1
-        if self.attempts == 1:
-            raise RuntimeError("temporary proof service failure")
-        return FixtureProofStamper().stamp(manifest_path)
-
-
 class _MemoryResumableCache:
     def __init__(self) -> None:
         self.resumable = MemoryResumableStore()
@@ -135,22 +132,83 @@ class _MemoryResumableCache:
         )
 
 
-def _service(
-    tmp_path: Path,
-    *,
-    proof_stamper: ProofStamper | None = None,
-) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
-    service, config, _resumable, _root = _service_with_archive_objects(
-        tmp_path,
-        proof_stamper=proof_stamper,
-    )
+def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
+    service, config, _resumable, _root = _service_with_archive_objects(tmp_path)
     return service, config
+
+
+def _process_until(
+    service: SqlAlchemyCollectionUploadService,
+    collection_id: int,
+    *,
+    archive_phase: str = "finalized",
+) -> dict[str, object]:
+    """Drive bounded finalization claims until the requested externally visible state."""
+
+    for _ in range(256):
+        current = service.get(collection_id)
+        if current["state"] == "finalized" or current["archive_phase"] == archive_phase:
+            return current
+        assert service.process_due_finalizations() == 1
+    raise AssertionError("bounded finalization did not reach the expected state")
+
+
+def _upload_provenance_journal(
+    service: SqlAlchemyCollectionUploadService,
+    collection_id: int,
+    journal_id: str,
+    content: bytes,
+    sha256: str,
+) -> dict[str, object]:
+    service.create_provenance_journal(
+        collection_id,
+        journal_id,
+        CollectionUploadProvenanceJournalCreateDocument(
+            bytes=len(content),
+            sha256=sha256,
+        ),
+    )
+    offset = 0
+    for start in range(0, len(content), COLLECTION_UPLOAD_PROVENANCE_APPEND_BYTES_MAX):
+        chunk = content[start : start + COLLECTION_UPLOAD_PROVENANCE_APPEND_BYTES_MAX]
+        service.append_provenance_journal(
+            collection_id,
+            journal_id,
+            offset=offset,
+            content=chunk,
+        )
+        offset += len(chunk)
+    service.seal_provenance_journal(collection_id, journal_id)
+    for _ in range(64):
+        status = service.get_provenance_journal(collection_id, journal_id)
+        if status["state"] in {"sealed", "failed"}:
+            assert status["state"] == "sealed", status["failure"]
+            return status
+        assert service.process_due_provenance_journal_validations() == 1
+    raise AssertionError("bounded provenance validation did not terminate")
+
+
+def _verify_provenance(
+    service: SqlAlchemyProvenanceService,
+    collection_id: int,
+    *,
+    principal: ApplicationPrincipal,
+) -> dict[str, object]:
+    service.request_verification(collection_id, principal=principal)
+    for _ in range(256):
+        status = service.get_verification(collection_id, principal=principal)
+        if status["state"] in {"succeeded", "failed"}:
+            assert status["state"] == "succeeded", status.get("failure")
+            result = status["result"]
+            assert isinstance(result, dict)
+            return result
+        assert service.process_due_verifications() == 1
+    raise AssertionError("bounded provenance verification did not terminate")
 
 
 def _service_with_archive_objects(
     tmp_path: Path,
     *,
-    proof_stamper: ProofStamper | None = None,
     policy: CollectionVolumePolicy | None = None,
     throughput_tuning: ArchiveThroughputTuning | None = None,
 ) -> tuple[
@@ -183,7 +241,6 @@ def _service_with_archive_objects(
         SqlAlchemyCollectionUploadService(
             config,
             ArchiveStoreRegistry({"archive": binding}),
-            proof_stamper=proof_stamper or FixtureProofStamper(),
             policy=policy,
             throughput_tuning=throughput_tuning,
         ),
@@ -250,7 +307,6 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
                 archive_scrypt_work_factor=1,
             ),
             ArchiveStoreRegistry({"archive": binding}),
-            proof_stamper=FixtureProofStamper(),
         )
 
     first = service("collection-test-key-v1").create_or_resume(
@@ -298,8 +354,7 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
         plan_sha256=str(volume["plan_sha256"]),
         content=content,
     )
-    assert rotated.process_due_finalizations() == 1
-    finalized = rotated.get(collection_id)
+    finalized = _process_until(rotated, collection_id)
     assert finalized["passphrase_id"] == "collection-test-key-v1"
     descriptor_object = next(
         stored for path, stored in root.objects.items() if path.endswith("/recovery.json")
@@ -342,8 +397,7 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
         plan_sha256=str(reencrypted_volume["plan_sha256"]),
         content=content,
     )
-    assert rotated.process_due_finalizations() == 1
-    reencrypted = rotated.get(reencrypted_collection_id)
+    reencrypted = _process_until(rotated, reencrypted_collection_id)
     assert reencrypted_collection_id != collection_id
     assert reencrypted["content_identity"] == finalized["content_identity"]
     assert reencrypted["passphrase_id"] == "collection-test-key-v2"
@@ -384,7 +438,6 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     service = SqlAlchemyCollectionUploadService(
         config,
         ArchiveStoreRegistry({"archive": binding}),
-        proof_stamper=FixtureProofStamper(),
         policy=CollectionVolumePolicy(
             pack_source_bytes=16 * 1024 * 1024,
             pack_files=100,
@@ -427,7 +480,7 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
         plan_sha256=str(volume["plan_sha256"]),
         content=content,
     )
-    assert service.process_due_finalizations() == 1
+    _process_until(service, collection_id)
 
     with session_scope(make_session_factory(database_url)) as session:
         cached = session.get(
@@ -473,14 +526,13 @@ def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_di
     service = SqlAlchemyCollectionUploadService(
         config,
         ArchiveStoreRegistry({"archive": binding}),
-        proof_stamper=FixtureProofStamper(),
         retrieval_cache=_MemoryResumableCache(),  # type: ignore[arg-type]
     )
 
     selected = service._volume_object_store(
         store_name="archive",
         collection_id=42,
-        object_id="pack-000000000000",
+        object_id=f"pack-{0:064x}",
     )
 
     assert selected is archive_resumable
@@ -522,11 +574,6 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
             omission_reason="operator explicitly omitted unavailable source provenance",
         ),
     )
-    provenance = build_provenance_archive(
-        bindings=bindings,
-        journals={summary.journal_id: journal},
-    )
-
     opened = service.create_or_resume(
         idempotency_key="mixed-provenance-upload",
         initial_tag="docs",
@@ -539,18 +586,16 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         provenance_omission_reason=None,
     )
     collection_id = int(opened["collection_id"])
-    service.put_provenance_journal(
+    staged = _upload_provenance_journal(
+        service,
         collection_id,
         summary.journal_id,
-        content=journal,
-        sha256=summary.journal_sha256,
+        journal,
+        summary.journal_sha256,
     )
-    _staged_bytes, staged_sha256 = service.provenance_journal_metadata(
-        collection_id, summary.journal_id
-    )
-    staged_content = b"".join(service.iter_provenance_journal(collection_id, summary.journal_id))
-    assert staged_content == journal
-    assert staged_sha256 == summary.journal_sha256
+    assert staged["accepted_bytes"] == len(journal)
+    assert staged["sha256"] == summary.journal_sha256
+    assert staged["current_state_id"] == summary.current_state_id
     service.register_files(
         collection_id,
         tuple(
@@ -579,7 +624,6 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         content_identity=collection_content_identity(
             (binding.path, binding.bytes, binding.sha256) for binding in bindings
         ),
-        provenance_identity=provenance.identity,
     )
     assert closing["provenance_identity"] is None
     for volume in service.list_volumes(collection_id)["volumes"]:
@@ -591,8 +635,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
                 plan_sha256=str(volume["plan_sha256"]),
                 content=b"".join(contents[str(source["path"])] for source in unit["sources"]),
             )
-    assert service.process_due_finalizations() == 1
-    assert service.get(collection_id)["provenance_mode"] == "mixed"
+    assert _process_until(service, collection_id)["provenance_mode"] == "mixed"
 
     with session_scope(make_session_factory(config.database_url)) as session:
         objects = list(
@@ -634,11 +677,16 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         )
     assert [item.kind for item in objects] == [
         "pack",
-        "provenance-bundle",
-        "provenance-index",
+        "volume-metadata",
+        "volume-terminal",
+        "provenance-bindings",
+        "provenance-volume-metadata",
+        "provenance-journal-segment",
+        "provenance-volume-metadata",
+        "provenance-terminal",
+        "provenance-root",
         "manifest",
         "recovery-descriptor",
-        "proof",
     ]
     assert bindings_by_path["captured.bin"].status == "captured"
     assert bindings_by_path["operator-note.txt"].status == "omitted"
@@ -650,16 +698,70 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     assert external_state_references == []
 
     stored_by_suffix = {path.rsplit("/", 1)[-1]: stored for path, stored in root.objects.items()}
-    index_stored = stored_by_suffix["index.json.age"]
     passphrase = config.archive_passphrase_for(config.archive_active_passphrase_id)
-    index = decrypt_age_scrypt(index_stored.content, passphrase)
-    bundle_record = next(item for item in objects if item.kind == "provenance-bundle")
-    bundle_stored = root.objects[bundle_record.object_path]
-    bundle = decrypt_age_scrypt(bundle_stored.content, passphrase)
-    validated = validate_provenance_archive(index, {bundle_record.object_id: bundle})
-    assert validated.identity == provenance.identity
-    assert validated.bindings == bindings
-    assert validated.journal_bytes == {summary.journal_id: journal}
+    root_bytes = decrypt_age_scrypt(
+        stored_by_suffix["root.json.age"].content,
+        passphrase,
+    )
+    provenance_root = ProvenanceRootDocument.from_json_bytes(root_bytes)
+    volume_digest = hashlib.sha256()
+    recovered_bindings: list[dict[str, object]] = []
+    recovered_journal = bytearray()
+    sequence = 0
+    while True:
+        metadata_record = next(
+            item
+            for item in objects
+            if item.object_id
+            in {
+                f"provenance-volume-{sequence:064x}",
+                f"provenance-terminal-{sequence:064x}",
+            }
+        )
+        metadata_bytes = decrypt_age_scrypt(
+            root.objects[metadata_record.object_path].content,
+            passphrase,
+        )
+        if metadata_record.object_id.startswith("provenance-terminal-"):
+            terminal = ProvenanceTerminalDocument.from_json_bytes(metadata_bytes)
+            assert terminal.sequence == sequence
+            update_ordered_volume_commitment(volume_digest, terminal)
+            break
+        volume = ProvenanceVolumeDocument.from_json_bytes(metadata_bytes)
+        update_ordered_volume_commitment(volume_digest, volume)
+        payload_record = next(
+            item for item in objects if item.object_id == f"provenance-payload-{sequence:064x}"
+        )
+        payload = decrypt_age_scrypt(
+            root.objects[payload_record.object_path].content,
+            passphrase,
+        )
+        assert hashlib.sha256(payload).hexdigest() == volume.payload.sha256
+        if volume.payload.kind == "bindings":
+            _first, current = parse_binding_segment(payload)
+            recovered_bindings.extend(current)
+        else:
+            recovered_journal.extend(payload)
+        sequence += 1
+    assert volume_digest.hexdigest() == provenance_root.ordered_volume_sha256
+    assert recovered_bindings == [
+        {
+            "path": binding.path,
+            "bytes": binding.bytes,
+            "sha256": binding.sha256,
+            "status": binding.status,
+            **(
+                {
+                    "journal_id": binding.journal_id,
+                    "current_state_id": binding.current_state_id,
+                }
+                if binding.status == "captured"
+                else {"omission_reason": binding.omission_reason}
+            ),
+        }
+        for binding in bindings
+    ]
+    assert bytes(recovered_journal) == journal
 
     manifest = decrypt_age_scrypt(
         stored_by_suffix["manifest.json.age"].content,
@@ -668,11 +770,8 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     parsed = CollectionArchiveManifest.from_json_bytes(manifest).to_mapping()
     provenance_descriptor = parsed["provenance"]
     assert isinstance(provenance_descriptor, dict)
-    assert provenance_descriptor["identity"] == provenance.identity
-    assert provenance_descriptor["index"]["sha256"] == provenance.identity
-    assert [item["sha256"] for item in provenance_descriptor["bundles"]] == [
-        item.sha256 for item in provenance.bundles
-    ]
+    assert provenance_descriptor["identity"] == provenance_root.identity
+    assert provenance_descriptor["root"]["sha256"] == provenance_root.identity
 
     reader = ApplicationPrincipal(
         app="catalog-reader",
@@ -726,7 +825,14 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     )
     assert exported == journal
     assert exported_sha256 == summary.journal_sha256
-    assert provenance_service.verify(collection_id, principal=reader)["valid"] is True
+    assert (
+        _verify_provenance(
+            provenance_service,
+            collection_id,
+            principal=reader,
+        )["valid"]
+        is True
+    )
 
     catalog_only = ApplicationPrincipal(
         app="catalog-only",
@@ -754,31 +860,6 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
             )
         )
 
-    with session_scope(make_session_factory(config.database_url)) as session:
-        session.query(CollectionProvenanceEntityRecord).filter_by(
-            collection_id=collection_id
-        ).delete()
-        session.query(CollectionFileProvenanceRecord).filter_by(
-            collection_id=collection_id
-        ).delete()
-        session.query(CollectionProvenanceJournalRecord).filter_by(
-            collection_id=collection_id
-        ).delete()
-    rebuilt = provenance_service.rebuild_catalog_projection(
-        collection_id,
-        index_content=index,
-        bundles={bundle_record.object_id: bundle},
-    )
-    assert rebuilt == {
-        "collection_id": collection_id,
-        "provenance_mode": "mixed",
-        "provenance_identity": provenance.identity,
-        "files": 2,
-        "journals": 1,
-        "entities": len(projected),
-    }
-    assert provenance_service.verify(collection_id, principal=reader)["valid"] is True
-
 
 @pytest.mark.parametrize(
     "tags",
@@ -790,7 +871,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     tags: tuple[str, ...],
     custody_mode: str,
 ) -> None:
-    service, config = _service(tmp_path)
+    service, config, _resumable, immutable = _service_with_archive_objects(tmp_path)
     content = b"direct final archive\n"
     sha256 = hashlib.sha256(content).hexdigest()
 
@@ -871,8 +952,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert queued["archive_phase"] == "finalization_queued"
     assert queued["latest_failure"] is None
     assert queued["archive_next_attempt_at"] is not None
-    assert service.process_due_finalizations() == 1
-    finalized = service.get(collection_id)
+    finalized = _process_until(service, collection_id)
     assert finalized["state"] == "finalized"
     assert finalized["tag_count"] == len(tags)
     assert finalized["custody"] == {"state": "complete"}
@@ -892,16 +972,38 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             .filter(CollectionArchiveObjectRecord.collection_id == collection_id)
             .order_by(CollectionArchiveObjectRecord.object_order)
         )
-    assert [current.object_id for current in objects] == [
-        "pack-000000000000",
-        "manifest",
-        "recovery-descriptor",
-        "proof",
+        assert [current.object_id for current in objects] == [
+            f"pack-{0:064x}",
+            f"volume-metadata-{0:064x}",
+            f"volume-terminal-{1:064x}",
+            "manifest",
+            "recovery-descriptor",
+        ]
+        assert objects[0].object_path.endswith(f"/volumes/pack-{0:064x}.tar.age")
+        assert objects[1].object_path.endswith(f"/metadata/volume-{0:064x}.json.age")
+        assert objects[2].object_path.endswith(f"/metadata/volume-{1:064x}.json.age")
+        assert objects[3].object_path.endswith("/manifest.json.age")
+        assert objects[4].object_path.endswith("/recovery.json")
+        root_object = immutable.objects[objects[3].object_path]
+        plaintext_root_sha256 = root_object.identity["riverhog-plaintext-sha256"]
+        assert objects[3].sha256 == plaintext_root_sha256
+        assert objects[3].stored_sha256 == root_object.receipt.stored_sha256
+        assert objects[3].sha256 != objects[3].stored_sha256
+
+    assert finalized["archive_root_sha256"] == plaintext_root_sha256
+    finalized_events = [
+        event
+        for event in SqlAlchemyLifecycleEventService(config)
+        .page(
+            owner_app=_CREATOR.app,
+            after=None,
+            limit=100,
+        )
+        .events
+        if event.type.endswith("collection.finalized") and event.subject == str(collection_id)
     ]
-    assert objects[0].object_path.endswith("/volumes/pack-000000000000.tar.age")
-    assert objects[1].object_path.endswith("/manifest.json.age")
-    assert objects[2].object_path.endswith("/recovery.json")
-    assert objects[3].object_path.endswith("/manifest.json.ots.age")
+    assert len(finalized_events) == 1
+    assert finalized_events[0].data["archive_root_sha256"] == plaintext_root_sha256
 
     resumed = service.create_or_resume(
         idempotency_key="upload-1",
@@ -1358,6 +1460,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
     service, _config, _resumable, _root = _service_with_archive_objects(tmp_path, policy=policy)
     content = b"raw payload"
     sha256 = hashlib.sha256(content).hexdigest()
+    part_count, part_commitment = ordered_raw_part_commitment((sha256,))
     opened = service.create_or_resume(
         idempotency_key="raw-source-identity",
         initial_tag=None,
@@ -1379,9 +1482,18 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
                 "sha256": sha256,
                 "raw_parts": {
                     "part_plaintext_bytes": part_bytes,
-                    "sha256s": [sha256],
+                    "part_count": part_count,
+                    "ordered_sha256": part_commitment,
                 },
             },
+        ),
+    )
+    service.register_raw_part_digests(
+        collection_id,
+        CollectionUploadRawDigestBatchDocument(
+            path="media.bin",
+            first_part=0,
+            sha256s=[sha256],
         ),
     )
     service.complete(
@@ -1458,58 +1570,4 @@ def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint
     assert recovered["archive_phase"] == "retry_wait"
     assert recovered["latest_failure"] == "archive finalization interrupted before completion"
     assert recovered["archive_next_attempt_at"] is not None
-    assert service.process_due_finalizations() == 1
-    assert service.get(collection_id)["state"] == "finalized"
-
-
-def test_due_finalization_retries_a_temporary_publication_failure(tmp_path: Path) -> None:
-    proof_stamper = _FailOnceProofStamper()
-    service, config = _service(tmp_path, proof_stamper=proof_stamper)
-    content = b"retryable direct final archive\n"
-    sha256 = hashlib.sha256(content).hexdigest()
-    opened = service.create_or_resume(
-        idempotency_key="retry-upload",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
-        ingest_source="fixture",
-        archive_store=None,
-        initiator=_CREATOR,
-        event_context=None,
-        provenance_mode="omitted",
-        provenance_omission_reason="fixture does not exercise source observation",
-    )
-    collection_id = int(opened["collection_id"])
-    service.register_files(
-        collection_id,
-        ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
-    )
-    service.complete(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
-    )
-    volume = service.list_volumes(collection_id)["volumes"][0]
-    service.upload_unit(
-        collection_id,
-        str(volume["volume_id"]),
-        0,
-        plan_sha256=str(volume["plan_sha256"]),
-        content=content,
-    )
-
-    assert service.process_due_finalizations() == 1
-    retry_wait = service.get(collection_id)
-    assert retry_wait["state"] == "finalizing"
-    assert retry_wait["archive_phase"] == "retry_wait"
-    assert retry_wait["latest_failure"] == ("RuntimeError: temporary proof service failure")
-    assert retry_wait["archive_next_attempt_at"] is not None
-    with session_scope(make_session_factory(config.database_url)) as session:
-        upload = session.get(CollectionUploadRecord, collection_id)
-        assert upload is not None
-        assert upload.archive_attempt_count == 1
-        assert upload.archive_next_attempt_at is not None
-        upload.archive_next_attempt_at = upload.archive_phase_updated_at
-
-    assert service.process_due_finalizations() == 1
-    assert service.get(collection_id)["state"] == "finalized"
-    assert proof_stamper.attempts == 2
+    assert _process_until(service, collection_id)["state"] == "finalized"

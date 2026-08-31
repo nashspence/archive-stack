@@ -152,7 +152,6 @@ EXTERNAL_DISTRIBUTION_MODULES = {
     "fastapi": {"fastapi"},
     "httpx": {"httpx"},
     "jsonschema": {"jsonschema"},
-    "opentimestamps-client": set(),
     "psycopg": set(),
     "pydantic": {"pydantic"},
     "pyyaml": {"yaml"},
@@ -165,7 +164,7 @@ EXTERNAL_DISTRIBUTION_MODULES = {
     "uvicorn": {"uvicorn"},
 }
 RUNTIME_ONLY_DEPENDENCIES = {
-    "riverhog-server": {"opentimestamps-client", "psycopg"},
+    "riverhog-server": {"psycopg"},
     "stove0-server": {"psycopg"},
 }
 

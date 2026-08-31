@@ -173,8 +173,8 @@ def test_pack_is_acknowledged_only_after_final_resumable_write_completion() -> N
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
 
     assert checkpoint.completed is None
@@ -203,8 +203,8 @@ def test_pack_upload_revalidates_the_registered_source_identity() -> None:
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
 
     with pytest.raises(ValueError, match="pack unit source sha256 mismatch"):
@@ -229,8 +229,8 @@ def test_checkpoint_resumes_across_riverhog_and_adapter_restart() -> None:
     checkpoint = first_process.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
     checkpoint = first_process.upload_next_unit(
         plan=plan,
@@ -270,8 +270,8 @@ def test_lost_complete_response_is_recovered_from_final_object_metadata() -> Non
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
     store.lose_complete_response = True
 
@@ -301,8 +301,8 @@ def test_checkpoint_round_trips() -> None:
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
     checkpoint = uploader.upload_next_unit(
         plan=plan,
@@ -340,8 +340,8 @@ def test_lost_part_response_is_retried_at_the_same_deterministic_part_number() -
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/pack-000000000000.tar.age",
-        relative_path="volumes/pack-000000000000.tar.age",
+        object_path=f"archives/opaque/volumes/pack-{0:064x}.tar.age",
+        relative_path=f"volumes/pack-{0:064x}.tar.age",
     )
 
     with pytest.raises(ConnectionError, match="part response lost"):

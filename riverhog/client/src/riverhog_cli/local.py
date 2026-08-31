@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import sqlite3
-import sys
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import closing
@@ -23,10 +21,6 @@ from riverhog_api_client.downloads import (
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
-from riverhog_protocol.portable_collection import (
-    PortableCollectionFile,
-    PortableCollectionHeader,
-)
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 from riverhog_provenance import list_provenance_observers, resolve_provenance_observer
 from state_schema import StateSchemaError
@@ -194,8 +188,9 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
     row = db.execute(
         """
         SELECT c.collection_id, c.created_at,
-               CASE c.remote_deleted
-                   WHEN 1 THEN 'remote-deleted'
+               CASE
+                   WHEN c.remote_deleted = 1 THEN 'remote-deleted'
+                   WHEN c.inventory_complete = 0 THEN 'synchronizing'
                    ELSE 'desired'
                END AS status,
                COUNT(f.path) AS files,
@@ -203,7 +198,7 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
         FROM desired_collections AS c
         LEFT JOIN desired_files AS f USING (collection_id)
         WHERE c.collection_id = ?
-        GROUP BY c.collection_id, c.created_at, c.remote_deleted
+        GROUP BY c.collection_id, c.created_at, c.remote_deleted, c.inventory_complete
         """,
         (collection_id,),
     ).fetchone()
@@ -224,45 +219,69 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
     }
 
 
-def _store_inventory(
+def _begin_inventory_refresh(
     db: sqlite3.Connection,
-    header: PortableCollectionHeader,
-    files: Sequence[PortableCollectionFile] | Iterator[PortableCollectionFile],
     *,
+    collection_id: int,
     inventory_identity: str,
     created_at: str,
 ) -> None:
-    collection_id = normalize_collection_id(header.collection)
     parse_utc_timestamp(created_at)
     db.execute(
         """
         INSERT INTO desired_collections (
             collection_id,
             inventory_identity,
+            inventory_cursor,
+            inventory_complete,
             created_at,
             remote_deleted
         )
-        VALUES (?, ?, ?, 0)
+        VALUES (?, ?, NULL, 0, ?, 0)
         ON CONFLICT (collection_id) DO UPDATE SET
             inventory_identity = excluded.inventory_identity,
+            inventory_cursor = NULL,
+            inventory_complete = 0,
             created_at = excluded.created_at,
             remote_deleted = 0
         """,
-        (
-            collection_id,
-            inventory_identity,
-            created_at,
-        ),
+        (collection_id, inventory_identity, created_at),
     )
     db.execute("DELETE FROM desired_files WHERE collection_id = ?", (collection_id,))
+    db.commit()
+
+
+def _store_inventory_page(
+    db: sqlite3.Connection,
+    *,
+    collection_id: int,
+    inventory_identity: str,
+    files: Sequence[Any],
+    next_cursor: str | None,
+    complete: bool,
+) -> None:
     for current in files:
         db.execute(
             """
             INSERT INTO desired_files (collection_id, path, bytes, sha256)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT (collection_id, path) DO UPDATE SET
+                bytes = excluded.bytes,
+                sha256 = excluded.sha256
             """,
             (collection_id, current.path, current.bytes, current.sha256),
         )
+    updated = db.execute(
+        """
+        UPDATE desired_collections
+        SET inventory_cursor = ?, inventory_complete = ?
+        WHERE collection_id = ? AND inventory_identity = ?
+        """,
+        (next_cursor, int(complete), collection_id, inventory_identity),
+    )
+    if updated.rowcount != 1:
+        raise InvalidState("local collection inventory authority changed")
+    db.commit()
 
 
 def _replace_local_tags(
@@ -285,16 +304,79 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
     summary = api.get_collection(collection_id)
     if normalize_collection_id(summary["id"]) != collection_id:
         raise InvalidState("Riverhog returned the wrong collection summary")
-    with api.stream_portable_collection_inventory(collection_id) as inventory:
-        _store_inventory(
+    inventory_identity = str(summary.get("inventory_identity") or "")
+    state = db.execute(
+        """
+        SELECT inventory_identity, inventory_cursor, inventory_complete
+        FROM desired_collections
+        WHERE collection_id = ?
+        """,
+        (collection_id,),
+    ).fetchone()
+    if state is None or str(state["inventory_identity"]) != inventory_identity:
+        _begin_inventory_refresh(
             db,
-            inventory.begin.header,
-            iter(inventory),
-            inventory_identity=inventory.begin.inventory_identity,
+            collection_id=collection_id,
+            inventory_identity=inventory_identity,
             created_at=str(summary["created_at"]),
         )
-    with api.stream_collection_tags(collection_id) as tags:
-        _replace_local_tags(db, collection_id, tags)
+        cursor: str | None = None
+        complete = False
+    else:
+        cursor = None if state["inventory_cursor"] is None else str(state["inventory_cursor"])
+        complete = bool(state["inventory_complete"])
+    while not complete:
+        inventory = api.get_portable_collection_inventory(
+            collection_id,
+            cursor=cursor,
+            limit=1000,
+            inventory_identity=inventory_identity,
+        )
+        if inventory.authority.inventory_identity != inventory_identity:
+            raise InvalidState("Riverhog returned the wrong collection inventory authority")
+        _store_inventory_page(
+            db,
+            collection_id=collection_id,
+            inventory_identity=inventory_identity,
+            files=inventory.files,
+            next_cursor=inventory.next_cursor,
+            complete=inventory.complete,
+        )
+        cursor = inventory.next_cursor
+        complete = inventory.complete
+    observed = db.execute(
+        "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM desired_files WHERE collection_id = ?",
+        (collection_id,),
+    ).fetchone()
+    if observed is None or (int(observed[0]), int(observed[1])) != (
+        int(summary["files"]),
+        int(summary["bytes"]),
+    ):
+        raise InvalidState("local collection inventory is incomplete")
+    page = 1
+    authority: tuple[int, str, int] | None = None
+    tags: list[dict[str, Any]] = []
+    while True:
+        payload = api.get_collection_tags(collection_id, page=page, per_page=100)
+        current = (
+            int(payload.get("metadata_revision") or 0),
+            str(payload.get("inventory_identity") or ""),
+            int(payload.get("tag_count") or 0),
+        )
+        if authority is None:
+            authority = current
+        elif authority != current:
+            raise InvalidState("collection tags changed during bounded traversal")
+        raw_tags = payload.get("tags")
+        if not isinstance(raw_tags, list):
+            raise InvalidState("Riverhog returned invalid collection tags")
+        tags.extend({"tag": str(tag)} for tag in raw_tags)
+        if page >= int(payload.get("pages") or 0):
+            break
+        page += 1
+    if authority is None or len(tags) != authority[2]:
+        raise InvalidState("collection tag traversal is incomplete")
+    _replace_local_tags(db, collection_id, iter(tags))
 
 
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
@@ -339,6 +421,7 @@ def _expected_projection_links(
         """
         SELECT collection_id, created_at
         FROM desired_collections
+        WHERE inventory_complete = 1
         ORDER BY collection_id
         """
     ):
@@ -481,7 +564,7 @@ def _missing_files(
         SELECT f.collection_id, f.path, f.bytes, f.sha256
         FROM desired_files AS f
         JOIN desired_collections AS c USING (collection_id)
-        WHERE c.remote_deleted = 0
+        WHERE c.remote_deleted = 0 AND c.inventory_complete = 1
         ORDER BY f.collection_id, f.path
         """
     ):
@@ -824,10 +907,6 @@ def list_collections(
         str | None,
         typer.Option("--query", "-q", help="Search collection id, tag, or status"),
     ] = None,
-    all_items: Annotated[
-        bool,
-        typer.Option("--all", help="Return every matching local collection"),
-    ] = False,
     ids: Annotated[
         bool,
         typer.Option("--ids", help="Emit one collection id per line"),
@@ -877,20 +956,6 @@ def list_collections(
                 {filters}
                 """
         order_column = LOCAL_LIST_SORT_FIELDS[sort]
-        if all_items:
-            rows = db.execute(
-                f"""
-                {base_query}
-                ORDER BY {order_column} {normalized_order.upper()}, collection_id ASC
-                """,
-                params,
-            )
-            _emit_local_collection_enumeration(
-                rows,
-                ids=ids,
-                json_mode=json_mode,
-            )
-            return
         total = int(
             db.execute(
                 f"SELECT COUNT(*) FROM ({base_query})",
@@ -936,50 +1001,6 @@ def _local_collection_list_item(row: sqlite3.Row) -> dict[str, object]:
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),
     }
-
-
-def _emit_local_collection_enumeration(
-    rows: sqlite3.Cursor,
-    *,
-    ids: bool,
-    json_mode: bool,
-) -> None:
-    count = 0
-    if json_mode:
-        sys.stdout.write('{"collections":[')
-    first_chunk = True
-    while current := rows.fetchmany(LOCAL_LIST_PAGE_SIZE_MAX):
-        items = [_local_collection_list_item(row) for row in current]
-        if ids:
-            for item in items:
-                typer.echo(str(item["collection_id"]))
-        elif json_mode:
-            for item in items:
-                if count:
-                    sys.stdout.write(",")
-                sys.stdout.write(
-                    json.dumps(
-                        item,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                )
-                sys.stdout.flush()
-                count += 1
-        else:
-            rendered = format_local_collections(
-                {"collections": items, "_complete_enumeration": True}
-            ).splitlines()
-            if not first_chunk and rendered:
-                rendered = rendered[1:]
-            if rendered:
-                typer.echo("\n".join(rendered))
-            first_chunk = False
-    if json_mode:
-        sys.stdout.write(f'],"total":{count}}}\n')
-    elif not ids and first_chunk:
-        typer.echo(format_local_collections({"collections": [], "_complete_enumeration": True}))
 
 
 @local_app.command("show")

@@ -32,6 +32,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_protocol.errors import BadRequest, Forbidden, NotFound, Unauthorized
+from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -95,6 +96,7 @@ def seed_tag(
                     creation_identity_sha256=f"{collection_id:064x}",
                     creation_custody_mode="producer-retained",
                     content_identity="0" * 64,
+                    tag_set_identity=tag_set_identity((tag,)),
                     encryption_format="age-v1-scrypt",
                     passphrase_id="fixture-archive-key-v1",
                     inventory_identity="1" * 64,
@@ -285,6 +287,7 @@ def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
+                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,

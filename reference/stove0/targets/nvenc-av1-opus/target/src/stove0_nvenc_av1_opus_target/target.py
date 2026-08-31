@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from riverhog_api_client import ProducerFile
-from riverhog_protocol import ArtifactDisposition, canonical_json_sha256
+from riverhog_protocol import canonical_json_sha256
 from stove0_media_archive_target_contracts import (
     AV1_OPUS_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_ROLE,
@@ -24,7 +24,7 @@ from stove0_media_archive_target_support import (
     MediaProjectionItem,
     ffmpeg_container_metadata_args,
     render_projection_xmp,
-    resolve_media_archive_projection,
+    resolve_media_archive_preflight_projection,
 )
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_support import (
@@ -127,9 +127,8 @@ class NvencAv1OpusTargetService(PersistentTargetService):
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
         try:
             intent = Av1OpusArchiveIntent.model_validate(request.intent)
-            projection = resolve_media_archive_projection(
-                inputs=request.inputs,
-                observations=request.observations,
+            projection = resolve_media_archive_preflight_projection(
+                request,
                 policy=intent.metadata_projection,
                 archive_directory="video",
                 archive_suffix=".mkv",
@@ -139,9 +138,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                 supplied is not None
                 and MediaArchiveProjection.model_validate(supplied) != projection
             ):
-                raise ValueError(
-                    "configured media projection differs from exact observation evidence"
-                )
+                raise ValueError("supplied media projection differs from target preflight")
         except (KeyError, ValueError) as exc:
             raise TargetServiceError(400, "invalid_target_request", str(exc)) from exc
         effective = request.model_copy(
@@ -185,7 +182,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         ) as execution:
             workspace = execution.open_workspace(self.workspace_root)
             try:
-                resolved = execution.inputs()
+                resolved = execution.iter_inputs()
                 resolved_by_id = {
                     artifact.id: (artifact, claimed) for artifact, claimed in resolved
                 }
@@ -306,11 +303,20 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                             derived_from=(item.input_artifact_id,),
                         )
                         outputs.append(source_artifact)
-                        publication.append(ProducerFile(destination, relative), video)
-                        publication.append(ProducerFile(xmp, item.xmp_path), xmp_output)
+                        publication.append(
+                            ProducerFile(destination, relative),
+                            video,
+                            derived_from=item.derived_from,
+                        )
+                        publication.append(
+                            ProducerFile(xmp, item.xmp_path),
+                            xmp_output,
+                            derived_from=item.derived_from,
+                        )
                         publication.append(
                             ProducerFile(bundle, bundle_relative),
                             source_artifact,
+                            derived_from=(item.input_artifact_id,),
                         )
                     finally:
                         source.unlink(missing_ok=True)
@@ -340,22 +346,13 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                         publication.append(
                             ProducerFile(destination, retained.output_path),
                             retained_output,
+                            derived_from=(retained.input_artifact_id,),
                         )
                     finally:
                         source.unlink(missing_ok=True)
                 declared = tuple(sorted(outputs, key=lambda item: item.id))
-                dispositions = tuple(
-                    ArtifactDisposition(
-                        input_collection_id=artifact.collection.collection_id,
-                        input_archive_root_sha256=artifact.collection.archive_root_sha256,
-                        input_path=artifact.path,
-                        status="transformed",
-                        outputs=tuple(
-                            output.path for output in declared if artifact.id in output.derived_from
-                        ),
-                    )
-                    for artifact, _claimed in resolved
-                )
+                for input_id in sorted(resolved_by_id):
+                    execution.declare_disposition(input_id, "transformed")
                 execution_sha256 = _execution_sha256(
                     request.declaration.plan.plan_sha256,
                     self.image_digest,
@@ -364,7 +361,6 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                 return publication.finish_success(
                     operation=AV1_OPUS_ARCHIVE_OPERATION,
                     execution_sha256=execution_sha256,
-                    dispositions=dispositions,
                     attempt=attempt,
                     runtime_evidence={
                         "ffmpeg": tool_version(self.ffmpeg),
@@ -426,7 +422,6 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             bytes=size,
             sha256=sha256,
             media_type=media_type,
-            derived_from=derived_from,
         )
 
 

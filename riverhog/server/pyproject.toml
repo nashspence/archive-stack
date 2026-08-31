@@ -24,7 +24,6 @@ dependencies = [
   "fastapi>=0.111,<1.0",
   "http-api-contracts>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
-  "opentimestamps-client>=0.7,<1.0",
   "psycopg[binary]>=3.3.4,<4.0",
   "pydantic>=2.7,<3.0",
   "riverhog-age>=0.1,<0.2",

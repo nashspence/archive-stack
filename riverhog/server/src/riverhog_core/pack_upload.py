@@ -59,7 +59,7 @@ from riverhog_core.write_segments import WriteSegmentPlan, plan_write_segments
 
 PACK_UPLOAD_CHECKPOINT_SCHEMA = "pack-upload-checkpoint/v1"
 PACK_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.pack+age"
-_PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
+_PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9a-f]{64}")
 TransferTimingObserver = Callable[[TransferTiming], None]
 
 

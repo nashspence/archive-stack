@@ -13,10 +13,7 @@ from xml.etree import ElementTree
 import httpx
 from file_download import verified_download
 from http_api_contracts import (
-    JSON_SEQUENCE_MEDIA_TYPE,
     CanonicalVisibleText,
-    CompleteEnumerationItemSchema,
-    CompleteEnumerationReader,
     closed_literal_values,
     parse_error_payload,
     parse_quoted_sha256_identity,
@@ -53,17 +50,20 @@ from riverhog_protocol import (
     CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
+    CollectionUploadProvenanceJournalCreateDocument,
+    CollectionUploadProvenanceJournalStatusDocument,
+    CollectionUploadRawDigestBatchDocument,
+    CollectionUploadRawDigestProgressDocument,
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
     CollectionUploadUnitNumber,
     CollectionUploadUnitWorkDocument,
     CollectionUploadVolumeId,
-    CollectionUploadVolumeSetDocument,
-    CollectionUploadVolumeWorkDocument,
+    CollectionUploadWorkBatchDocument,
     DownloadQuotaSort,
     ImmutableFileIdentityDocument,
-    PortableCollectionInventoryReader,
+    PortableCollectionInventoryPage,
     ProcessingClaimId,
     ProvenanceSort,
     ProvenanceStatus,
@@ -79,6 +79,7 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.errors import (
     BadRequest,
+    Conflict,
     HashMismatch,
     InvalidState,
     RiverhogError,
@@ -122,88 +123,6 @@ _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuo
 _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
 _COLLECTION_UPLOAD_VOLUME_ID: TypeAdapter[str] = TypeAdapter(CollectionUploadVolumeId)
 _COLLECTION_UPLOAD_UNIT_NUMBER: TypeAdapter[int] = TypeAdapter(CollectionUploadUnitNumber)
-_JSON_OBJECT_TYPE = dict[str, Any]
-
-# These identities are checked against the server-owned response models in the
-# public-contract parity suite. Clients depend only on the sealed wire identity.
-_STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
-    "riverhog.collection-summary/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-summary/v1",
-        sha256="50e41305400ca0e8938758fd4ab4a65d6fe93e7e4f8358a5fe1edda4f4b7e3ca",
-    ),
-    "riverhog.collection-upload-session-summary/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-upload-session-summary/v1",
-        sha256="9654c7d08ac7e4636cf5d63b1f633ecf088287d82e298bbf1a716ac16c20e2d7",
-    ),
-    "riverhog.collection-upload-file/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-upload-file/v1",
-        sha256="4e394f7089be2e584d69c1631d6c1dfe8ac5fcccb5305a551479d9f5ff2fe860",
-    ),
-    "riverhog.collection-archive-copy/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-archive-copy/v1",
-        sha256="7167b4ceb6b4ad0a125d25984d21fdaa6d5ef31b4c290a1a94e1f3ab7232c5d8",
-    ),
-    "riverhog.collection-tag-membership/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-tag-membership/v1",
-        sha256="08a8ba62f19b020dfd9ca39d2c0c49829a8e41d585d02903d9dcbc0156a94487",
-    ),
-    "riverhog.collection-upload-tag-membership/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-upload-tag-membership/v1",
-        sha256="75c5ce96825c9cce4917f4bf65fe9a93594ba125de6f1af4af8dc3444a51cf69",
-    ),
-    "riverhog.search-file/v1": CompleteEnumerationItemSchema(
-        id="riverhog.search-file/v1",
-        sha256="9f70abaf8699e875793ea6c90ed928b5a5187bdba2a1f0f057e647e1e4e54c2e",
-    ),
-    "riverhog.tag/v1": CompleteEnumerationItemSchema(
-        id="riverhog.tag/v1",
-        sha256="10fee7b9ba5804b39832fb09053c0e9b1f85e037afd722d72c914e0592b5c048",
-    ),
-    "riverhog.collection-file-provenance/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-file-provenance/v1",
-        sha256="19376f883793003b3c13eb7d307edfd2c46abd6f622b5b5753e3652b1e8548c5",
-    ),
-    "riverhog.provenance-trace-item/v1": CompleteEnumerationItemSchema(
-        id="riverhog.provenance-trace-item/v1",
-        sha256="7bc0616005ff50717e4c451eed2b8e3d65afed23c87e742164dd0a5e08f367a7",
-    ),
-    "riverhog.provenance-journal-agent/v1": CompleteEnumerationItemSchema(
-        id="riverhog.provenance-journal-agent/v1",
-        sha256="f583f1b6cd0a63844e10b628bea016e3aa237fb18e598f3e20a7dd739a3d0151",
-    ),
-    "riverhog.archive-copy-job/v1": CompleteEnumerationItemSchema(
-        id="riverhog.archive-copy-job/v1",
-        sha256="4575819fc947e6a6e9320951372290c376967adf1de8d6cc1a4515621622c18e",
-    ),
-    "riverhog.archive-store/v1": CompleteEnumerationItemSchema(
-        id="riverhog.archive-store/v1",
-        sha256="7c281f059dd3f175ed3a79a789a08954dd8377a1e01fc07ea724b862ec87f543",
-    ),
-    "riverhog.application-summary/v1": CompleteEnumerationItemSchema(
-        id="riverhog.application-summary/v1",
-        sha256="e3137364b6798503b1b1e2c6708136ac7e398c6efceb5d6c334bbe011ececcb1",
-    ),
-    "riverhog.application-key/v1": CompleteEnumerationItemSchema(
-        id="riverhog.application-key/v1",
-        sha256="0b79e068e1718273f0510dcb21dc591496d9d006d9a19433b3e8b11c48881ce4",
-    ),
-    "riverhog.application-key-access/v1": CompleteEnumerationItemSchema(
-        id="riverhog.application-key-access/v1",
-        sha256="215dbaea68445d51b633d8b647d018d627b5aebfc6671ad333ada3f5d7673336",
-    ),
-    "riverhog.key-download-quota/v1": CompleteEnumerationItemSchema(
-        id="riverhog.key-download-quota/v1",
-        sha256="d2a70802fd8fd7dba6cfde017471d7107aad39f5cf0cb7165a9be056db81fb8c",
-    ),
-    "riverhog.retrieval-cache-object/v1": CompleteEnumerationItemSchema(
-        id="riverhog.retrieval-cache-object/v1",
-        sha256="5250545676155873cc00629fc399fc922eddf7cfc5251fa5fd0d41587f34e501",
-    ),
-    "riverhog.collection-processing-claim/v1": CompleteEnumerationItemSchema(
-        id="riverhog.collection-processing-claim/v1",
-        sha256="0dd09d350673bb395571ddb1df392ac5bc407b2b8cc930a5b309c4175cdc954d",
-    ),
-}
 _SORT_ORDERS = closed_literal_values(SortOrder)
 _COLLECTION_SORTS = closed_literal_values(CollectionSort)
 _COLLECTION_UPLOAD_SORTS = closed_literal_values(CollectionUploadSort)
@@ -329,6 +248,13 @@ def _collection_id(value: int) -> int:
         return _COLLECTION_ID.validate_python(value)
     except ValidationError as exc:
         raise BadRequest("collection id must be a positive integer") from exc
+
+
+def _provenance_journal_id(value: ProvenanceJournalId) -> str:
+    try:
+        return _PROVENANCE_JOURNAL_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _canonical_relpath(value: str) -> str:
@@ -602,49 +528,6 @@ class _HttpApiClient:
         return payload
 
     @contextmanager
-    def _stream_json_objects(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, object],
-        params: Mapping[str, object],
-        schema_id: str,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        expected_schema = _STREAM_ITEM_SCHEMAS.get(schema_id)
-        if expected_schema is None:
-            raise RuntimeError(f"complete-enumeration schema is not sealed: {schema_id}")
-        client = self._persistent_client()
-        try:
-            with client.stream(
-                "GET",
-                path,
-                params=cast(Any, params),
-                headers={"Accept": JSON_SEQUENCE_MEDIA_TYPE},
-            ) as response:
-                if not response.is_success:
-                    response.read()
-                    self._raise_for_error(response)
-                media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
-                if media_type != JSON_SEQUENCE_MEDIA_TYPE:
-                    raise InvalidState("API returned an invalid complete-enumeration media type")
-                reader = CompleteEnumerationReader(
-                    response.iter_bytes(),
-                    item_type=_JSON_OBJECT_TYPE,
-                    expected_query=query,
-                    expected_item_schema=expected_schema,
-                )
-                try:
-                    yield iter(reader)
-                    reader.require_complete()
-                except ValueError as exc:
-                    raise InvalidState(
-                        "API returned an invalid complete-enumeration stream"
-                    ) from exc
-        except httpx.TransportError:
-            self.close()
-            raise
-
-    @contextmanager
     def _stream_verified_body(
         self,
         path: str,
@@ -888,35 +771,38 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "changes": changes,
         }
 
-    @contextmanager
-    def stream_portable_collection_inventory(
-        self, collection_id: CollectionId
-    ) -> Iterator[PortableCollectionInventoryReader]:
-        client = self._persistent_client()
+    def get_portable_collection_inventory(
+        self,
+        collection_id: CollectionId,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+        inventory_identity: str | None = None,
+    ) -> PortableCollectionInventoryPage:
+        if cursor is not None and inventory_identity is None:
+            raise BadRequest("inventory continuation requires its exact identity")
+        headers = (
+            {"If-Match": quote_sha256_identity(_sha256_identity(inventory_identity, "inventory"))}
+            if inventory_identity is not None
+            else None
+        )
+        params: dict[str, object] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = self._request(
+            "GET",
+            f"/v1/catalog/collections/{str(_collection_id(collection_id))}/inventory",
+            params=params,
+            headers=headers,
+        )
+        page = _response_model(PortableCollectionInventoryPage, response.json())
         try:
-            with client.stream(
-                "GET",
-                f"/v1/catalog/collections/{str(_collection_id(collection_id))}/inventory",
-                headers={"Accept": JSON_SEQUENCE_MEDIA_TYPE},
-            ) as response:
-                if not response.is_success:
-                    response.read()
-                    self._raise_for_error(response)
-                media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
-                if media_type != JSON_SEQUENCE_MEDIA_TYPE:
-                    raise InvalidState("API returned an invalid collection inventory media type")
-                try:
-                    identity = parse_quoted_sha256_identity(response.headers.get("ETag", ""))
-                    reader = PortableCollectionInventoryReader(response.iter_bytes())
-                    if reader.begin.inventory_identity != identity:
-                        raise ValueError("collection inventory HTTP identity differs")
-                    yield reader
-                    reader.require_complete()
-                except ValueError as exc:
-                    raise InvalidState("API returned an invalid collection inventory") from exc
-        except httpx.TransportError:
-            self.close()
-            raise
+            response_identity = parse_quoted_sha256_identity(response.headers.get("ETag", ""))
+        except ValueError as exc:
+            raise InvalidState("API returned an invalid collection inventory identity") from exc
+        if page.authority.inventory_identity != response_identity:
+            raise InvalidState("collection inventory HTTP identity differs")
+        return page
 
     def plan_retrieval(
         self,
@@ -1029,65 +915,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if expires_after:
             params["expires_after"] = expires_after
         return self._json("GET", "/v1/retrieval-cache/objects", params=params)
-
-    @contextmanager
-    def stream_retrieval_cache_objects(
-        self,
-        *,
-        q: str | None = None,
-        tag: str | None = None,
-        collection_id: CollectionId | None = None,
-        source_store: ArchiveStoreName | None = None,
-        state: RetrievalCacheState | None = None,
-        protection: RetrievalCacheProtection | None = None,
-        expires_before: str | None = None,
-        expires_after: str | None = None,
-        sort: RetrievalCacheSort = "cached_at",
-        order: SortOrder = "desc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        params: dict[str, Any] = {
-            "sort": _one_of(sort, _RETRIEVAL_CACHE_SORTS, "retrieval-cache sort"),
-            "order": _one_of(order, _SORT_ORDERS, "sort order"),
-        }
-        query: dict[str, object] = {
-            "q": q if q else None,
-            "tag": None,
-            "collection_id": None,
-            "source_store": None,
-            "state": None,
-            "protection": None,
-            "expires_before": expires_before,
-            "expires_after": expires_after,
-            "sort": params["sort"],
-            "order": params["order"],
-        }
-        if q:
-            params["q"] = q
-        if tag is not None:
-            query["tag"] = params["tag"] = _canonical_tag(tag)
-        if collection_id is not None:
-            query["collection_id"] = params["collection_id"] = _collection_id(collection_id)
-        if source_store is not None:
-            query["source_store"] = params["source_store"] = _archive_store_name(source_store)
-        if state:
-            query["state"] = params["state"] = _one_of(
-                state, _RETRIEVAL_CACHE_STATES, "retrieval-cache state"
-            )
-        if protection:
-            query["protection"] = params["protection"] = _one_of(
-                protection, _RETRIEVAL_CACHE_PROTECTIONS, "retrieval-cache protection"
-            )
-        if expires_before:
-            params["expires_before"] = expires_before
-        if expires_after:
-            params["expires_after"] = expires_after
-        with self._stream_json_objects(
-            "/v1/retrieval-cache/objects/stream",
-            query=query,
-            params=params,
-            schema_id="riverhog.retrieval-cache-object/v1",
-        ) as items:
-            yield items
 
     def get_retrieval_cache_object(
         self,
@@ -1269,8 +1096,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if opened.get("state") == "finalized":
             return opened
         collection_id = _collection_id(int(opened["collection_id"]))
-        with self.stream_collection_upload_session_tags(collection_id) as items:
-            current = {str(item["tag"]) for item in items}
+        current = set(self._collection_upload_session_tags(collection_id))
         for tag in sorted(set(normalized_tags) - current):
             self.add_collection_upload_session_tag(collection_id, tag)
         for tag in sorted(current - set(normalized_tags)):
@@ -1291,19 +1117,32 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params={"page": page, "per_page": per_page},
         )
 
-    @contextmanager
-    def stream_collection_upload_session_tags(
-        self,
-        collection_id: CollectionId,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_id = _collection_id(collection_id)
-        with self._stream_json_objects(
-            f"/v1/collection-upload-sessions/{normalized_id}/tags/stream",
-            query={"collection_id": normalized_id},
-            params={},
-            schema_id="riverhog.collection-upload-tag-membership/v1",
-        ) as items:
-            yield items
+    def _collection_upload_session_tags(self, collection_id: CollectionId) -> tuple[str, ...]:
+        page = 1
+        expected_total: int | None = None
+        tags: list[str] = []
+        while True:
+            payload = self.list_collection_upload_session_tags(
+                collection_id,
+                page=page,
+                per_page=100,
+            )
+            total = int(payload.get("total") or 0)
+            pages = int(payload.get("pages") or 0)
+            if expected_total is None:
+                expected_total = total
+            elif expected_total != total:
+                raise InvalidState("upload-session tags changed during bounded traversal")
+            raw_tags = payload.get("tags")
+            if not isinstance(raw_tags, list):
+                raise InvalidState("API returned invalid upload-session tags")
+            tags.extend(str(item.get("tag") or "") for item in raw_tags if isinstance(item, dict))
+            if page >= pages:
+                break
+            page += 1
+        if len(tags) != expected_total or tags != sorted(set(tags)):
+            raise InvalidState("upload-session tag traversal is incomplete")
+        return tuple(tags)
 
     def add_collection_upload_session_tag(
         self,
@@ -1395,21 +1234,105 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
         )
 
-    @contextmanager
-    def stream_collection_upload_session_files(
+    def register_collection_upload_session_raw_part_digests(
         self,
         collection_id: CollectionId,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized = _collection_id(collection_id)
-        with self._stream_json_objects(
-            f"/v1/collection-upload-sessions/{normalized}/files/stream",
-            query={"collection_id": normalized},
-            params={},
-            schema_id="riverhog.collection-upload-file/v1",
-        ) as items:
-            yield items
+        batch: CollectionUploadRawDigestBatchDocument | Mapping[str, Any],
+    ) -> CollectionUploadRawDigestProgressDocument:
+        try:
+            document = (
+                batch
+                if isinstance(batch, CollectionUploadRawDigestBatchDocument)
+                else CollectionUploadRawDigestBatchDocument.model_validate(dict(batch))
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        payload = self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/raw-part-digests",
+            json=document.model_dump(mode="json"),
+        )
+        return CollectionUploadRawDigestProgressDocument.model_validate(payload)
 
-    def put_collection_upload_session_provenance_journal(
+    def create_collection_upload_session_provenance_journal(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+        *,
+        byte_count: int,
+        sha256: str,
+    ) -> CollectionUploadProvenanceJournalStatusDocument:
+        canonical_journal_id = _provenance_journal_id(journal_id)
+        if isinstance(byte_count, bool) or byte_count < 1:
+            raise BadRequest("provenance byte count must be positive")
+        return CollectionUploadProvenanceJournalStatusDocument.model_validate(
+            self._json(
+                "PUT",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
+                f"{quote(canonical_journal_id, safe='')}",
+                json=CollectionUploadProvenanceJournalCreateDocument(
+                    bytes=byte_count,
+                    sha256=_sha256_identity(sha256, "provenance SHA-256"),
+                ).model_dump(mode="json"),
+            )
+        )
+
+    def append_collection_upload_session_provenance_journal(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+        *,
+        offset: int,
+        content: bytes,
+    ) -> CollectionUploadProvenanceJournalStatusDocument:
+        canonical_journal_id = _provenance_journal_id(journal_id)
+        chunk = bytes(content)
+        if offset < 0 or not chunk or len(chunk) > 1024 * 1024:
+            raise BadRequest("provenance append is outside its bounded transport contract")
+        return CollectionUploadProvenanceJournalStatusDocument.model_validate(
+            self._json(
+                "PATCH",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
+                f"{quote(canonical_journal_id, safe='')}",
+                headers={
+                    "Content-Type": "application/json-seq",
+                    "Content-Length": str(len(chunk)),
+                    "Upload-Offset": str(offset),
+                },
+                content=chunk,
+                timeout=self.upload_timeout_seconds,
+            )
+        )
+
+    def seal_collection_upload_session_provenance_journal(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+    ) -> CollectionUploadProvenanceJournalStatusDocument:
+        canonical_journal_id = _provenance_journal_id(journal_id)
+        return CollectionUploadProvenanceJournalStatusDocument.model_validate(
+            self._json(
+                "POST",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
+                f"{quote(canonical_journal_id, safe='')}/seal",
+            )
+        )
+
+    def get_collection_upload_session_provenance_journal(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+    ) -> CollectionUploadProvenanceJournalStatusDocument:
+        canonical_journal_id = _provenance_journal_id(journal_id)
+        return CollectionUploadProvenanceJournalStatusDocument.model_validate(
+            self._json(
+                "GET",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
+                f"{quote(canonical_journal_id, safe='')}",
+            )
+        )
+
+    def upload_collection_upload_session_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
@@ -1417,51 +1340,55 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         content: Iterable[bytes],
         byte_count: int,
         sha256: str,
-    ) -> dict[str, Any]:
-        try:
-            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
-                journal_id,
-                strict=True,
-            )
-        except ValidationError as exc:
-            raise BadRequest(str(exc)) from exc
-        if isinstance(byte_count, bool) or byte_count < 1:
-            raise BadRequest("provenance byte count must be positive")
-        return self._json(
-            "PUT",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
-            f"{quote(canonical_journal_id, safe='')}",
-            headers={
-                "Content-Type": "application/json-seq",
-                "Content-Length": str(byte_count),
-                "X-Riverhog-Provenance-SHA256": _sha256_identity(
-                    sha256,
-                    "provenance SHA-256",
-                ),
-            },
-            content=content,
-            timeout=self.upload_timeout_seconds,
+    ) -> CollectionUploadProvenanceJournalStatusDocument:
+        status = self.create_collection_upload_session_provenance_journal(
+            collection_id,
+            journal_id,
+            byte_count=byte_count,
+            sha256=sha256,
         )
-
-    @contextmanager
-    def stream_collection_upload_session_provenance_journal(
-        self,
-        collection_id: CollectionId,
-        journal_id: ProvenanceJournalId,
-    ) -> Iterator[Iterator[bytes]]:
-        try:
-            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+        skip = status.accepted_bytes
+        offset = 0
+        buffer = bytearray()
+        for source in content:
+            buffer.extend(bytes(source))
+            while len(buffer) >= 1024 * 1024:
+                current = bytes(buffer[: 1024 * 1024])
+                del buffer[: 1024 * 1024]
+                if offset + len(current) > skip:
+                    start = max(0, skip - offset)
+                    status = self.append_collection_upload_session_provenance_journal(
+                        collection_id,
+                        journal_id,
+                        offset=offset + start,
+                        content=current[start:],
+                    )
+                offset += len(current)
+        if buffer:
+            current = bytes(buffer)
+            if offset + len(current) > skip:
+                start = max(0, skip - offset)
+                status = self.append_collection_upload_session_provenance_journal(
+                    collection_id,
+                    journal_id,
+                    offset=offset + start,
+                    content=current[start:],
+                )
+            offset += len(current)
+        if offset != byte_count or status.accepted_bytes != byte_count:
+            raise BadRequest("provenance content differs from its declared byte count")
+        status = self.seal_collection_upload_session_provenance_journal(
+            collection_id,
+            journal_id,
+        )
+        while status.state == "validating":
+            status = self.seal_collection_upload_session_provenance_journal(
+                collection_id,
                 journal_id,
-                strict=True,
             )
-        except ValidationError as exc:
-            raise BadRequest(str(exc)) from exc
-        with self._stream_verified_body(
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
-            f"{quote(canonical_journal_id, safe='')}",
-            media_type="application/json-seq",
-        ) as chunks:
-            yield chunks
+        if status.state != "sealed":
+            raise Conflict(status.failure or "provenance journal validation failed")
+        return status
 
     def list_collection_upload_sessions(
         self,
@@ -1496,55 +1423,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["tag"] = _canonical_tag(tag)
         return self._json("GET", "/v1/collection-upload-sessions", params=params)
 
-    @contextmanager
-    def stream_collection_upload_sessions(
-        self,
-        *,
-        q: str | None = None,
-        state: CollectionUploadState | None = None,
-        tag: str | None = None,
-        sort: CollectionUploadSort = "created_at",
-        order: SortOrder = "desc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(
-            sort,
-            _COLLECTION_UPLOAD_SORTS,
-            "collection-upload sort",
-        )
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        params: dict[str, Any] = {"sort": normalized_sort, "order": normalized_order}
-        query: dict[str, object] = {
-            "q": q if q else None,
-            "tag": None,
-            "state": None,
-            "sort": normalized_sort,
-            "order": normalized_order,
-        }
-        if q:
-            params["q"] = q
-        if state:
-            query["state"] = params["state"] = _one_of(
-                state,
-                _COLLECTION_UPLOAD_STATES,
-                "collection-upload state",
-            )
-        if tag is not None:
-            query["tag"] = params["tag"] = _canonical_tag(tag)
-        with self._stream_json_objects(
-            "/v1/collection-upload-sessions/stream",
-            query=query,
-            params=params,
-            schema_id="riverhog.collection-upload-session-summary/v1",
-        ) as items:
-            yield items
-
     def complete_collection_upload_session(
         self,
         collection_id: CollectionId,
         *,
         files_total: int,
         content_identity: str,
-        provenance_identity: str | None,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
@@ -1552,7 +1436,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             json={
                 "files_total": files_total,
                 "content_identity": content_identity,
-                "provenance_identity": provenance_identity,
             },
         )
 
@@ -1593,30 +1476,18 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
-    def list_collection_upload_session_volumes(
+    def acquire_collection_upload_session_work(
         self,
         collection_id: CollectionId,
-    ) -> CollectionUploadVolumeSetDocument:
-        normalized_collection_id = _collection_id(collection_id)
+        *,
+        limit: int = 16,
+    ) -> CollectionUploadWorkBatchDocument:
         return _response_model(
-            CollectionUploadVolumeSetDocument,
+            CollectionUploadWorkBatchDocument,
             self._json(
                 "GET",
-                f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/volumes",
-            ),
-        )
-
-    def get_collection_upload_session_volume(
-        self,
-        collection_id: CollectionId,
-        volume_id: CollectionUploadVolumeId,
-    ) -> CollectionUploadVolumeWorkDocument:
-        return _response_model(
-            CollectionUploadVolumeWorkDocument,
-            self._json(
-                "GET",
-                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
-                f"{quote(_collection_upload_volume_id(volume_id), safe='')}",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/work",
+                params={"limit": limit},
             ),
         )
 
@@ -1690,36 +1561,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["collection"] = _collection_id(collection)
         return self._json("GET", "/v1/search", params=params)
 
-    @contextmanager
-    def stream_search(
-        self,
-        query: str | None = None,
-        *,
-        sort: SearchSort = "file_ref",
-        order: SortOrder = "asc",
-        collection: CollectionId | None = None,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _SEARCH_SORTS, "search sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_collection = _collection_id(collection) if collection is not None else None
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if query:
-            params["q"] = query
-        if normalized_collection is not None:
-            params["collection"] = normalized_collection
-        with self._stream_json_objects(
-            "/v1/search/stream",
-            query={
-                "q": query if query else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "collection": normalized_collection,
-            },
-            params=params,
-            schema_id="riverhog.search-file/v1",
-        ) as items:
-            yield items
-
     def get_collection(self, collection_id: CollectionId) -> dict[str, Any]:
         return self._json(
             "GET",
@@ -1738,20 +1579,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"/v1/collections/{_collection_id(collection_id)}/archive-copies",
             params={"page": page, "per_page": per_page},
         )
-
-    @contextmanager
-    def stream_collection_archive_copies(
-        self,
-        collection_id: CollectionId,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_id = _collection_id(collection_id)
-        with self._stream_json_objects(
-            f"/v1/collections/{normalized_id}/archive-copies/stream",
-            query={"collection_id": normalized_id},
-            params={},
-            schema_id="riverhog.collection-archive-copy/v1",
-        ) as items:
-            yield items
 
     def list_collection_provenance(
         self,
@@ -1788,41 +1615,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params=params,
         )
 
-    @contextmanager
-    def stream_collection_provenance(
-        self,
-        collection_id: CollectionId,
-        *,
-        q: str | None = None,
-        status: ProvenanceStatus | None = None,
-        sort: ProvenanceSort = "path",
-        order: SortOrder = "asc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_id = _collection_id(collection_id)
-        normalized_sort = _one_of(sort, _PROVENANCE_SORTS, "provenance sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_status = (
-            _one_of(status, _PROVENANCE_STATUSES, "provenance status") if status else None
-        )
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        if normalized_status is not None:
-            params["status"] = normalized_status
-        with self._stream_json_objects(
-            f"/v1/collections/{normalized_id}/provenance/files/stream",
-            query={
-                "collection_id": normalized_id,
-                "q": q if q else None,
-                "status": normalized_status,
-                "sort": normalized_sort,
-                "order": normalized_order,
-            },
-            params=params,
-            schema_id="riverhog.collection-file-provenance/v1",
-        ) as items:
-            yield items
-
     def get_collection_file_provenance(
         self,
         collection_id: CollectionId,
@@ -1850,28 +1642,20 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         )
 
     @contextmanager
-    def stream_collection_file_provenance_trace(
-        self,
-        collection_id: CollectionId,
-        path: str,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_id = _collection_id(collection_id)
-        normalized_path = _canonical_relpath(path)
-        with self._stream_json_objects(
-            f"/v1/collections/{normalized_id}/provenance/trace/"
-            f"{quote(normalized_path, safe='/')}/stream",
-            query={"collection_id": normalized_id, "path": normalized_path},
-            params={},
-            schema_id="riverhog.provenance-trace-item/v1",
-        ) as items:
-            yield items
-
-    @contextmanager
     def stream_collection_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
+        *,
+        start: int = 0,
+        end: int | None = None,
+        expected_bytes: int | None = None,
+        expected_sha256: str | None = None,
+        chunk_size: int = _DOWNLOAD_CHUNK_BYTES,
     ) -> Iterator[Iterator[bytes]]:
+        """Stream one exact journal or an identity-bound resumable byte range."""
+
+        canonical_collection_id = _collection_id(collection_id)
         try:
             canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
                 journal_id,
@@ -1879,12 +1663,207 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
-        with self._stream_verified_body(
+        path = (
+            f"/v1/collections/{canonical_collection_id}/provenance/journals/"
+            f"{quote(canonical_journal_id, safe='')}"
+        )
+        if expected_bytes is None or expected_sha256 is None:
+            metadata_bytes, metadata_sha256 = self.collection_provenance_journal_metadata(
+                canonical_collection_id,
+                canonical_journal_id,
+            )
+            if expected_bytes is None:
+                expected_bytes = metadata_bytes
+            elif expected_bytes != metadata_bytes:
+                raise InvalidState("provenance journal byte count changed")
+            if expected_sha256 is None:
+                expected_sha256 = metadata_sha256
+            elif (
+                _sha256_identity(
+                    expected_sha256,
+                    "expected provenance journal SHA-256",
+                )
+                != metadata_sha256
+            ):
+                raise InvalidState("provenance journal identity changed")
+        if isinstance(expected_bytes, bool) or expected_bytes < 1:
+            raise ValueError("expected provenance journal bytes must be positive")
+        digest = _sha256_identity(
+            expected_sha256,
+            "expected provenance journal SHA-256",
+        )
+        resolved_end = expected_bytes if end is None else end
+        if (
+            isinstance(start, bool)
+            or isinstance(resolved_end, bool)
+            or start < 0
+            or resolved_end <= start
+            or resolved_end > expected_bytes
+        ):
+            raise ValueError("provenance journal byte range is invalid")
+        if chunk_size < 1:
+            raise ValueError("provenance journal stream chunk size must be positive")
+        partial = start != 0 or resolved_end != expected_bytes
+        headers = {
+            "Accept": "application/json-seq",
+            "Accept-Encoding": "identity",
+        }
+        if partial:
+            headers["Range"] = f"bytes={start}-{resolved_end - 1}"
+            headers["If-Match"] = quote_sha256_identity(digest)
+        client = self._persistent_download_client()
+        try:
+            with client.stream("GET", path, headers=headers) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+                expected_status = 206 if partial else 200
+                if response.status_code != expected_status:
+                    raise InvalidState(
+                        "provenance journal returned an unexpected HTTP status: "
+                        f"{response.status_code}"
+                    )
+                returned_media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if returned_media_type != "application/json-seq":
+                    raise InvalidState("API returned an invalid provenance journal media type")
+                if _response_sha256_etag(response.headers.get("ETag", "")) != digest:
+                    raise InvalidState("provenance journal ETag does not match its authority")
+                expected_length = resolved_end - start
+                try:
+                    returned_length = int(response.headers.get("Content-Length", ""))
+                except ValueError as exc:
+                    raise InvalidState(
+                        "provenance journal returned an invalid Content-Length"
+                    ) from exc
+                if returned_length != expected_length:
+                    raise InvalidState(
+                        "provenance journal Content-Length differs from the requested range"
+                    )
+                if partial:
+                    expected_range = f"bytes {start}-{resolved_end - 1}/{expected_bytes}"
+                    if response.headers.get("Content-Range") != expected_range:
+                        raise InvalidState("provenance journal Content-Range is inconsistent")
+                returned = 0
+                hasher = hashlib.sha256() if not partial else None
+
+                def content() -> Iterator[bytes]:
+                    nonlocal returned
+                    for chunk in response.iter_bytes(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        returned += len(chunk)
+                        if returned > expected_length:
+                            raise InvalidState(
+                                "provenance journal exceeded the requested byte range"
+                            )
+                        if hasher is not None:
+                            hasher.update(chunk)
+                        yield chunk
+
+                yield content()
+                if returned != expected_length:
+                    raise InvalidState("provenance journal ended before the requested byte range")
+                if hasher is not None and hasher.hexdigest() != digest:
+                    raise HashMismatch("provenance journal SHA-256 verification failed")
+        except httpx.TransportError as exc:
+            self.close()
+            raise ServiceUnavailable("provenance journal stream was interrupted") from exc
+
+    def collection_provenance_journal_metadata(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+    ) -> tuple[int, str]:
+        """Return the exact immutable byte count and SHA-256 for one journal."""
+
+        try:
+            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+                journal_id,
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        response = self._request(
+            "HEAD",
             f"/v1/collections/{_collection_id(collection_id)}/provenance/journals/"
             f"{quote(canonical_journal_id, safe='')}",
-            media_type="application/json-seq",
-        ) as chunks:
-            yield chunks
+            headers={"Accept": "application/json-seq", "Accept-Encoding": "identity"},
+        )
+        try:
+            byte_count = int(response.headers.get("Content-Length", ""))
+        except ValueError as exc:
+            raise InvalidState("provenance journal returned an invalid Content-Length") from exc
+        if byte_count < 1:
+            raise InvalidState("provenance journal returned an invalid byte count")
+        return byte_count, _response_sha256_etag(response.headers.get("ETag", ""))
+
+    def download_collection_provenance_journal(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+        *,
+        output: Path,
+    ) -> tuple[int, str]:
+        """Download one exact journal with a durable identity-bound continuation."""
+
+        byte_count, sha256 = self.collection_provenance_journal_metadata(
+            collection_id,
+            journal_id,
+        )
+        destination = Path(output)
+        if not destination.parent.is_dir():
+            raise ValueError(f"output parent directory does not exist: {destination.parent}")
+        partial = destination.with_name(f".{destination.name}.part")
+        checkpoint = destination.with_name(f".{destination.name}.part.json")
+        expected_checkpoint = {
+            "collection_id": _collection_id(collection_id),
+            "journal_id": str(journal_id),
+            "bytes": byte_count,
+            "sha256": sha256,
+        }
+        resumable = False
+        if partial.is_file() and checkpoint.is_file():
+            try:
+                resumable = (
+                    json.loads(checkpoint.read_text(encoding="utf-8")) == expected_checkpoint
+                )
+            except (OSError, json.JSONDecodeError):
+                resumable = False
+        if not resumable:
+            partial.unlink(missing_ok=True)
+            checkpoint.unlink(missing_ok=True)
+            checkpoint.write_text(
+                json.dumps(expected_checkpoint, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        start = partial.stat().st_size if partial.exists() else 0
+        if start > byte_count:
+            partial.unlink()
+            start = 0
+        if start < byte_count:
+            with self.stream_collection_provenance_journal(
+                collection_id,
+                journal_id,
+                start=start,
+                expected_bytes=byte_count,
+                expected_sha256=sha256,
+            ) as chunks:
+                with partial.open("ab") as handle:
+                    for chunk in chunks:
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        digest = hashlib.sha256()
+        observed = 0
+        with partial.open("rb") as handle:
+            while chunk := handle.read(_DOWNLOAD_CHUNK_BYTES):
+                digest.update(chunk)
+                observed += len(chunk)
+        if observed != byte_count or digest.hexdigest() != sha256:
+            raise HashMismatch("downloaded provenance journal differs from its authority")
+        os.replace(partial, destination)
+        checkpoint.unlink(missing_ok=True)
+        return byte_count, sha256
 
     def list_collection_provenance_journal_agents(
         self,
@@ -1907,29 +1886,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"{quote(canonical_journal_id, safe='')}/agents",
             params={"page": page, "per_page": per_page},
         )
-
-    @contextmanager
-    def stream_collection_provenance_journal_agents(
-        self,
-        collection_id: CollectionId,
-        journal_id: ProvenanceJournalId,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        try:
-            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
-                journal_id,
-                strict=True,
-            )
-        except ValidationError as exc:
-            raise BadRequest(str(exc)) from exc
-        normalized_id = _collection_id(collection_id)
-        with self._stream_json_objects(
-            f"/v1/collections/{normalized_id}/provenance/journals/"
-            f"{quote(canonical_journal_id, safe='')}/agents/stream",
-            query={"collection_id": normalized_id, "journal_id": canonical_journal_id},
-            params={},
-            schema_id="riverhog.provenance-journal-agent/v1",
-        ) as items:
-            yield items
 
     def request_collection_provenance_verification(
         self, collection_id: CollectionId
@@ -2027,44 +1983,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["passphrase_id"] = passphrase_id
         return self._json("GET", "/v1/collections", params=params)
 
-    @contextmanager
-    def stream_collections(
-        self,
-        *,
-        q: str | None = None,
-        tag: str | None = None,
-        encryption_format: str | None = None,
-        passphrase_id: str | None = None,
-        sort: CollectionSort = "id",
-        order: SortOrder = "asc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _COLLECTION_SORTS, "collection sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_tag = _canonical_tag(tag) if tag is not None else None
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        for key, value in {
-            "q": q if q else None,
-            "tag": normalized_tag,
-            "encryption_format": encryption_format if encryption_format else None,
-            "passphrase_id": passphrase_id if passphrase_id else None,
-        }.items():
-            if value is not None:
-                params[key] = value
-        with self._stream_json_objects(
-            "/v1/collections/stream",
-            query={
-                "q": q if q else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "tag": normalized_tag,
-                "encryption_format": encryption_format if encryption_format else None,
-                "passphrase_id": passphrase_id if passphrase_id else None,
-            },
-            params=params,
-            schema_id="riverhog.collection-summary/v1",
-        ) as items:
-            yield items
-
     def list_archive_stores(
         self,
         *,
@@ -2087,27 +2005,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if q:
             params["q"] = q
         return self._json("GET", "/v1/archive/stores", params=params)
-
-    @contextmanager
-    def stream_archive_stores(
-        self,
-        *,
-        q: str | None = None,
-        sort: ArchiveStoreSort = "store",
-        order: SortOrder = "asc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _ARCHIVE_STORE_SORTS, "archive-store sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        with self._stream_json_objects(
-            "/v1/archive/stores/stream",
-            query={"q": q if q else None, "sort": normalized_sort, "order": normalized_order},
-            params=params,
-            schema_id="riverhog.archive-store/v1",
-        ) as items:
-            yield items
 
     def get_archive_store(self, store: ArchiveStoreName) -> dict[str, Any]:
         return self._json("GET", f"/v1/archive/stores/{quote(_archive_store_name(store), safe='')}")
@@ -2137,35 +2034,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if active is not None:
             params["active"] = str(active).lower()
         return self._json("GET", "/v1/apps", params=params)
-
-    @contextmanager
-    def stream_apps(
-        self,
-        *,
-        q: str | None = None,
-        sort: ApplicationSort = "name",
-        order: SortOrder = "asc",
-        active: bool | None = None,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _APPLICATION_SORTS, "application sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        if active is not None:
-            params["active"] = str(active).lower()
-        with self._stream_json_objects(
-            "/v1/apps/stream",
-            query={
-                "q": q if q else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "active": active,
-            },
-            params=params,
-            schema_id="riverhog.application-summary/v1",
-        ) as items:
-            yield items
 
     def create_app_key(
         self,
@@ -2213,42 +2081,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"/v1/apps/{quote(_application_name(app), safe='')}/keys",
             params=params,
         )
-
-    @contextmanager
-    def stream_app_keys(
-        self,
-        app: ApplicationName,
-        *,
-        q: str | None = None,
-        sort: ApplicationKeySort = "created_at",
-        order: SortOrder = "desc",
-        active: bool | None = None,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_app = _application_name(app)
-        normalized_sort = _one_of(
-            sort,
-            _APPLICATION_KEY_SORTS,
-            "application-key sort",
-        )
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        if active is not None:
-            params["active"] = str(active).lower()
-        with self._stream_json_objects(
-            f"/v1/apps/{quote(normalized_app, safe='')}/keys/stream",
-            query={
-                "app": normalized_app,
-                "q": q if q else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "active": active,
-            },
-            params=params,
-            schema_id="riverhog.application-key/v1",
-        ) as items:
-            yield items
 
     def revoke_app_key(self, app: ApplicationName, key_id: ApplicationKeyId) -> dict[str, Any]:
         return self._json(
@@ -2301,60 +2133,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if active is not None:
             params["active"] = str(active).lower()
         return self._json("GET", "/v1/app-key-access", params=params)
-
-    @contextmanager
-    def stream_app_key_access(
-        self,
-        *,
-        q: str | None = None,
-        sort: ApplicationAccessSort = "permission",
-        order: SortOrder = "asc",
-        app: ApplicationName | None = None,
-        key_id: ApplicationKeyId | None = None,
-        permission: ApplicationPermission | None = None,
-        resource: ApplicationResource | None = None,
-        active: bool | None = None,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(
-            sort,
-            _APPLICATION_ACCESS_SORTS,
-            "application-access sort",
-        )
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_app = _application_name(app) if app is not None else None
-        normalized_key = _application_key_id(key_id) if key_id is not None else None
-        normalized_permission = (
-            _application_permission(permission) if permission is not None else None
-        )
-        normalized_resource = _application_resource(resource) if resource is not None else None
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        for key, value in {
-            "q": q if q else None,
-            "app": normalized_app,
-            "key": normalized_key,
-            "permission": normalized_permission,
-            "resource": normalized_resource,
-        }.items():
-            if value is not None:
-                params[key] = value
-        if active is not None:
-            params["active"] = str(active).lower()
-        with self._stream_json_objects(
-            "/v1/app-key-access/stream",
-            query={
-                "q": q if q else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "app": normalized_app,
-                "key": normalized_key,
-                "permission": normalized_permission,
-                "resource": normalized_resource,
-                "active": active,
-            },
-            params=params,
-            schema_id="riverhog.application-key-access/v1",
-        ) as items:
-            yield items
 
     def replace_app_key_access(
         self,
@@ -2429,27 +2207,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["q"] = q
         return self._json("GET", "/v1/tags", params=params)
 
-    @contextmanager
-    def stream_tags(
-        self,
-        *,
-        q: str | None = None,
-        sort: TagSort = "id",
-        order: SortOrder = "asc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _TAG_SORTS, "tag sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        with self._stream_json_objects(
-            "/v1/tags/stream",
-            query={"q": q if q else None, "sort": normalized_sort, "order": normalized_order},
-            params=params,
-            schema_id="riverhog.tag/v1",
-        ) as items:
-            yield items
-
     def plan_tag_deletion(self, tag: str) -> dict[str, Any]:
         return self._json(
             "POST",
@@ -2476,20 +2233,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params={"page": page, "per_page": per_page},
         )
 
-    @contextmanager
-    def stream_collection_tags(
-        self,
-        collection_id: CollectionId,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_id = _collection_id(collection_id)
-        with self._stream_json_objects(
-            f"/v1/collections/{normalized_id}/tags/stream",
-            query={"collection_id": normalized_id},
-            params={},
-            schema_id="riverhog.collection-tag-membership/v1",
-        ) as items:
-            yield items
-
     def replace_collection_tags(
         self,
         collection_id: CollectionId,
@@ -2499,8 +2242,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     ) -> dict[str, Any]:
         normalized_id = _collection_id(collection_id)
         desired = set(_canonical_tags(tags))
-        with self.stream_collection_tags(normalized_id) as items:
-            current = {str(item["tag"]) for item in items}
+        current = set(self._collection_tags_snapshot(normalized_id))
         result: dict[str, Any] | None = None
         for tag in sorted(current - desired):
             result = self.remove_collection_tag(
@@ -2526,6 +2268,32 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 "tag_count",
             )
         }
+
+    def _collection_tags_snapshot(self, collection_id: CollectionId) -> tuple[str, ...]:
+        page = 1
+        authority: tuple[int, str, int] | None = None
+        tags: list[str] = []
+        while True:
+            payload = self.get_collection_tags(collection_id, page=page, per_page=100)
+            current_authority = (
+                int(payload.get("metadata_revision") or 0),
+                str(payload.get("inventory_identity") or ""),
+                int(payload.get("tag_count") or 0),
+            )
+            if authority is None:
+                authority = current_authority
+            elif authority != current_authority:
+                raise InvalidState("collection tags changed during bounded traversal")
+            raw_tags = payload.get("tags")
+            if not isinstance(raw_tags, list):
+                raise InvalidState("API returned invalid collection tags")
+            tags.extend(str(tag) for tag in raw_tags)
+            if page >= int(payload.get("pages") or 0):
+                break
+            page += 1
+        if authority is None or len(tags) != authority[2] or tags != sorted(set(tags)):
+            raise InvalidState("collection tag traversal is incomplete")
+        return tuple(tags)
 
     def add_collection_tag(
         self,
@@ -2614,40 +2382,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["active"] = str(active).lower()
         return self._json("GET", "/v1/download-quotas", params=params)
 
-    @contextmanager
-    def stream_download_quotas(
-        self,
-        *,
-        q: str | None = None,
-        sort: DownloadQuotaSort = "app",
-        order: SortOrder = "asc",
-        app: ApplicationName | None = None,
-        active: bool | None = None,
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _DOWNLOAD_QUOTA_SORTS, "download-quota sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_app = _application_name(app) if app is not None else None
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        if normalized_app is not None:
-            params["app"] = normalized_app
-        if active is not None:
-            params["active"] = str(active).lower()
-        with self._stream_json_objects(
-            "/v1/download-quotas/stream",
-            query={
-                "q": q if q else None,
-                "sort": normalized_sort,
-                "order": normalized_order,
-                "app": normalized_app,
-                "active": active,
-            },
-            params=params,
-            schema_id="riverhog.key-download-quota/v1",
-        ) as items:
-            yield items
-
     def create_or_resume_archive_copy(
         self,
         collection_id: CollectionId,
@@ -2702,44 +2436,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 "archive-copy state",
             )
         return self._json("GET", "/v1/archive/copies", params=params)
-
-    @contextmanager
-    def stream_archive_copy_jobs(
-        self,
-        *,
-        q: str | None = None,
-        state: ArchiveCopyState | None = None,
-        sort: ArchiveCopySort = "requested_at",
-        order: SortOrder = "desc",
-    ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, _ARCHIVE_COPY_SORTS, "archive-copy sort")
-        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
-        normalized_state = (
-            _one_of(
-                state,
-                _ARCHIVE_COPY_STATES,
-                "archive-copy state",
-            )
-            if state
-            else None
-        )
-        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
-        if q:
-            params["q"] = q
-        if normalized_state is not None:
-            params["state"] = normalized_state
-        with self._stream_json_objects(
-            "/v1/archive/copies/stream",
-            query={
-                "q": q if q else None,
-                "state": normalized_state,
-                "sort": normalized_sort,
-                "order": normalized_order,
-            },
-            params=params,
-            schema_id="riverhog.archive-copy-job/v1",
-        ) as items:
-            yield items
 
     def get_archive_copy_job(
         self,

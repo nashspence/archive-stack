@@ -128,7 +128,7 @@ class VerifiedRawFile:
     path: str
     bytes: int
     sha256: str
-    volume_set_sha256: str
+    ordered_volume_sha256: str
     verified_at: str
 
 

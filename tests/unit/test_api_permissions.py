@@ -79,12 +79,16 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
             "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
         ): COLLECTIONS_CREATE,
         (
-            "GET",
-            "/v1/collections/{collection_id}/provenance/files",
-        ): PROVENANCE_READ,
+            "PATCH",
+            "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+        ): COLLECTIONS_CREATE,
+        (
+            "POST",
+            "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}/seal",
+        ): COLLECTIONS_CREATE,
         (
             "GET",
-            "/v1/collections/{collection_id}/provenance/files/stream",
+            "/v1/collections/{collection_id}/provenance/files",
         ): PROVENANCE_READ,
         (
             "GET",
@@ -96,19 +100,15 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
         ): PROVENANCE_READ,
         (
             "GET",
-            "/v1/collections/{collection_id}/provenance/trace/{path:path}/stream",
-        ): PROVENANCE_READ,
+            "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
+        ): PROVENANCE_EXPORT,
         (
-            "GET",
+            "HEAD",
             "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
         ): PROVENANCE_EXPORT,
         (
             "GET",
             "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents",
-        ): PROVENANCE_READ,
-        (
-            "GET",
-            "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents/stream",
         ): PROVENANCE_READ,
         (
             "POST",
@@ -212,7 +212,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
             assert current == principal
 
         def get_unit(self, collection_id: int, volume_id: str, unit: int) -> dict[str, object]:
-            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            assert (collection_id, volume_id, unit) == (42, f"pack-{0:064x}", 0)
             return {
                 "unit": 0,
                 "payload_bytes": 3,
@@ -237,7 +237,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
             plan_sha256: str,
             content: bytes,
         ) -> dict[str, object]:
-            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            assert (collection_id, volume_id, unit) == (42, f"pack-{0:064x}", 0)
             assert plan_sha256 == "a" * 64
             self.content = content
             return {
@@ -270,7 +270,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.put(
-                "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/0",
+                f"/v1/collection-upload-sessions/42/volumes/pack-{0:064x}/units/0",
                 headers={
                     "Authorization": "Bearer uploader-token",
                     "Content-Type": "application/octet-stream",
@@ -290,7 +290,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                 ' "' + "a" * 64 + '"',
             ):
                 rejected = await client.put(
-                    "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/0",
+                    f"/v1/collection-upload-sessions/42/volumes/pack-{0:064x}/units/0",
                     headers={
                         "Authorization": "Bearer uploader-token",
                         "Content-Type": "application/octet-stream",
@@ -301,7 +301,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                 assert rejected.status_code == 400
 
             negative = await client.put(
-                "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/-1",
+                f"/v1/collection-upload-sessions/42/volumes/pack-{0:064x}/units/-1",
                 headers={
                     "Authorization": "Bearer uploader-token",
                     "Content-Type": "application/octet-stream",

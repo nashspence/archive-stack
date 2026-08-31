@@ -52,11 +52,11 @@ def test_deletion_plan_uses_catalog_object_and_file_aggregates(tmp_path: Path) -
     assert plan["status"] == "ready"
     assert plan["file_count"] == 2
     assert plan["bytes"] == sum(map(len, FILES.values()))
-    assert plan["archive_object_count"] == 4
+    assert plan["archive_object_count"] == 5
     assert plan["archive_copies"] == [
         {
             "store": "deep",
-            "objects": 4,
+            "objects": 5,
             "stored_bytes": plan["remote_storage_bytes"],
         }
     ]
@@ -96,7 +96,13 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
 
     assert result["status"] == "deleted"
     assert archive_store.deleted == [
-        ("pack-000000000000", "manifest", "recovery-descriptor", "proof")
+        (
+            "pack-" + "0" * 64,
+            "volume-metadata-" + "0" * 64,
+            "volume-terminal-" + "0" * 63 + "1",
+            "manifest",
+            "recovery-descriptor",
+        )
     ]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None

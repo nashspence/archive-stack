@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from riverhog_protocol import CollectionArtifactIdentity, CollectionRootIdentity
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSelectionRef,
@@ -65,6 +66,39 @@ def artifact(
         bytes=byte_count,
         sha256=digest(f"artifact:{collection.collection_id}:{path}:{byte_count}"),
     )
+
+
+def test_selection_order_projects_directly_to_riverhog_artifact_order() -> None:
+    first = root(1)
+    second = root(2)
+    selection = ArtifactSelection.seal(
+        (
+            artifact("a-id-sorts-first", second, "a.bin"),
+            artifact("z-id-sorts-last", first, "z.bin"),
+            artifact("middle-id", first, "a.bin"),
+        )
+    )
+
+    projected = tuple(
+        CollectionArtifactIdentity(
+            collection=CollectionRootIdentity(
+                collection_id=item.collection.collection_id,
+                archive_root_sha256=item.collection.archive_root_sha256,
+                content_identity=item.collection.content_identity,
+            ),
+            path=item.path,
+            bytes=item.bytes,
+            sha256=item.sha256,
+        )
+        for item in selection.artifacts
+    )
+
+    assert projected == tuple(sorted(projected))
+    assert [item.id for item in selection.artifacts] == [
+        "middle-id",
+        "z-id-sorts-last",
+        "a-id-sorts-first",
+    ]
 
 
 def recipe(label: str = "parent") -> RecipeRef:
@@ -224,6 +258,7 @@ def successful_branch(
     return (
         BranchSettlement.seal(
             branch=plan,
+            producer_settlement_sha256=digest(f"producer-settlement:{label}"),
             derivation_sha256=digest(f"derivation:{label}"),
             output_collection=output,
             output_selection=selection,
@@ -557,6 +592,7 @@ def test_nested_join_result_is_consumed_through_coordination_and_leaf_settlement
     selections[child_join_output.selection_sha256] = child_join_output
     child_join_settlement = JoinSettlement.seal(
         plan=child_join_plan,
+        producer_settlement_sha256=digest("nested-join-producer-settlement"),
         derivation_sha256=digest("nested-join-derivation"),
         output_collection=child_join_root,
         output_selection=child_join_output,
@@ -841,6 +877,7 @@ def test_changed_branch_settlement_changes_resolved_join_identity() -> None:
     video_selection = selections[settlements["video"].output_selection.selection_sha256]
     replacement = BranchSettlement.seal(
         branch=video_branch,
+        producer_settlement_sha256=digest("replacement-producer-settlement"),
         derivation_sha256=digest("replacement-derivation"),
         output_collection=settlements["video"].output_collection,
         output_selection=video_selection,
@@ -887,6 +924,7 @@ def test_join_settlement_is_additional_and_branch_outputs_remain_visible() -> No
     selections[join_output.selection_sha256] = join_output
     join_settlement = JoinSettlement.seal(
         plan=join_plan,
+        producer_settlement_sha256=digest("join-producer-settlement"),
         derivation_sha256=digest("join-derivation"),
         output_collection=join_root,
         output_selection=join_output,
@@ -921,6 +959,7 @@ def test_failed_nonmember_preserves_join_but_prevents_aggregate_success() -> Non
     selections[join_output.selection_sha256] = join_output
     join_settlement = JoinSettlement.seal(
         plan=join_plan,
+        producer_settlement_sha256=digest("join-partial-producer-settlement"),
         derivation_sha256=digest("join-partial"),
         output_collection=join_root,
         output_selection=join_output,
@@ -1034,6 +1073,7 @@ def test_retirement_coordination_is_only_true_after_complete_success() -> None:
         branch_settlements=tuple(settlements.values()),
         join_settlement=JoinSettlement.seal(
             plan=join_plan,
+            producer_settlement_sha256=digest("retirement-producer-settlement"),
             derivation_sha256=digest("retirement-derivation"),
             output_collection=output_root,
             output_selection=output,
@@ -1099,6 +1139,7 @@ def test_duplicate_output_collection_roots_fail_closed() -> None:
     duplicate_selection = selections[settlements["video"].output_selection.selection_sha256]
     duplicate = BranchSettlement.seal(
         branch=next(item for item in plan.branches if item.branch_id == "video"),
+        producer_settlement_sha256=digest("duplicate-producer-settlement"),
         derivation_sha256=digest("duplicate"),
         output_collection=audio.output_collection,
         output_selection=ArtifactSelection.seal(
@@ -1176,6 +1217,7 @@ def test_join_output_cannot_reuse_a_branch_collection() -> None:
     branch_output = selections[settlements["audio"].output_selection.selection_sha256]
     join_settlement = JoinSettlement.seal(
         plan=join_plan,
+        producer_settlement_sha256=digest("bad-join-producer-settlement"),
         derivation_sha256=digest("bad-join"),
         output_collection=settlements["audio"].output_collection,
         output_selection=branch_output,
@@ -1277,6 +1319,7 @@ def test_large_branch_and_join_set_is_deterministic_without_protocol_ceiling() -
         settlements.append(
             BranchSettlement.seal(
                 branch=branch_plan,
+                producer_settlement_sha256=digest(f"large-producer-settlement:{index}"),
                 derivation_sha256=digest(f"large-derivation:{index}"),
                 output_collection=output,
                 output_selection=output_selection,

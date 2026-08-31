@@ -18,14 +18,20 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     TagRecord,
 )
-from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
+from riverhog_core.catalog_workflow_models import (
+    CollectionProcessingClaimRecord,
+    CollectionProcessingDispositionSetRecord,
+)
 from riverhog_core.services.collection_workflows import (
     SqlAlchemyCollectionWorkflowService,
     processing_claim_blockers,
 )
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    PRODUCER_EVIDENCE_PATH,
     ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
@@ -71,6 +77,7 @@ def _collection(
         creation_identity_sha256=f"{collection_id:064x}",
         creation_custody_mode="producer-retained",
         content_identity=str(collection_id) * 64,
+        tag_set_identity=tag_set_identity((tag,)),
         encryption_format="age-v1-scrypt",
         passphrase_id="fixture-archive-key-v1",
         provenance_mode="omitted",
@@ -181,6 +188,216 @@ def _artifact(root: CollectionRootIdentity) -> CollectionArtifactIdentity:
     )
 
 
+def _create_claim(
+    service: SqlAlchemyCollectionWorkflowService,
+    *,
+    work_id: str,
+    work_document: dict[str, object],
+    root: CollectionRootIdentity,
+    artifact: CollectionArtifactIdentity | None = None,
+    purpose: str = "collection-work/v1",
+) -> dict[str, object]:
+    claim = service.create_or_resume_claim(
+        work_id=work_id,
+        work_document=work_document,
+        work_document_sha256=hashlib.sha256(canonical_json_bytes(work_document)).hexdigest(),
+        purpose=purpose,
+        principal=_principal(),
+    )
+    claim_id = str(claim["id"])
+    fence = int(claim["fence"])
+    service.append_claim_inputs(
+        claim_id,
+        fence=fence,
+        start_ordinal=0,
+        inputs=(root,),
+        principal=_principal(),
+    )
+    inputs = service.seal_claim_inputs(claim_id, fence=fence, principal=_principal())
+    service.append_claim_artifacts(
+        claim_id,
+        fence=fence,
+        start_ordinal=0,
+        artifacts=(artifact or _artifact(root),),
+        principal=_principal(),
+    )
+    artifacts = service.seal_claim_artifacts(claim_id, fence=fence, principal=_principal())
+    service.append_claim_output_tags(
+        claim_id,
+        fence=fence,
+        start_ordinal=0,
+        tags=("archive-camera",),
+        principal=_principal(),
+    )
+    output_tags = service.seal_claim_output_tags(claim_id, fence=fence, principal=_principal())
+    result = service.get_claim(claim_id, principal=_principal())
+    result["inputs"] = inputs
+    result["artifacts"] = artifacts
+    result["output_tags"] = output_tags
+    return result
+
+
+def _seal_plan(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    *,
+    execution_id: str = EXECUTION_ID,
+    controller_evidence: dict[str, object] = CONTROLLER_EVIDENCE,
+    controller_evidence_sha256: str = CONTROLLER_EVIDENCE_SHA256,
+    operation_id: str = "archive-video/v1",
+    retirement_policy: str = "retain",
+) -> dict[str, object]:
+    return service.seal_claim_plan(
+        claim_id,
+        fence=1,
+        execution_id=execution_id,
+        controller_evidence=controller_evidence,
+        controller_evidence_sha256=controller_evidence_sha256,
+        operation_id=operation_id,
+        operation_sha256="c" * 64,
+        retirement_policy=retirement_policy,
+        retirement_grace_seconds=0,
+        principal=_principal(),
+    )
+
+
+def _seal_dispositions(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    *,
+    root: CollectionRootIdentity,
+    input_path: str,
+    output_path: str,
+) -> ArtifactDispositionSetIdentity:
+    service.record_dispositions(
+        claim_id,
+        fence=1,
+        dispositions=(
+            ArtifactDisposition(
+                input_collection_id=root.collection_id,
+                input_archive_root_sha256=root.archive_root_sha256,
+                input_path=input_path,
+                status="transformed",
+            ),
+        ),
+        principal=_principal(),
+    )
+    service.record_disposition_outputs(
+        claim_id,
+        fence=1,
+        outputs=(
+            ArtifactDispositionOutput(
+                input_collection_id=root.collection_id,
+                input_archive_root_sha256=root.archive_root_sha256,
+                input_path=input_path,
+                output_path=output_path,
+            ),
+        ),
+        principal=_principal(),
+    )
+    sealed = service.seal_disposition_set(
+        claim_id,
+        fence=1,
+        principal=_principal(),
+    )
+    while sealed["state"] == "sealing":
+        assert service.process_due_disposition_sets(limit=1) == 1
+        sealed = service.get_disposition_set(claim_id, principal=_principal())
+    assert sealed["state"] == "sealed"
+    return ArtifactDispositionSetIdentity.from_mapping(cast(dict[str, object], sealed["identity"]))
+
+
+def _issue_capability(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    root: CollectionRootIdentity,
+    *,
+    audience: str,
+    actions: tuple[str, ...],
+) -> dict[str, object]:
+    capability = service.issue_capability(
+        claim_id,
+        fence=1,
+        audience=audience,
+        actions=actions,
+        ttl_seconds=600,
+        principal=_principal(),
+    )
+    service.append_capability_artifacts(
+        claim_id,
+        str(capability["id"]),
+        fence=1,
+        start_ordinal=0,
+        artifacts=(_artifact(root),),
+        principal=_principal(),
+    )
+    service.seal_capability_artifacts(
+        claim_id,
+        str(capability["id"]),
+        fence=1,
+        principal=_principal(),
+    )
+    return capability
+
+
+def test_disposition_batch_counts_shared_sources_once(
+    tmp_path: Path,
+    request: FixtureRequest,
+) -> None:
+    factory = _session_factory(tmp_path, request)
+    root = _setup(factory)
+    service = SqlAlchemyCollectionWorkflowService(
+        cast(Any, object()),
+        session_factory=factory,
+    )
+    claim = _create_claim(
+        service,
+        work_id=WORK_ID,
+        work_document=_work_document(root),
+        root=root,
+    )
+    claim_id = str(claim["id"])
+    _seal_plan(service, claim_id)
+    disposition = ArtifactDisposition(
+        input_collection_id=root.collection_id,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path="camera/input.mov",
+        status="transformed",
+    )
+    service.record_dispositions(
+        claim_id,
+        fence=1,
+        dispositions=(disposition,),
+        principal=_principal(),
+    )
+    state = service.record_disposition_outputs(
+        claim_id,
+        fence=1,
+        outputs=tuple(
+            ArtifactDispositionOutput(
+                input_collection_id=root.collection_id,
+                input_archive_root_sha256=root.archive_root_sha256,
+                input_path="camera/input.mov",
+                output_path=path,
+            )
+            for path in ("video/archive.mkv", "video/archive.mkv.xmp")
+        ),
+        principal=_principal(),
+    )
+
+    assert state["output_edge_count"] == 2
+    assert state["output_artifact_count"] == 2
+    with factory() as session:
+        counters = session.get_one(CollectionProcessingDispositionSetRecord, claim_id)
+        assert counters.transformed_count == 1
+        assert counters.transformed_with_outputs_count == 1
+    sealed = service.seal_disposition_set(claim_id, fence=1, principal=_principal())
+    while sealed["state"] == "sealing":
+        assert service.process_due_disposition_sets() == 1
+        sealed = service.get_disposition_set(claim_id, principal=_principal())
+    assert sealed["state"] == "sealed"
+
+
 def test_claim_plan_capabilities_settlement_and_deletion_blocker(
     tmp_path: Path,
     request: FixtureRequest,
@@ -192,24 +409,20 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         session_factory=factory,
     )
     work = _work_document(root)
-    work_sha256 = hashlib.sha256(canonical_json_bytes(work)).hexdigest()
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=work_sha256,
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
 
-    observer_capability = service.issue_capability(
+    observer_capability = _issue_capability(
+        service,
         claim_id,
-        fence=1,
+        root,
         audience="fixture.observer/v1",
         actions=("read-inputs",),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
     observer = service.authenticate_capability(str(observer_capability["token"]))
     assert observer_capability["audience"] == "fixture.observer/v1"
@@ -224,45 +437,31 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
             fence=1,
             audience="fixture.target/v1",
             actions=("read-inputs", "write-output"),
-            artifacts=(_artifact(root),),
             ttl_seconds=600,
             principal=_principal(),
         )
 
-    sealed = service.seal_claim_plan(
+    sealed = _seal_plan(
+        service,
         claim_id,
-        fence=1,
-        execution_id=EXECUTION_ID,
-        controller_evidence=CONTROLLER_EVIDENCE,
-        controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        operation_id="archive-video/v1",
-        operation_sha256="c" * 64,
-        input_artifacts=(_artifact(root),),
-        output_tags=("archive-camera",),
         retirement_policy="retire-after-verified-output",
-        retirement_grace_seconds=0,
-        principal=_principal(),
     )
     assert sealed["plan"]["execution_id"] == EXECUTION_ID  # type: ignore[index]
     assert service.authenticate_capability(str(observer_capability["token"])) is None
 
-    first = service.issue_capability(
+    first = _issue_capability(
+        service,
         claim_id,
-        fence=1,
+        root,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
-    second = service.issue_capability(
+    second = _issue_capability(
+        service,
         claim_id,
-        fence=1,
+        root,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
     first_principal = service.authenticate_capability(str(first["token"]))
     second_principal = service.authenticate_capability(str(second["token"]))
@@ -270,27 +469,30 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
     assert first_principal.app == second_principal.app == f"transform:{EXECUTION_ID}"
     assert first_principal.key_id == second_principal.key_id == "stove0-key"
 
+    disposition_set = _seal_dispositions(
+        service,
+        claim_id,
+        root=root,
+        input_path="camera/input.mov",
+        output_path="video/output.mkv",
+    )
     derivation = CollectionDerivation(
         execution_id=EXECUTION_ID,
         claim_id=claim_id,
         fence=1,
         recipe=RecipeIdentity("camera/v1", 1, "b" * 64),
         operation=OperationIdentity("archive-video/v1", "c" * 64),
-        inputs=(root,),
-        output_tags=("archive-camera",),
+        input_set_sha256=cast(str, claim["inputs"]["authority"]["sha256"]),  # type: ignore[index]
+        artifact_set_sha256=cast(str, claim["artifacts"]["authority"]["sha256"]),  # type: ignore[index]
+        output_tag_set_sha256=cast(
+            str,
+            claim["output_tags"]["authority"]["sha256"],  # type: ignore[index]
+        ),
         execution_envelope_sha256=EXECUTION_ID,
         execution_sha256="e" * 64,
         controller_evidence=CONTROLLER_EVIDENCE,
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=1,
-                input_archive_root_sha256="a" * 64,
-                input_path="camera/input.mov",
-                status="transformed",
-                outputs=("video/output.mkv",),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     with factory() as session, session.begin():
         _collection(
@@ -315,8 +517,18 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
                     bytes=len(derivation.to_json_bytes()),
                     sha256=derivation.sha256,
                 ),
+                CollectionFileRecord(
+                    collection_id=2,
+                    path=PRODUCER_EVIDENCE_PATH,
+                    bytes=1,
+                    sha256="5" * 64,
+                ),
             ]
         )
+        output_record = session.get(CollectionRecord, 2)
+        assert output_record is not None
+        output_record.file_count = 3
+        output_record.file_bytes = 4 + len(derivation.to_json_bytes()) + 1
 
     with factory() as session, session.begin():
         stored = session.get(CollectionProcessingClaimRecord, claim_id)
@@ -394,13 +606,11 @@ def test_claim_fails_closed_on_changed_root_or_reused_work_document(
         session_factory=factory,
     )
     work = _work_document(root)
-    digest = hashlib.sha256(canonical_json_bytes(work)).hexdigest()
-    service.create_or_resume_claim(
+    _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=digest,
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     changed = {**work, "extra": True}
     with pytest.raises(Conflict, match="another request"):
@@ -408,16 +618,14 @@ def test_claim_fails_closed_on_changed_root_or_reused_work_document(
             work_id=WORK_ID,
             work_document=changed,
             work_document_sha256=hashlib.sha256(canonical_json_bytes(changed)).hexdigest(),
-            inputs=(root,),
             principal=_principal(),
         )
     with pytest.raises(Conflict, match="root differs"):
-        service.create_or_resume_claim(
+        _create_claim(
+            service,
             work_id="f" * 64,
             work_document={"format": "test"},
-            work_document_sha256=hashlib.sha256(b'{"format":"test"}').hexdigest(),
-            inputs=(CollectionRootIdentity(1, "9" * 64, "1" * 64),),
-            principal=_principal(),
+            root=CollectionRootIdentity(1, "9" * 64, "1" * 64),
         )
 
 
@@ -432,36 +640,20 @@ def test_fenced_restart_advances_generation_revokes_capabilities_and_clears_plan
         session_factory=factory,
     )
     work = _work_document(root)
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
-    service.seal_claim_plan(
+    _seal_plan(service, claim_id)
+    capability = _issue_capability(
+        service,
         claim_id,
-        fence=1,
-        execution_id=EXECUTION_ID,
-        controller_evidence=CONTROLLER_EVIDENCE,
-        controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        operation_id="archive-video/v1",
-        operation_sha256="c" * 64,
-        input_artifacts=(_artifact(root),),
-        output_tags=("archive-camera",),
-        retirement_policy="retain",
-        retirement_grace_seconds=0,
-        principal=_principal(),
-    )
-    capability = service.issue_capability(
-        claim_id,
-        fence=1,
+        root,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
     assert service.authenticate_capability(str(capability["token"])) is not None
 
@@ -496,28 +688,14 @@ def test_fenced_restart_refuses_an_existing_execution_output(
         session_factory=factory,
     )
     work = _work_document(root)
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
-    service.seal_claim_plan(
-        claim_id,
-        fence=1,
-        execution_id=EXECUTION_ID,
-        controller_evidence=CONTROLLER_EVIDENCE,
-        controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        operation_id="archive-video/v1",
-        operation_sha256="c" * 64,
-        input_artifacts=(_artifact(root),),
-        output_tags=("archive-camera",),
-        retirement_policy="retain",
-        retirement_grace_seconds=0,
-        principal=_principal(),
-    )
+    _seal_plan(service, claim_id)
     with factory() as session, session.begin():
         _collection(
             session,
@@ -548,7 +726,6 @@ def test_fenced_restart_refuses_an_existing_execution_output(
             work_id=WORK_ID,
             work_document=work,
             work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-            inputs=(root,),
             principal=_principal(),
         )
 
@@ -564,28 +741,14 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
         session_factory=factory,
     )
     work = _work_document(root)
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
-    service.seal_claim_plan(
-        claim_id,
-        fence=1,
-        execution_id=EXECUTION_ID,
-        controller_evidence=CONTROLLER_EVIDENCE,
-        controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
-        operation_id="archive-video/v1",
-        operation_sha256="c" * 64,
-        input_artifacts=(_artifact(root),),
-        output_tags=("archive-camera",),
-        retirement_policy="retain",
-        retirement_grace_seconds=0,
-        principal=_principal(),
-    )
+    _seal_plan(service, claim_id)
     with factory() as session, session.begin():
         session.add(
             CollectionUploadRecord(
@@ -614,8 +777,6 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
                 archive_last_attempt_at=None,
                 archive_failure=None,
                 archive_storage_prefix="collections/3",
-                collection_manifest_bytes_b64=None,
-                collection_manifest_proof_bytes_b64=None,
                 planner_checkpoint_json="{}",
             )
         )
@@ -631,7 +792,6 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
             work_id=WORK_ID,
             work_document=work,
             work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-            inputs=(root,),
             principal=_principal(),
         )
     with pytest.raises(Conflict, match="owns an output collection or upload"):
@@ -649,14 +809,12 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
         principal=_principal(),
     )
     assert renewed["fence"] == 1
-    capability = service.issue_capability(
+    capability = _issue_capability(
+        service,
         claim_id,
-        fence=1,
+        root,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
     assert service.authenticate_capability(str(capability["token"])) is not None
 
@@ -672,22 +830,19 @@ def test_fenced_abandonment_revokes_capabilities_and_unblocks_deletion(
         session_factory=factory,
     )
     work = _work_document(root)
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
-    capability = service.issue_capability(
+    capability = _issue_capability(
+        service,
         claim_id,
-        fence=1,
+        root,
         audience="fixture.observer/v1",
         actions=("read-inputs",),
-        artifacts=(_artifact(root),),
-        ttl_seconds=600,
-        principal=_principal(),
     )
     assert service.authenticate_capability(str(capability["token"])) is not None
     with factory() as session:
@@ -741,12 +896,11 @@ def test_expired_claim_abandonment_is_fenced_against_a_restarted_generation(
     )
     work = _work_document(root)
     digest = hashlib.sha256(canonical_json_bytes(work)).hexdigest()
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=digest,
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
     with factory() as session, session.begin():
@@ -758,7 +912,6 @@ def test_expired_claim_abandonment_is_fenced_against_a_restarted_generation(
         work_id=WORK_ID,
         work_document=work,
         work_document_sha256=digest,
-        inputs=(root,),
         principal=_principal(),
     )
     assert restarted["fence"] == 2
@@ -782,12 +935,11 @@ def test_expired_current_generation_can_reconcile_terminal_abandonment(
         session_factory=factory,
     )
     work = _work_document(root)
-    claim = service.create_or_resume_claim(
+    claim = _create_claim(
+        service,
         work_id=WORK_ID,
         work_document=work,
-        work_document_sha256=hashlib.sha256(canonical_json_bytes(work)).hexdigest(),
-        inputs=(root,),
-        principal=_principal(),
+        root=root,
     )
     claim_id = str(claim["id"])
     with factory() as session, session.begin():
@@ -835,13 +987,12 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
 
     parent_work = {"format": "fixture-multi-output-work/v1", "inputs": [root.as_dict()]}
     parent_work_id = hashlib.sha256(canonical_json_bytes(parent_work)).hexdigest()
-    parent = service.create_or_resume_claim(
+    parent = _create_claim(
+        service,
         work_id=parent_work_id,
         work_document=parent_work,
-        work_document_sha256=parent_work_id,
-        inputs=(root,),
+        root=root,
         purpose="fixture-multi-output/v1",
-        principal=_principal(),
     )
     parent_id = str(parent["id"])
 
@@ -861,21 +1012,20 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
             "inputs": [root.as_dict()],
         }
         work_id = hashlib.sha256(canonical_json_bytes(work)).hexdigest()
-        claim = service.create_or_resume_claim(
+        claim = _create_claim(
+            service,
             work_id=work_id,
             work_document=work,
-            work_document_sha256=work_id,
-            inputs=(root,),
+            root=root,
+            artifact=CollectionArtifactIdentity(
+                collection=root,
+                path=source_path,
+                bytes=source_bytes,
+                sha256=source_sha256,
+            ),
             purpose="fixture-output/v1",
-            principal=_principal(),
         )
         claim_id = str(claim["id"])
-        artifact = CollectionArtifactIdentity(
-            collection=root,
-            path=source_path,
-            bytes=source_bytes,
-            sha256=source_sha256,
-        )
         controller_evidence = {
             "format": "fixture-controller-evidence/v1",
             "execution_envelope": {"execution_envelope_sha256": execution_id},
@@ -883,19 +1033,20 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
         controller_evidence_sha256 = hashlib.sha256(
             canonical_json_bytes(controller_evidence)
         ).hexdigest()
-        service.seal_claim_plan(
+        _seal_plan(
+            service,
             claim_id,
-            fence=1,
             execution_id=execution_id,
             controller_evidence=controller_evidence,
             controller_evidence_sha256=controller_evidence_sha256,
             operation_id="fixture.copy/v1",
-            operation_sha256="c" * 64,
-            input_artifacts=(artifact,),
-            output_tags=("archive-camera",),
-            retirement_policy="retain",
-            retirement_grace_seconds=0,
-            principal=_principal(),
+        )
+        disposition_set = _seal_dispositions(
+            service,
+            claim_id,
+            root=root,
+            input_path=source_path,
+            output_path=output_path,
         )
         derivation = CollectionDerivation(
             execution_id=execution_id,
@@ -903,21 +1054,20 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
             fence=1,
             recipe=RecipeIdentity("fixture.branch/v1", 1, "b" * 64),
             operation=OperationIdentity("fixture.copy/v1", "c" * 64),
-            inputs=(root,),
-            output_tags=("archive-camera",),
+            input_set_sha256=cast(str, claim["inputs"]["authority"]["sha256"]),  # type: ignore[index]
+            artifact_set_sha256=cast(
+                str,
+                claim["artifacts"]["authority"]["sha256"],  # type: ignore[index]
+            ),
+            output_tag_set_sha256=cast(
+                str,
+                claim["output_tags"]["authority"]["sha256"],  # type: ignore[index]
+            ),
             execution_envelope_sha256=execution_id,
             execution_sha256="e" * 64,
             controller_evidence=controller_evidence,
             controller_evidence_sha256=controller_evidence_sha256,
-            dispositions=(
-                ArtifactDisposition(
-                    input_collection_id=1,
-                    input_archive_root_sha256=root.archive_root_sha256,
-                    input_path=source_path,
-                    status="transformed",
-                    outputs=(output_path,),
-                ),
-            ),
+            disposition_set=disposition_set,
         )
         with factory() as session, session.begin():
             _collection(
@@ -942,8 +1092,18 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
                         bytes=len(derivation.to_json_bytes()),
                         sha256=derivation.sha256,
                     ),
+                    CollectionFileRecord(
+                        collection_id=output_collection_id,
+                        path=PRODUCER_EVIDENCE_PATH,
+                        bytes=1,
+                        sha256="5" * 64,
+                    ),
                 ]
             )
+            output_record = session.get(CollectionRecord, output_collection_id)
+            assert output_record is not None
+            output_record.file_count = 3
+            output_record.file_bytes = source_bytes + len(derivation.to_json_bytes()) + 1
         service.settle_claim(
             claim_id,
             fence=1,
@@ -973,15 +1133,6 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
         output_collection_id=3,
         output_path="metadata/sidecar.json",
     )
-    parent = service.get_claim(parent_id, principal=_principal())
-    outcomes = tuple(
-        CollectionProcessingOutcomeIdentity.from_mapping(item)
-        for item in cast(list[dict[str, object]], parent["outcomes"])
-    )
-    assert [item.outcome_id for item in outcomes] == [
-        "sidecar-copy",
-        "video-copy",
-    ]
     with factory() as session:
         assert processing_claim_blockers(session, 2)
         assert processing_claim_blockers(session, 3)
@@ -989,13 +1140,37 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
     settled = service.settle_claim_outcomes(
         parent_id,
         fence=1,
-        outcomes=outcomes,
         retirement_policy="retire-after-verified-output",
         retirement_grace_seconds=0,
         principal=_principal(),
     )
+    while settled["state"] == "active":
+        assert service.process_due_outcome_sets(limit=1) == 1
+        settled = service.settle_claim_outcomes(
+            parent_id,
+            fence=1,
+            retirement_policy="retire-after-verified-output",
+            retirement_grace_seconds=0,
+            principal=_principal(),
+        )
     assert settled["state"] == "settled"
     assert settled["outcome_settlement"] is not None
+    outcome_authority = cast(dict[str, object], settled["outcomes"])["authority"]
+    assert isinstance(outcome_authority, dict)
+    page = service.list_claim_outcomes(
+        parent_id,
+        authority_sha256=cast(str, outcome_authority["sha256"]),
+        start_ordinal=0,
+        principal=_principal(),
+    )
+    outcomes = tuple(
+        CollectionProcessingOutcomeIdentity.from_mapping(item)
+        for item in cast(list[dict[str, object]], page["outcomes"])
+    )
+    assert [item.outcome_id for item in outcomes] == [
+        "sidecar-copy",
+        "video-copy",
+    ]
     assert (
         service.begin_retirement(parent_id, fence=1, principal=_principal())["state"] == "retiring"
     )

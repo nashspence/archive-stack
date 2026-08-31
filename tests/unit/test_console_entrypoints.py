@@ -124,7 +124,7 @@ def test_paged_list_cli_help_uses_the_shared_contract(command: tuple[str, ...]) 
     completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
-    for option in ("--page", "--per-page", "--sort", "--order", "--query", "--all"):
+    for option in ("--page", "--per-page", "--sort", "--order", "--query"):
         assert option in completed.stdout
     if command[0] == "riverhog":
         assert "--json" in completed.stdout

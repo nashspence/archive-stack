@@ -10,6 +10,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from riverhog_api_client import ApiClient
+from riverhog_protocol.collection_workflows import ArtifactDispositionSetIdentity
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from stove0_api.app import Stove0Composition, _log_scheduler_failures, create_app
@@ -60,6 +61,20 @@ from stove0_protocol import (
     WorkflowPreviewRequestPayload,
     WorkIdentity,
     WorkPayload,
+)
+from stove0_target_client import TargetCallbackClient
+from stove0_target_protocol import (
+    InputArtifact,
+    InputDispositionDeclaration,
+    OutputArtifact,
+    OutputArtifactSetIdentity,
+    OutputSourceEdge,
+    TargetCallbackAccess,
+    TargetInputAuthority,
+    TargetInputPage,
+    TargetProductionAuthority,
+    TargetProductionAuthorityPayload,
+    TargetProductionSealResponse,
 )
 from typer.testing import CliRunner
 
@@ -143,9 +158,18 @@ class _LifecycleState:
         selection = self.load_selection(selection_sha256)
         return None if selection is None else selection.ref()
 
-    def selection_artifact_page(self, selection_sha256: str, *, offset: int, limit: int):  # type: ignore[no-untyped-def]
+    def selection_artifact_page(  # type: ignore[no-untyped-def]
+        self,
+        selection_sha256: str,
+        *,
+        continuation: str | None,
+        limit: int,
+    ):
         selection = self.load_selection(selection_sha256)
-        return () if selection is None else selection.artifacts[offset : offset + limit]
+        if selection is None:
+            return (), None, True
+        assert continuation is None
+        return selection.artifacts[:limit], None, True
 
     def iter_selection_artifacts(self, selection_sha256: str):  # type: ignore[no-untyped-def]
         selection = self.load_selection(selection_sha256)
@@ -342,6 +366,9 @@ def _lifecycle_composition() -> Stove0Composition:
             recipes_path=Path("recipes.yaml"),
             observers={},
             targets={},
+            target_callback_base_url="https://stove0.invalid",
+            target_callback_allow_insecure_http=False,
+            target_callback_signing_key="stove0-test-callback-signing-key",
             workspace_assurance="ephemeral",
             claim_lease_seconds=1800,
             capability_ttl_seconds=900,
@@ -499,6 +526,9 @@ def _composition() -> Stove0Composition:
             recipes_path=Path("recipes.yaml"),
             observers={},
             targets={},
+            target_callback_base_url="https://stove0.invalid",
+            target_callback_allow_insecure_http=False,
+            target_callback_signing_key="stove0-test-callback-signing-key",
             workspace_assurance="ephemeral",
             claim_lease_seconds=1800,
             capability_ttl_seconds=900,
@@ -527,6 +557,121 @@ def _operations() -> dict[str, str]:
     }
 
 
+def _operator_operations() -> dict[str, str]:
+    target_operations = set(_target_callback_operations())
+    return {
+        operation_id: route
+        for operation_id, route in _operations().items()
+        if operation_id not in target_operations
+    }
+
+
+def _target_callback_operations() -> dict[str, str]:
+    schema = create_app(_composition()).openapi()
+    return {
+        str(operation["operationId"]): f"{method.upper()} {path}"
+        for path, path_item in schema["paths"].items()
+        for method, operation in path_item.items()
+        if method in {"delete", "get", "patch", "post", "put"}
+        and "target-executions" in operation.get("tags", ())
+    }
+
+
+class _LifecycleTargetCallbacks:
+    def __init__(self) -> None:
+        self.input = InputArtifact(
+            id="source",
+            role="fixture.source/v1",
+            collection=CollectionRootRef(
+                collection_id=1,
+                archive_root_sha256="1" * 64,
+                content_identity="2" * 64,
+            ),
+            path="source/input.bin",
+            bytes=12,
+            sha256="4" * 64,
+        )
+        self.output = OutputArtifact(
+            id="output",
+            role="fixture.output/v1",
+            path="output/result.bin",
+            bytes=12,
+            sha256="5" * 64,
+        )
+
+    @staticmethod
+    def _authorize(token: str, job_id: str) -> None:
+        assert token == "target-callback-token"
+        assert job_id == _fixture_work().work_id
+
+    def input_page(
+        self,
+        token: str,
+        *,
+        job_id: str,
+        continuation: str | None,
+        limit: int,
+    ) -> TargetInputPage:
+        self._authorize(token, job_id)
+        assert continuation is None
+        assert limit == 256
+        selection = ArtifactSelection.seal(
+            (ArtifactSubject.model_validate(self.input.model_dump(mode="json")),)
+        )
+        return TargetInputPage(
+            authority=TargetInputAuthority.from_selection(selection),
+            complete=True,
+            artifacts=(self.input,),
+        )
+
+    def declare_output(self, token: str, *, job_id: str, output: OutputArtifact) -> None:
+        self._authorize(token, job_id)
+        assert output == self.output
+
+    def declare_disposition(
+        self,
+        token: str,
+        *,
+        job_id: str,
+        disposition: InputDispositionDeclaration,
+    ) -> None:
+        self._authorize(token, job_id)
+        assert disposition.input_id == self.input.id
+
+    def declare_source_edge(
+        self,
+        token: str,
+        *,
+        job_id: str,
+        edge: OutputSourceEdge,
+    ) -> None:
+        self._authorize(token, job_id)
+        assert (edge.output_id, edge.input_id) == (self.output.id, self.input.id)
+
+    def seal_production(self, token: str, *, job_id: str) -> TargetProductionSealResponse:
+        self._authorize(token, job_id)
+        disposition_set = ArtifactDispositionSetIdentity(
+            disposition_count=1,
+            output_edge_count=1,
+            output_artifact_count=1,
+            sha256="6" * 64,
+        )
+        return TargetProductionSealResponse(
+            production=TargetProductionAuthority.seal(
+                TargetProductionAuthorityPayload(
+                    job_id=job_id,
+                    plan_sha256="7" * 64,
+                    outputs=OutputArtifactSetIdentity.seal((self.output,)),
+                    disposition_count=1,
+                    disposition_sha256="8" * 64,
+                    source_edge_count=1,
+                    source_edge_sha256="9" * 64,
+                    riverhog_disposition_set=disposition_set,
+                )
+            )
+        )
+
+
 def test_stove0_official_client_positive_disposable_lifecycle() -> None:
     application = create_app(_lifecycle_composition())
     observer = OperationObserver.install(application, application="stove0")
@@ -552,8 +697,6 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert recipe_page.recipes[0].sha256
         assert client.get_recipe("stove0.conformance-media/v1").sha256
         assert client.list_work().total == 0
-        with client.stream_work() as streamed_work:
-            assert list(streamed_work) == []
         preview = client.preview_workflow("stove0.conformance-media/v1", [1])
         created = client.create_work(
             "stove0.conformance-media/v1",
@@ -565,16 +708,15 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert fetched.work_id == created.work_id
         assert client.inspect_work_coordination(created.work_id).branch_set_succeeded is False
         selection = _fixture_selection(_fixture_work())
-        assert client.get_artifact_selection(selection.selection_sha256).total == 1
-        with client.stream_artifact_selection(selection.selection_sha256) as artifacts:
-            assert len(list(artifacts)) == 1
+        selection_page = client.get_artifact_selection(selection.selection_sha256)
+        assert selection_page.authority.artifact_count == 1
+        assert selection_page.complete is True
+        assert selection_page.next_continuation is None
         assert client.step_work(created.work_id).phase == "claimed"
         assert client.retry_work(created.work_id).phase == "eligible"
         assert client.cancel_work(created.work_id).phase == "canceled"
         assert preview.state == "ready"
         assert client.list_evaluations().total == 1
-        with client.stream_evaluations() as evaluations:
-            assert len(list(evaluations)) == 1
         assert (
             client.create_evaluation(definition.model_dump(mode="json")).evaluation_id
             == evaluation_id
@@ -598,12 +740,12 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.run_scheduler(role="combined").work.role == "combined"
         client._client = None
 
-    observer.require(_operations())
+    observer.require(_operator_operations())
 
 
 def test_every_stove0_api_operation_has_one_current_official_client_method() -> None:
-    operations = _operations()
-    assert len(operations) == 24
+    operations = _operator_operations()
+    assert len(operations) == 21
     assert {
         operation_id
         for operation_id in operations
@@ -622,6 +764,51 @@ def test_every_stove0_api_operation_has_one_current_official_client_method() -> 
     } == set()
 
 
+def test_target_callback_surface_has_one_current_target_client_and_real_api_witness() -> None:
+    callbacks = _LifecycleTargetCallbacks()
+    application = create_app(
+        replace(
+            _lifecycle_composition(),
+            target_callbacks=cast(Any, callbacks),
+        )
+    )
+    observer = OperationObserver.install(application, application="stove0-target-callback")
+    access = TargetCallbackAccess(
+        stove0_base_url="http://testserver",
+        token="target-callback-token",
+        allow_insecure_http=True,
+    )
+    job_id = _fixture_work().work_id
+    with TestClient(application) as transport:
+        client = TargetCallbackClient(access)
+        client._client = cast(  # type: ignore[assignment]
+            Any,
+            TimeoutNeutralTestClient(transport, observer=observer),
+        )
+        assert tuple(client.iter_inputs(job_id)) == (callbacks.input,)
+        client.declare_target_execution_output(job_id, callbacks.output)
+        client.declare_target_execution_disposition(
+            job_id,
+            InputDispositionDeclaration(input_id=callbacks.input.id, status="transformed"),
+        )
+        client.declare_target_execution_source_edge(
+            job_id,
+            OutputSourceEdge(output_id=callbacks.output.id, input_id=callbacks.input.id),
+        )
+        assert client.seal_target_execution_production(job_id).production.job_id == job_id
+
+    callback_methods = set(_target_callback_operations())
+    assert callback_methods == {
+        "get_target_execution_inputs",
+        "declare_target_execution_output",
+        "declare_target_execution_disposition",
+        "declare_target_execution_source_edge",
+        "seal_target_execution_production",
+    }
+    assert all(callable(getattr(TargetCallbackClient, method)) for method in callback_methods)
+    observer.require(_target_callback_operations())
+
+
 def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
     schema = create_app(_composition()).openapi()
     for path, path_item in schema["paths"].items():
@@ -635,13 +822,6 @@ def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
                 for status, response in operation["responses"].items()
                 if 200 <= int(status) < 300
             )
-            read_collection = operation.get("x-riverhog-read-collection")
-            if (
-                isinstance(read_collection, dict)
-                and read_collection.get("kind") == "complete-enumeration"
-            ):
-                assert set(success["content"]) == {"application/json-seq"}
-                continue
             response_schema = success["content"]["application/json"]["schema"]
             reference = response_schema.get("$ref")
             assert isinstance(reference, str), (method, path, response_schema)
@@ -761,8 +941,7 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
     selection = schema["paths"]["/v1/artifact-selections/{selection_sha256}"]["get"]
     assert {item["name"] for item in selection["parameters"]} >= {
         "selection_sha256",
-        "page",
-        "per_page",
+        "continuation",
     }
     assert "all" not in {item["name"] for item in selection["parameters"]}
     assert selection["responses"]["200"]["content"]["application/json"]["schema"][

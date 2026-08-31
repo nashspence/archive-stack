@@ -37,6 +37,8 @@ Table(
     LOCAL_STATE_METADATA,
     Column("collection_id", Integer, primary_key=True),
     Column("inventory_identity", Text, nullable=False),
+    Column("inventory_cursor", Text),
+    Column("inventory_complete", Integer, nullable=False, server_default=text("0")),
     Column("created_at", Text, nullable=False),
     Column("remote_deleted", Integer, nullable=False, server_default=text("0")),
     CheckConstraint("collection_id > 0", name="ck_desired_collections_id"),
@@ -44,6 +46,9 @@ Table(
         "length(inventory_identity) = 64 AND inventory_identity = lower(inventory_identity) "
         "AND inventory_identity NOT GLOB '*[^0-9a-f]*'",
         name="ck_desired_collections_etag",
+    ),
+    CheckConstraint(
+        "inventory_complete IN (0, 1)", name="ck_desired_collections_inventory_complete"
     ),
     CheckConstraint("remote_deleted IN (0, 1)", name="ck_desired_collections_remote_deleted"),
 )

@@ -87,11 +87,10 @@ _TRANSITIONS = {
 _REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
     "immediate-qualified": frozenset(
         {
-            "committed-unit-readback",
+            "committed-payload-progress",
             "session-show",
             "registered-file-list",
-            "volume-list",
-            "volume-show",
+            "upload-work-acquisition",
             "unit-readback",
             "b2-immediate-client-retrieval",
             "b2-independent-recovery",
@@ -2662,10 +2661,19 @@ def _upload_collection_with_observation(
     def observe() -> None:
         nonlocal collection_id
         upload = None
-        with api.stream_collection_upload_sessions() as stream:
-            for item in stream:
+        page = 1
+        while True:
+            payload = api.list_collection_upload_sessions(
+                page=page,
+                per_page=100,
+                q=resolved_root,
+            )
+            for item in payload.get("uploads", []):
                 if item.get("ingest_source") == resolved_root:
                     upload = item
+            if page >= int(payload.get("pages", 0)):
+                break
+            page += 1
         if upload is None:
             return
         collection_id = int(upload["collection_id"])
@@ -2673,22 +2681,27 @@ def _upload_collection_with_observation(
         if session.get("state") in {"open", "uploading", "finalizing"}:
             observed.add("session-show")
         has_files = False
-        with api.stream_collection_upload_session_files(collection_id) as files:
-            for _item in files:
+        page = 1
+        while True:
+            payload = api.list_collection_upload_session_files(
+                collection_id,
+                page=page,
+                per_page=100,
+            )
+            for _item in payload.get("files", []):
                 has_files = True
+            if page >= int(payload.get("pages", 0)):
+                break
+            page += 1
         if has_files:
             observed.add("registered-file-list")
-        volume_page = api.list_collection_upload_session_volumes(collection_id)
-        volumes = volume_page.volumes
-        if volumes:
-            observed.add("volume-list")
-        for volume in volumes:
-            volume_id = volume.volume_id
-            shown = api.get_collection_upload_session_volume(collection_id, volume_id)
-            observed.add("volume-show")
-            if not shown.units:
-                continue
-            unit = shown.units[0].unit
+        work_batch = api.acquire_collection_upload_session_work(collection_id, limit=16)
+        observed.add("upload-work-acquisition")
+        if work_batch.committed_payload_bytes > 0:
+            observed.add("committed-payload-progress")
+        for assignment in work_batch.work:
+            volume_id = assignment.volume.volume_id
+            unit = assignment.unit.unit
             readback = api.get_collection_upload_session_unit(
                 collection_id,
                 volume_id,
@@ -2696,8 +2709,6 @@ def _upload_collection_with_observation(
             )
             if readback.unit == unit:
                 observed.add("unit-readback")
-                if readback.state == "committed":
-                    observed.add("committed-unit-readback")
 
     stdout = ""
     deadline = time.monotonic() + 6 * 60 * 60
@@ -2724,7 +2735,11 @@ def _upload_collection_with_observation(
                 except Exception:
                     # The session can move between transactional states while the observer polls.
                     pass
-                if interrupt_client and not interrupted and "committed-unit-readback" in observed:
+                if (
+                    interrupt_client
+                    and not interrupted
+                    and "committed-payload-progress" in observed
+                ):
                     process.terminate()
                     try:
                         process.wait(timeout=30)
@@ -2756,11 +2771,10 @@ def _upload_collection_with_observation(
     if collection_id is not None and collection_id != result_id:
         raise QualificationError("observed upload identity changed during finalization")
     required = {
-        "committed-unit-readback",
+        "committed-payload-progress",
         "session-show",
         "registered-file-list",
-        "volume-list",
-        "volume-show",
+        "upload-work-acquisition",
         "unit-readback",
     }
     if interrupt_client:
@@ -2792,13 +2806,22 @@ def _wait_archive_copy(
         state = str(payload.get("state", ""))
         if state == "completed":
             found = False
-            with api.stream_archive_copy_jobs(q=destination) as jobs:
-                for item in jobs:
+            page = 1
+            while True:
+                result = api.list_archive_copy_jobs(
+                    page=page,
+                    per_page=100,
+                    q=destination,
+                )
+                for item in result.get("copies", []):
                     if (
                         int(item.get("collection_id", 0)) == collection_id
                         and item.get("destination_store") == destination
                     ):
                         found = True
+                if page >= int(result.get("pages", 0)):
+                    break
+                page += 1
             if not found:
                 raise QualificationError("archive-copy list omitted the completed job")
             return cast(dict[str, Any], payload)
@@ -2920,17 +2943,26 @@ def _assert_retrieval_cache_surface(
     }
     if policy != expected_policy:
         raise QualificationError("retrieval-cache status omitted effective qualification policy")
-    with api.stream_retrieval_cache_objects(
-        q=str(collection_id),
-        sort="object_id",
-        order="asc",
-    ) as objects:
-        selected = [
+    selected: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        result = api.list_retrieval_cache_objects(
+            page=page,
+            per_page=100,
+            collection_id=collection_id,
+            source_store=source_store,
+            sort="object_id",
+            order="asc",
+        )
+        selected.extend(
             item
-            for item in objects
+            for item in result.get("objects", [])
             if int(item.get("collection_id", 0)) == collection_id
             and item.get("source_store") == source_store
-        ]
+        )
+        if page >= int(result.get("pages", 0)):
+            break
+        page += 1
     if not selected:
         raise QualificationError(f"retrieval-cache list omitted {source_store} objects")
     object_ids: list[str] = []
@@ -2999,12 +3031,30 @@ def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None
         raise QualificationError("ResourceSync omitted the qualification collection")
     if not str(resource.get("location", "")).startswith(public_prefix):
         raise QualificationError("ResourceSync resource published an unusable URL authority")
-    with api.stream_portable_collection_inventory(collection_id) as portable:
-        if portable.begin.header.format != "riverhog-collection/v1":
+    cursor: str | None = None
+    inventory_identity: str | None = None
+    observed_files = 0
+    expected_files: int | None = None
+    while True:
+        portable = api.get_portable_collection_inventory(
+            collection_id,
+            cursor=cursor,
+            limit=1000,
+            inventory_identity=inventory_identity,
+        )
+        if portable.authority.header.format != "riverhog-collection/v1":
             raise QualificationError("portable collection inventory format is invalid")
-        observed_files = sum(1 for _file in portable)
-        if observed_files != portable.begin.files:
-            raise QualificationError("portable collection inventory count differs")
+        if inventory_identity is None:
+            inventory_identity = portable.authority.inventory_identity
+            expected_files = portable.authority.file_count
+        elif portable.authority.inventory_identity != inventory_identity:
+            raise QualificationError("portable collection inventory identity changed")
+        observed_files += len(portable.files)
+        if portable.complete:
+            break
+        cursor = portable.next_cursor
+    if observed_files != expected_files:
+        raise QualificationError("portable collection inventory count differs")
     changes = api.catalog_changes(after=0)
     if not any(
         int(item.get("collection_id", 0)) == collection_id

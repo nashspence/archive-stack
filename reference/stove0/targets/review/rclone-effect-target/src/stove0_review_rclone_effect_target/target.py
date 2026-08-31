@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import JsonValue
-from riverhog_protocol import ArtifactDisposition, canonical_json_bytes
+from riverhog_protocol import canonical_json_bytes
 from riverhog_transform_sdk import TransformWorkspace
 from stove0_review_target_contracts import REVIEW_RCLONE_DELIVER_OPERATION
 from stove0_review_target_support import (
@@ -150,12 +150,10 @@ class ReviewRcloneEffectTargetService(ReviewTargetServiceBase):
         request: TargetJobRequest,
         publication: TargetCollectionPublication | None,
         artifacts: tuple[OutputArtifact, ...],
-        dispositions: tuple[ArtifactDisposition, ...],
         execution_sha256: str,
         attempt: int,
         runtime_evidence: dict[str, JsonValue],
     ) -> TargetJobStatus:
-        del dispositions
         if publication is not None:
             raise RuntimeError("review effect target unexpectedly opened a collection publication")
         manifest_path = workspace.resolve("control/delivery-manifest.json")

@@ -7,6 +7,7 @@ compare-and-swap store; observers and targets remain subordinate execution ports
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Iterator, Sequence
 from typing import Any, Literal, Protocol, Self
@@ -36,15 +37,20 @@ from stove0_protocol import (
     WorkflowPlan,
     WorkflowPreview,
     WorkIdentity,
+    canonical_json_bytes,
 )
 from stove0_target_protocol import (
     AcceptedTargetJob,
+    InputDispositionDeclaration,
     OperationContract,
+    OutputArtifact,
     OutputCollectionRef,
+    OutputSourceEdge,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
     TargetPlan,
+    TargetSettlementAuthority,
     validate_status_against_request,
 )
 
@@ -69,6 +75,15 @@ WorkPhase = Literal[
 ]
 TerminalPhase = Literal["complete", "inapplicable", "failed", "canceled"]
 AbandonOutcome = Literal["inapplicable", "failed", "canceled"]
+
+
+def _selection_continuation(selection_sha256: str, artifact: ArtifactSubject) -> str:
+    return hashlib.sha256(
+        b"stove0-artifact-selection-continuation/v1\x00"
+        + selection_sha256.encode("ascii")
+        + b"\x00"
+        + canonical_json_bytes(artifact.model_dump(mode="json", exclude_none=True))
+    ).hexdigest()
 
 
 class Stove0StateError(RuntimeError):
@@ -159,6 +174,7 @@ class WorkRecord(Stove0StateModel):
     target_request: AcceptedTargetJob | None = None
     target_status: TargetJobStatus | None = None
     output: OutputCollectionRef | None = None
+    target_settlement: TargetSettlementAuthority | None = None
     retirement_remaining: tuple[int, ...] = ()
     failure: WorkFailure | None = None
     inapplicable: WorkInapplicable | None = None
@@ -166,6 +182,16 @@ class WorkRecord(Stove0StateModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> Self:
+        if self.target_settlement is not None and (
+            self.output is None or self.target_settlement.output_collection != self.output
+        ):
+            raise ValueError("work settlement differs from its output collection")
+        if (
+            self.output is not None
+            and self.phase in {"settled", "retirement_pending", "complete"}
+            and self.target_settlement is None
+        ):
+            raise ValueError("settled collection work requires post-root target settlement")
         validate_work_state_shape(
             work=self.work,
             phase=self.phase,
@@ -222,11 +248,41 @@ class WorkStore(Protocol):
 
     def load_selection(self, selection_sha256: str) -> ArtifactSelection | None: ...
 
+    def retain_selection(self, selection: ArtifactSelection) -> None: ...
+
+    def load_selection_artifact(
+        self, selection_sha256: str, artifact_id: str
+    ) -> ArtifactSubject | None: ...
+
+    def record_target_output(self, work_id: str, output: OutputArtifact) -> None: ...
+
+    def record_target_disposition(
+        self, work_id: str, disposition: InputDispositionDeclaration
+    ) -> None: ...
+
+    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None: ...
+
+    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None: ...
+
+    def load_target_disposition(
+        self, work_id: str, input_id: str
+    ) -> InputDispositionDeclaration | None: ...
+
+    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]: ...
+
+    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]: ...
+
+    def iter_target_dispositions(self, work_id: str) -> Iterator[InputDispositionDeclaration]: ...
+
+    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]: ...
+
+    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]: ...
+
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None: ...
 
     def selection_artifact_page(
-        self, selection_sha256: str, *, offset: int, limit: int
-    ) -> tuple[ArtifactSubject, ...]: ...
+        self, selection_sha256: str, *, continuation: str | None, limit: int
+    ) -> tuple[tuple[ArtifactSubject, ...], str | None, bool]: ...
 
     def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]: ...
 
@@ -285,6 +341,9 @@ class InMemoryWorkStore:
         self._selections: dict[str, ArtifactSelection] = {}
         self._branch_sets: dict[str, BranchSetPlan] = {}
         self._join_plans: dict[str, JoinPlan] = {}
+        self._target_outputs: dict[tuple[str, str], OutputArtifact] = {}
+        self._target_dispositions: dict[tuple[str, str], InputDispositionDeclaration] = {}
+        self._target_source_edges: dict[tuple[str, str, str], OutputSourceEdge] = {}
 
     def load(self, work_id: str) -> WorkRecord | None:
         with self._lock:
@@ -449,6 +508,113 @@ class InMemoryWorkStore:
         with self._lock:
             return self._selections.get(selection_sha256)
 
+    def retain_selection(self, selection: ArtifactSelection) -> None:
+        with self._lock:
+            existing = self._selections.setdefault(selection.selection_sha256, selection)
+            if existing != selection:
+                raise ConcurrentWorkUpdate("artifact selection identity was reused")
+
+    def load_selection_artifact(
+        self,
+        selection_sha256: str,
+        artifact_id: str,
+    ) -> ArtifactSubject | None:
+        with self._lock:
+            selection = self._selections.get(selection_sha256)
+            if selection is None:
+                return None
+            return next((item for item in selection.artifacts if item.id == artifact_id), None)
+
+    def record_target_output(self, work_id: str, output: OutputArtifact) -> None:
+        with self._lock:
+            key = (work_id, output.id)
+            existing = self._target_outputs.setdefault(key, output)
+            if existing != output:
+                raise ConcurrentWorkUpdate("target output declaration changed")
+
+    def record_target_disposition(
+        self,
+        work_id: str,
+        disposition: InputDispositionDeclaration,
+    ) -> None:
+        with self._lock:
+            key = (work_id, disposition.input_id)
+            existing = self._target_dispositions.setdefault(key, disposition)
+            if existing != disposition:
+                raise ConcurrentWorkUpdate("target input disposition changed")
+
+    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None:
+        with self._lock:
+            self._target_source_edges.setdefault((work_id, edge.output_id, edge.input_id), edge)
+
+    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None:
+        with self._lock:
+            return self._target_outputs.get((work_id, output_id))
+
+    def load_target_disposition(
+        self,
+        work_id: str,
+        input_id: str,
+    ) -> InputDispositionDeclaration | None:
+        with self._lock:
+            return self._target_dispositions.get((work_id, input_id))
+
+    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]:
+        with self._lock:
+            values = tuple(
+                value
+                for (owner, _), value in sorted(self._target_outputs.items())
+                if owner == work_id
+            )
+        return iter(values)
+
+    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]:
+        with self._lock:
+            values = tuple(
+                sorted(
+                    (
+                        value
+                        for (owner, _), value in self._target_outputs.items()
+                        if owner == work_id
+                    ),
+                    key=lambda item: item.path,
+                )
+            )
+        return iter(values)
+
+    def iter_target_dispositions(
+        self,
+        work_id: str,
+    ) -> Iterator[InputDispositionDeclaration]:
+        with self._lock:
+            values = tuple(
+                value
+                for (owner, _), value in sorted(self._target_dispositions.items())
+                if owner == work_id
+            )
+        return iter(values)
+
+    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]:
+        with self._lock:
+            values = tuple(
+                value
+                for (owner, _, _), value in sorted(self._target_source_edges.items())
+                if owner == work_id
+            )
+        return iter(values)
+
+    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]:
+        with self._lock:
+            values = tuple(
+                value
+                for (owner, _, _), value in sorted(
+                    self._target_source_edges.items(),
+                    key=lambda item: (item[0][0], item[0][2], item[0][1]),
+                )
+                if owner == work_id
+            )
+        return iter(values)
+
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
         with self._lock:
             selection = self._selections.get(selection_sha256)
@@ -458,14 +624,34 @@ class InMemoryWorkStore:
         self,
         selection_sha256: str,
         *,
-        offset: int,
+        continuation: str | None,
         limit: int,
-    ) -> tuple[ArtifactSubject, ...]:
-        if offset < 0 or limit < 1 or limit > 1000:
+    ) -> tuple[tuple[ArtifactSubject, ...], str | None, bool]:
+        if limit < 1 or limit > 1000:
             raise ValueError("artifact selection page is invalid")
         with self._lock:
             selection = self._selections.get(selection_sha256)
-            return () if selection is None else selection.artifacts[offset : offset + limit]
+            if selection is None:
+                return (), None, True
+            after = -1
+            if continuation is not None:
+                for index, artifact in enumerate(selection.artifacts):
+                    if _selection_continuation(selection_sha256, artifact) == continuation:
+                        after = index
+                        break
+                else:
+                    raise ValueError("artifact selection continuation is invalid")
+            page = selection.artifacts[after + 1 : after + 1 + limit]
+            complete = after + 1 + len(page) == len(selection.artifacts)
+            return (
+                page,
+                (
+                    None
+                    if complete or not page
+                    else _selection_continuation(selection_sha256, page[-1])
+                ),
+                complete,
+            )
 
     def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]:
         with self._lock:
@@ -926,6 +1112,7 @@ class Stove0WorkService:
         self,
         work_id: str,
         output: OutputCollectionRef,
+        settlement: TargetSettlementAuthority,
         *,
         expected_revision: int,
     ) -> WorkRecord:
@@ -934,7 +1121,14 @@ class Stove0WorkService:
             raise Stove0StateError(f"work cannot verify output from {record.phase}")
         if record.target_status.output_collection != output or record.output != output:
             raise ValueError("Riverhog verification differs from the target output identity")
-        return self._replace(record, phase="settled", output=output)
+        if settlement.output_collection != output:
+            raise ValueError("target settlement differs from the verified output")
+        return self._replace(
+            record,
+            phase="settled",
+            output=output,
+            target_settlement=settlement,
+        )
 
     def begin_retirement(
         self,

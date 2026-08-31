@@ -17,7 +17,6 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "fastapi>=0.111,<1.0",
   "pydantic>=2.7,<3.0",
-  "riverhog-protocol>=0.1,<0.2",
   "riverhog-transform-sdk>=0.1,<0.2",
   "stove0-review-target-contracts>=0.1,<0.2",
   "stove0-review-target-support>=0.1,<0.2",
@@ -29,7 +28,6 @@ dependencies = [
 stove0-review-materialize-target = "stove0_review_materialize_target.app:main"
 
 [tool.uv.sources]
-riverhog-protocol = { workspace = true }
 riverhog-transform-sdk = { workspace = true }
 stove0-review-target-contracts = { workspace = true }
 stove0-review-target-support = { workspace = true }

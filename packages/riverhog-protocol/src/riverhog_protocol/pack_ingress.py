@@ -11,7 +11,7 @@ from riverhog_protocol.paths import normalize_relpath
 PACK_UPLOAD_PLAN_SCHEMA = "pack-upload-plan/v1"
 RESERVED_ARCHIVE_PREFIX = ".riverhog/"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
+_PACK_VOLUME_ID_RE = re.compile(r"pack-[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)

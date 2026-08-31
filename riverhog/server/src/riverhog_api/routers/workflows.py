@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
-from http_api_contracts import operation_interface
+from fastapi import APIRouter, Query
+from http_api_contracts import (
+    bounded_list_operation,
+    exact_authority_page_operation,
+    operation_interface,
+)
 from riverhog_protocol import (
     CollectionIdParameter,
     ProcessingClaimId,
@@ -12,8 +16,9 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.collection_workflow_transport import ClaimState
 from riverhog_protocol.collection_workflows import (
+    ArtifactDisposition,
+    ArtifactDispositionOutput,
     CollectionArtifactIdentity,
-    CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
 )
 
@@ -22,15 +27,21 @@ from riverhog_api.auth import (
     CollectionTransformExecutor,
     CollectionTransformLeaseManager,
 )
-from riverhog_api.complete_enumeration import (
-    CompleteEnumerationResponse,
-    bounded_list_operation,
-    complete_enumeration_operation,
-    complete_enumeration_response,
-)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.workflows import (
+    ArtifactDispositionBatchIn,
+    ArtifactDispositionOutputBatchIn,
+    ArtifactDispositionOutputPageOut,
+    ArtifactDispositionPageOut,
+    ArtifactDispositionSetOut,
+    ArtifactReceivingSetOut,
+    CollectionArtifactBatchIn,
+    CollectionArtifactPageOut,
     CollectionDerivationOut,
+    CollectionRootBatchIn,
+    CollectionRootPageOut,
+    OutputTagBatchIn,
+    OutputTagPageOut,
     ProcessingClaimAbandonIn,
     ProcessingClaimCreateIn,
     ProcessingClaimFenceIn,
@@ -41,6 +52,8 @@ from riverhog_api.schemas.workflows import (
     ProcessingClaimRenewIn,
     ProcessingClaimRestartIn,
     ProcessingClaimSettleIn,
+    ProcessingOutcomePageOut,
+    ReceivingSetOut,
     TransformCapabilityCreateIn,
     TransformCapabilityOut,
 )
@@ -63,16 +76,230 @@ def create_or_resume_processing_claim(
             work_id=request.work_id,
             work_document=request.work_document,
             work_document_sha256=request.work_document_sha256,
-            inputs=tuple(
-                CollectionRootIdentity(
-                    collection_id=item.collection_id,
-                    archive_root_sha256=item.archive_root_sha256,
-                    content_identity=item.content_identity,
-                )
-                for item in request.inputs
-            ),
             lease_seconds=request.lease_seconds,
             purpose=request.purpose,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/inputs",
+    response_model=ReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def append_processing_claim_inputs(
+    claim_id: ProcessingClaimId,
+    request: CollectionRootBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ReceivingSetOut:
+    return ReceivingSetOut.model_validate(
+        container.collection_workflows.append_claim_inputs(
+            claim_id,
+            fence=request.fence,
+            start_ordinal=request.start_ordinal,
+            inputs=tuple(
+                CollectionRootIdentity.from_mapping(item.model_dump(mode="json"))
+                for item in request.inputs
+            ),
+            principal=principal,
+        )
+    )
+
+
+@router.post(
+    "/collection-processing-claims/{claim_id}/inputs/seal",
+    response_model=ReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def seal_processing_claim_inputs(
+    claim_id: ProcessingClaimId,
+    request: ProcessingClaimFenceIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ReceivingSetOut:
+    return ReceivingSetOut.model_validate(
+        container.collection_workflows.seal_claim_inputs(
+            claim_id,
+            fence=request.fence,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/inputs",
+    response_model=CollectionRootPageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **exact_authority_page_operation(
+            authority="processing-claim-inputs",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
+    },
+)
+def list_processing_claim_inputs(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
+) -> CollectionRootPageOut:
+    return CollectionRootPageOut.model_validate(
+        container.collection_workflows.list_claim_inputs(
+            claim_id,
+            authority_sha256=authority_sha256,
+            start_ordinal=start_ordinal,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/plan/artifacts",
+    response_model=ArtifactReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def append_processing_claim_artifacts(
+    claim_id: ProcessingClaimId,
+    request: CollectionArtifactBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ArtifactReceivingSetOut:
+    return ArtifactReceivingSetOut.model_validate(
+        container.collection_workflows.append_claim_artifacts(
+            claim_id,
+            fence=request.fence,
+            start_ordinal=request.start_ordinal,
+            artifacts=tuple(
+                CollectionArtifactIdentity.from_mapping(item.model_dump(mode="json"))
+                for item in request.artifacts
+            ),
+            principal=principal,
+        )
+    )
+
+
+@router.post(
+    "/collection-processing-claims/{claim_id}/plan/artifacts/seal",
+    response_model=ArtifactReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def seal_processing_claim_artifacts(
+    claim_id: ProcessingClaimId,
+    request: ProcessingClaimFenceIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ArtifactReceivingSetOut:
+    return ArtifactReceivingSetOut.model_validate(
+        container.collection_workflows.seal_claim_artifacts(
+            claim_id,
+            fence=request.fence,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/plan/artifacts",
+    response_model=CollectionArtifactPageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **exact_authority_page_operation(
+            authority="processing-claim-artifacts",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
+    },
+)
+def list_processing_claim_artifacts(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
+) -> CollectionArtifactPageOut:
+    return CollectionArtifactPageOut.model_validate(
+        container.collection_workflows.list_claim_artifacts(
+            claim_id,
+            authority_sha256=authority_sha256,
+            start_ordinal=start_ordinal,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/plan/output-tags",
+    response_model=ReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def append_processing_claim_output_tags(
+    claim_id: ProcessingClaimId,
+    request: OutputTagBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ReceivingSetOut:
+    return ReceivingSetOut.model_validate(
+        container.collection_workflows.append_claim_output_tags(
+            claim_id,
+            fence=request.fence,
+            start_ordinal=request.start_ordinal,
+            tags=request.tags,
+            principal=principal,
+        )
+    )
+
+
+@router.post(
+    "/collection-processing-claims/{claim_id}/plan/output-tags/seal",
+    response_model=ReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def seal_processing_claim_output_tags(
+    claim_id: ProcessingClaimId,
+    request: ProcessingClaimFenceIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ReceivingSetOut:
+    return ReceivingSetOut.model_validate(
+        container.collection_workflows.seal_claim_output_tags(
+            claim_id,
+            fence=request.fence,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/plan/output-tags",
+    response_model=OutputTagPageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **exact_authority_page_operation(
+            authority="processing-claim-output-tags",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
+    },
+)
+def list_processing_claim_output_tags(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
+) -> OutputTagPageOut:
+    return OutputTagPageOut.model_validate(
+        container.collection_workflows.list_claim_output_tags(
+            claim_id,
+            authority_sha256=authority_sha256,
+            start_ordinal=start_ordinal,
             principal=principal,
         )
     )
@@ -83,7 +310,7 @@ def create_or_resume_processing_claim(
     response_model=ProcessingClaimPageOut,
     openapi_extra={
         **operation_interface("client-only-primitive"),
-        **bounded_list_operation(paired_operation_id="stream_processing_claims"),
+        **bounded_list_operation(),
     },
 )
 def list_processing_claims(
@@ -108,35 +335,6 @@ def list_processing_claims(
 
 
 @router.get(
-    "/collection-processing-claims/stream",
-    response_class=CompleteEnumerationResponse,
-    openapi_extra={
-        **operation_interface("client-only-primitive"),
-        **complete_enumeration_operation(
-            paired_operation_id="list_processing_claims",
-            item_type=ProcessingClaimOut,
-            schema_id="riverhog.collection-processing-claim/v1",
-        ),
-    },
-)
-def stream_processing_claims(
-    container: ContainerDep,
-    principal: CollectionTransformController,
-    state: ClaimState | None = None,
-    sort: ProcessingClaimSort = "updated_at",
-    order: SortOrder = "desc",
-) -> Response:
-    return complete_enumeration_response(
-        container.collection_workflows.iter_claims(
-            state=state, sort=sort, order=order, principal=principal
-        ),
-        query={"state": state, "sort": sort, "order": order},
-        item_type=ProcessingClaimOut,
-        schema_id="riverhog.collection-processing-claim/v1",
-    )
-
-
-@router.get(
     "/collection-processing-claims/{claim_id}",
     response_model=ProcessingClaimOut,
     openapi_extra=operation_interface("client-only-primitive"),
@@ -144,7 +342,7 @@ def stream_processing_claims(
 def get_processing_claim(
     claim_id: ProcessingClaimId,
     container: ContainerDep,
-    principal: CollectionTransformController,
+    principal: CollectionTransformLeaseManager,
 ) -> ProcessingClaimOut:
     return ProcessingClaimOut.model_validate(
         container.collection_workflows.get_claim(claim_id, principal=principal)
@@ -234,11 +432,6 @@ def seal_processing_claim_plan(
             controller_evidence_sha256=request.controller_evidence_sha256,
             operation_id=request.operation.id,
             operation_sha256=request.operation.sha256,
-            input_artifacts=tuple(
-                CollectionArtifactIdentity.from_mapping(item.model_dump(mode="json"))
-                for item in request.input_artifacts
-            ),
-            output_tags=request.output_tags,
             retirement_policy=request.retirement_policy,
             retirement_grace_seconds=request.retirement_grace_seconds,
             principal=principal,
@@ -263,11 +456,196 @@ def create_transform_capability(
             fence=request.fence,
             audience=request.audience,
             actions=request.actions,
+            ttl_seconds=request.ttl_seconds,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/capabilities/{capability_id}/artifacts",
+    response_model=ArtifactReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def append_transform_capability_artifacts(
+    claim_id: ProcessingClaimId,
+    capability_id: str,
+    request: CollectionArtifactBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ArtifactReceivingSetOut:
+    return ArtifactReceivingSetOut.model_validate(
+        container.collection_workflows.append_capability_artifacts(
+            claim_id,
+            capability_id,
+            fence=request.fence,
+            start_ordinal=request.start_ordinal,
             artifacts=tuple(
                 CollectionArtifactIdentity.from_mapping(item.model_dump(mode="json"))
                 for item in request.artifacts
             ),
-            ttl_seconds=request.ttl_seconds,
+            principal=principal,
+        )
+    )
+
+
+@router.post(
+    "/collection-processing-claims/{claim_id}/capabilities/{capability_id}/artifacts/seal",
+    response_model=ArtifactReceivingSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def seal_transform_capability_artifacts(
+    claim_id: ProcessingClaimId,
+    capability_id: str,
+    request: ProcessingClaimFenceIn,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+) -> ArtifactReceivingSetOut:
+    return ArtifactReceivingSetOut.model_validate(
+        container.collection_workflows.seal_capability_artifacts(
+            claim_id,
+            capability_id,
+            fence=request.fence,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/derivation/dispositions",
+    response_model=ArtifactDispositionSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def record_processing_claim_dispositions(
+    claim_id: ProcessingClaimId,
+    request: ArtifactDispositionBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+) -> ArtifactDispositionSetOut:
+    return ArtifactDispositionSetOut.model_validate(
+        container.collection_workflows.record_dispositions(
+            claim_id,
+            fence=request.fence,
+            dispositions=tuple(
+                ArtifactDisposition.from_mapping(item.model_dump(mode="json", exclude_none=True))
+                for item in request.dispositions
+            ),
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/derivation/dispositions",
+    response_model=ArtifactDispositionPageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **bounded_list_operation(),
+    },
+)
+def list_processing_claim_dispositions(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> ArtifactDispositionPageOut:
+    return ArtifactDispositionPageOut.model_validate(
+        container.collection_workflows.list_dispositions(
+            claim_id,
+            authority_sha256=authority_sha256,
+            page=page,
+            per_page=per_page,
+            principal=principal,
+        )
+    )
+
+
+@router.put(
+    "/collection-processing-claims/{claim_id}/derivation/output-edges",
+    response_model=ArtifactDispositionSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def record_processing_claim_disposition_outputs(
+    claim_id: ProcessingClaimId,
+    request: ArtifactDispositionOutputBatchIn,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+) -> ArtifactDispositionSetOut:
+    return ArtifactDispositionSetOut.model_validate(
+        container.collection_workflows.record_disposition_outputs(
+            claim_id,
+            fence=request.fence,
+            outputs=tuple(
+                ArtifactDispositionOutput.from_mapping(item.model_dump(mode="json"))
+                for item in request.outputs
+            ),
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/derivation/output-edges",
+    response_model=ArtifactDispositionOutputPageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **bounded_list_operation(),
+    },
+)
+def list_processing_claim_disposition_outputs(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> ArtifactDispositionOutputPageOut:
+    return ArtifactDispositionOutputPageOut.model_validate(
+        container.collection_workflows.list_disposition_outputs(
+            claim_id,
+            authority_sha256=authority_sha256,
+            page=page,
+            per_page=per_page,
+            principal=principal,
+        )
+    )
+
+
+@router.post(
+    "/collection-processing-claims/{claim_id}/derivation/seal",
+    response_model=ArtifactDispositionSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def seal_processing_claim_dispositions(
+    claim_id: ProcessingClaimId,
+    request: ProcessingClaimFenceIn,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+) -> ArtifactDispositionSetOut:
+    return ArtifactDispositionSetOut.model_validate(
+        container.collection_workflows.seal_disposition_set(
+            claim_id,
+            fence=request.fence,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/derivation",
+    response_model=ArtifactDispositionSetOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def get_processing_claim_dispositions(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformLeaseManager,
+) -> ArtifactDispositionSetOut:
+    return ArtifactDispositionSetOut.model_validate(
+        container.collection_workflows.get_disposition_set(
+            claim_id,
             principal=principal,
         )
     )
@@ -313,12 +691,38 @@ def settle_processing_claim_outcomes(
         container.collection_workflows.settle_claim_outcomes(
             claim_id,
             fence=request.fence,
-            outcomes=tuple(
-                CollectionProcessingOutcomeIdentity.from_mapping(item.model_dump(mode="json"))
-                for item in request.outcomes
-            ),
             retirement_policy=request.retirement_policy,
             retirement_grace_seconds=request.retirement_grace_seconds,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/{claim_id}/outcomes",
+    response_model=ProcessingOutcomePageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **exact_authority_page_operation(
+            authority="processing-claim-outcomes",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
+    },
+)
+def list_processing_claim_outcomes(
+    claim_id: ProcessingClaimId,
+    container: ContainerDep,
+    principal: CollectionTransformController,
+    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
+) -> ProcessingOutcomePageOut:
+    return ProcessingOutcomePageOut.model_validate(
+        container.collection_workflows.list_claim_outcomes(
+            claim_id,
+            authority_sha256=authority_sha256,
+            start_ordinal=start_ordinal,
             principal=principal,
         )
     )

@@ -37,7 +37,6 @@ from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 
 pytestmark = pytest.mark.integration
@@ -106,12 +105,10 @@ def _services(
         SqlAlchemyCollectionUploadService(
             config,
             stores,
-            proof_stamper=FixtureProofStamper(),
         ),
         SqlAlchemyCollectionUploadService(
             config,
             stores,
-            proof_stamper=FixtureProofStamper(),
         ),
     )
 

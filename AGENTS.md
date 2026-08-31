@@ -18,7 +18,8 @@ generic; real identity and deployment topology belong downstream.
 - Default plaintext ingress to authenticated TLS. Permit plaintext HTTP only through an
   explicit operator opt-in for a trusted single-tenant LAN. Keep final archive and
   retrieval-cache objects encrypted whenever they leave a Riverhog process.
-- Preserve verified archive bytes, the encrypted manifest, and its proof together.
+- Preserve verified archive bytes, the encrypted canonical root, its bounded volume
+  authorities, authenticated terminator, and recovery descriptor together.
 - Preserve archive recovery without Riverhog or its database using standard tools;
   `riverhog/recovery` remains an independent reference implementation.
 - Treat catalog and object-store mutations as one archive mutation.

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +34,9 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     }
 
     class FakeClient:
-        @contextmanager
-        def stream_collection_provenance(
-            self, collection_id: int, **kwargs: Any
-        ) -> Iterator[Iterator[dict[str, Any]]]:
-            calls.append(("stream", (collection_id, kwargs)))
-            yield iter((shown,))
+        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
+            calls.append(("list", (collection_id, kwargs)))
+            return {"files": [shown], "page": 1, "pages": 1, "total": 1}
 
         def get_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
             calls.append(("show", (collection_id, path)))
@@ -63,21 +58,16 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
                 "items": [{"kind": "journal", "journal": shown["journal"]}],
             }
 
-        @contextmanager
-        def stream_collection_file_provenance_trace(
+        def download_collection_provenance_journal(
             self,
             collection_id: int,
-            path: str,
-        ) -> Iterator[Iterator[dict[str, Any]]]:
-            calls.append(("trace-stream", (collection_id, path)))
-            yield iter(({"kind": "journal", "journal": shown["journal"]},))
-
-        @contextmanager
-        def stream_collection_provenance_journal(
-            self, collection_id: int, journal_id: str
-        ) -> Iterator[Iterator[bytes]]:
+            journal_id: str,
+            *,
+            output: Path,
+        ) -> tuple[int, str]:
             calls.append(("export", (collection_id, journal_id)))
-            yield iter((JOURNAL,))
+            output.write_bytes(JOURNAL)
+            return len(JOURNAL), hashlib.sha256(JOURNAL).hexdigest()
 
         def request_collection_provenance_verification(self, collection_id: int) -> dict[str, Any]:
             calls.append(("verify", collection_id))
@@ -115,7 +105,6 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             "movie",
             "--status",
             "captured",
-            "--all",
             "--json",
         ],
     )
@@ -126,18 +115,6 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     traced = RUNNER.invoke(
         app,
         ["collection", "provenance", "trace", "41", "media/movie.mov", "--json"],
-    )
-    traced_all = RUNNER.invoke(
-        app,
-        [
-            "collection",
-            "provenance",
-            "trace",
-            "41",
-            "media/movie.mov",
-            "--all",
-            "--json",
-        ],
     )
     exported = RUNNER.invoke(
         app,
@@ -175,10 +152,6 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert json.loads(shown_result.stdout) == shown
     assert traced.exit_code == 0
     assert json.loads(traced.stdout)["items"] == [{"kind": "journal", "journal": shown["journal"]}]
-    assert traced_all.exit_code == 0
-    assert json.loads(traced_all.stdout)["items"] == [
-        {"kind": "journal", "journal": shown["journal"]}
-    ]
     assert exported.exit_code == 0
     assert output.read_bytes() == JOURNAL
     assert exported_json.exit_code == 0
@@ -194,10 +167,12 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert json.loads(verified.stdout)["result"]["valid"] is True
     assert calls == [
         (
-            "stream",
+            "list",
             (
                 41,
                 {
+                    "page": 1,
+                    "per_page": 25,
                     "q": "movie",
                     "status": "captured",
                     "sort": "path",
@@ -207,7 +182,6 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
         ),
         ("show", (41, "media/movie.mov")),
         ("trace", (41, "media/movie.mov", {"page": 1, "per_page": 25})),
-        ("trace-stream", (41, "media/movie.mov")),
         ("export", (41, JOURNAL_ID)),
         ("export", (41, JOURNAL_ID)),
         ("verify", 41),
@@ -226,23 +200,23 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
 
 def test_provenance_list_selectors_match_other_file_list_commands(monkeypatch) -> None:
     class FakeClient:
-        @contextmanager
-        def stream_collection_provenance(
-            self, collection_id: int, **kwargs: Any
-        ) -> Iterator[Iterator[dict[str, Any]]]:
+        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
             assert collection_id == 41
-            yield iter(
-                (
+            return {
+                "files": [
                     {"collection_id": 41, "path": "one.mov"},
                     {"collection_id": 41, "path": "nested/two.mov"},
-                )
-            )
+                ],
+                "page": 1,
+                "pages": 1,
+                "total": 2,
+            }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
     result = RUNNER.invoke(
         app,
-        ["collection", "provenance", "list", "41", "--all", "--selectors"],
+        ["collection", "provenance", "list", "41", "--selectors"],
     )
 
     assert result.exit_code == 0

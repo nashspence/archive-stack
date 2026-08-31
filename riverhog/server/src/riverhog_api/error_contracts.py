@@ -8,16 +8,17 @@ from collections.abc import Mapping
 RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
     "create_or_resume_collection_upload_session": frozenset({"conflict"}),
     "register_collection_upload_session_files": frozenset({"conflict", "not_found"}),
-    "put_collection_upload_session_provenance_journal": frozenset(
+    "create_collection_upload_session_provenance_journal": frozenset({"conflict", "not_found"}),
+    "append_collection_upload_session_provenance_journal": frozenset(
         {"conflict", "length_required", "not_found"}
     ),
-    "stream_collection_upload_session_provenance_journal": frozenset({"not_found"}),
+    "seal_collection_upload_session_provenance_journal": frozenset({"conflict", "not_found"}),
+    "get_collection_upload_session_provenance_journal": frozenset({"not_found"}),
     "list_collection_upload_session_files": frozenset({"not_found"}),
     "complete_collection_upload_session": frozenset({"conflict", "not_found"}),
     "cancel_collection_upload_session": frozenset({"conflict", "not_found"}),
     "get_collection_upload_session": frozenset({"not_found"}),
-    "list_collection_upload_session_volumes": frozenset({"not_found"}),
-    "get_collection_upload_session_volume": frozenset({"not_found"}),
+    "acquire_collection_upload_session_work": frozenset({"not_found"}),
     "get_collection_upload_session_unit": frozenset({"not_found"}),
     "put_collection_upload_session_unit": frozenset({"conflict", "length_required", "not_found"}),
     "get_collection": frozenset({"not_found"}),
@@ -61,13 +62,16 @@ RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
     "list_collection_provenance": frozenset({"invalid_state", "not_found"}),
     "get_collection_file_provenance": frozenset({"invalid_state", "not_found"}),
     "trace_collection_file_provenance": frozenset({"invalid_state", "not_found"}),
-    "stream_collection_provenance_journal": frozenset({"not_found"}),
+    "stream_collection_provenance_journal": frozenset(
+        {"bad_request", "not_found", "precondition_failed", "precondition_required"}
+    ),
     "list_collection_provenance_journal_agents": frozenset({"not_found"}),
-    "stream_collection_provenance_journal_agents": frozenset({"not_found"}),
     "request_collection_provenance_verification": frozenset({"not_found"}),
     "get_collection_provenance_verification": frozenset({"not_found"}),
     "cancel_collection_provenance_verification": frozenset({"not_found"}),
-    "stream_portable_collection_inventory": frozenset({"invalid_state", "not_found"}),
+    "get_portable_collection_inventory": frozenset(
+        {"not_found", "precondition_failed", "precondition_required"}
+    ),
     "create_or_resume_processing_claim": frozenset({"conflict", "invalid_state", "not_found"}),
     "list_processing_claims": frozenset({"invalid_state"}),
     "get_processing_claim": frozenset({"invalid_state", "not_found"}),
@@ -76,6 +80,14 @@ RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
     "abandon_processing_claim": frozenset({"conflict", "invalid_state", "not_found"}),
     "seal_processing_claim_plan": frozenset({"conflict", "invalid_state", "not_found"}),
     "create_transform_capability": frozenset({"conflict", "invalid_state", "not_found"}),
+    "record_processing_claim_dispositions": frozenset({"conflict", "invalid_state", "not_found"}),
+    "list_processing_claim_dispositions": frozenset({"conflict", "not_found"}),
+    "record_processing_claim_disposition_outputs": frozenset(
+        {"conflict", "invalid_state", "not_found"}
+    ),
+    "list_processing_claim_disposition_outputs": frozenset({"conflict", "not_found"}),
+    "seal_processing_claim_dispositions": frozenset({"conflict", "invalid_state", "not_found"}),
+    "get_processing_claim_dispositions": frozenset({"not_found"}),
     "settle_processing_claim": frozenset({"conflict", "invalid_state", "not_found"}),
     "settle_processing_claim_outcomes": frozenset({"conflict", "invalid_state", "not_found"}),
     "begin_processing_claim_retirement": frozenset({"conflict", "invalid_state", "not_found"}),

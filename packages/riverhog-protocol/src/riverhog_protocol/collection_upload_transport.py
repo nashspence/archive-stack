@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from typing import Annotated, Literal, Self
 
@@ -22,6 +23,7 @@ from riverhog_provenance_contracts import (
 
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    canonical_json_bytes,
     canonical_json_sha256,
 )
 from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
@@ -30,19 +32,26 @@ from riverhog_protocol.paths import (
     normalize_relpath,
     validate_collection_id,
 )
-from riverhog_protocol.raw_ingress import RawSourceDigestManifest
-from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
+from riverhog_protocol.raw_ingress import (
+    RAW_SOURCE_DIGEST_BATCH_MAX,
+    RawSourceDigestSummary,
+)
+from riverhog_protocol.transport import (
+    COLLECTION_UPLOAD_FILE_BATCH_MAX,
+    COLLECTION_UPLOAD_UNIT_SOURCE_MAX,
+    COLLECTION_UPLOAD_WORK_BATCH_MAX,
+)
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 CollectionUploadVolumeId = Annotated[
     str,
-    StringConstraints(pattern=r"^(?:pack|segment)-[0-9]{12}$"),
+    StringConstraints(pattern=r"^(?:pack|segment)-[0-9a-f]{64}$"),
 ]
 CollectionUploadUnitNumber = Annotated[int, Field(ge=0)]
 CollectionUploadCustodyMode = Literal["producer-retained", "custody-transfer"]
 CollectionUploadVolumeKind = Literal["pack", "segment"]
-CollectionUploadVolumeState = Literal["planned", "uploading", "sealed"]
 CollectionUploadUnitState = Literal["pending", "committed"]
+CollectionUploadProvenanceJournalState = Literal["accepting", "validating", "sealed", "failed"]
 
 
 def collection_upload_path_order_key(path: str) -> tuple[int, bytes]:
@@ -80,7 +89,83 @@ FileProvenanceBinding = Annotated[
 
 class CollectionUploadRawPartsIn(CollectionUploadDocument):
     part_plaintext_bytes: int = Field(ge=65536)
-    sha256s: list[Sha256] = Field(min_length=1)
+    part_count: int = Field(ge=1, strict=True)
+    ordered_sha256: Sha256
+
+
+class CollectionUploadRawDigestBatchDocument(CollectionUploadDocument):
+    """One append-only bounded slice of a registered raw source digest sequence."""
+
+    path: str
+    first_part: int = Field(ge=0, strict=True)
+    sha256s: list[Sha256] = Field(
+        min_length=1,
+        max_length=RAW_SOURCE_DIGEST_BATCH_MAX,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def canonical_path(cls, value: str) -> str:
+        return normalize_relpath(value)
+
+
+class CollectionUploadRawDigestProgressDocument(CollectionUploadDocument):
+    path: str
+    accepted_parts: int = Field(ge=0, strict=True)
+    expected_parts: int = Field(ge=1, strict=True)
+    complete: bool
+
+    @field_validator("path")
+    @classmethod
+    def canonical_path(cls, value: str) -> str:
+        return normalize_relpath(value)
+
+    @model_validator(mode="after")
+    def validate_completion(self) -> Self:
+        if self.accepted_parts > self.expected_parts:
+            raise ValueError("accepted raw digests exceed the registered part count")
+        if self.complete != (self.accepted_parts == self.expected_parts):
+            raise ValueError("raw digest completion differs from its exact counts")
+        return self
+
+
+class CollectionUploadProvenanceJournalCreateDocument(CollectionUploadDocument):
+    bytes: int = Field(ge=1, strict=True)
+    sha256: Sha256
+
+
+class CollectionUploadProvenanceJournalStatusDocument(CollectionUploadDocument):
+    journal_id: ProvenanceJournalId
+    state: CollectionUploadProvenanceJournalState
+    bytes: int = Field(ge=1, strict=True)
+    sha256: Sha256
+    accepted_bytes: int = Field(ge=0, strict=True)
+    failure: str | None = None
+    current_state_id: ProvenanceStateId | None = None
+    current_path: str | None = None
+    current_bytes: int | None = Field(default=None, ge=0, strict=True)
+    current_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> Self:
+        if self.accepted_bytes > self.bytes:
+            raise ValueError("accepted provenance bytes exceed the declared authority")
+        if self.state in {"validating", "sealed"} and self.accepted_bytes != self.bytes:
+            raise ValueError("closed provenance content is incomplete")
+        summary = (
+            self.current_state_id,
+            self.current_path,
+            self.current_bytes,
+            self.current_sha256,
+        )
+        if self.state == "sealed":
+            if any(value is None for value in summary) or self.failure is not None:
+                raise ValueError("sealed provenance journal requires its current state")
+        elif any(value is not None for value in summary):
+            raise ValueError("unsealed provenance journal cannot expose a current state")
+        if (self.state == "failed") != (self.failure is not None):
+            raise ValueError("provenance journal failure differs from its state")
+        return self
 
 
 class CollectionUploadRegistrationConstraintsDocument(CollectionUploadDocument):
@@ -110,7 +195,9 @@ class CollectionUploadUnitDocument(CollectionUploadDocument):
     unit: CollectionUploadUnitNumber
     payload_bytes: int = Field(ge=0, strict=True)
     plaintext_bytes: int = Field(ge=0, strict=True)
-    sources: Sequence[CollectionUploadUnitSourceDocument]
+    sources: list[CollectionUploadUnitSourceDocument] = Field(
+        max_length=COLLECTION_UPLOAD_UNIT_SOURCE_MAX
+    )
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:
@@ -132,27 +219,10 @@ class CollectionUploadVolumeSummaryDocument(CollectionUploadDocument):
     @model_validator(mode="after")
     def validate_volume_identity(self) -> Self:
         expected_prefix = "pack" if self.kind == "pack" else "segment"
-        if self.volume_id != f"{expected_prefix}-{self.sequence:012d}":
+        if self.sequence >= 1 << 256:
+            raise ValueError("upload volume sequence exceeds its v1 representation")
+        if self.volume_id != f"{expected_prefix}-{self.sequence:064x}":
             raise ValueError("upload volume ID differs from its kind and sequence")
-        return self
-
-
-class CollectionUploadVolumeDocument(CollectionUploadVolumeSummaryDocument):
-    """Protocol-owned identity and complete unit plan for one archive volume."""
-
-    plan_sha256: Sha256
-    plaintext_bytes: int = Field(ge=0, strict=True)
-    source_bytes: int = Field(ge=0, strict=True)
-    units: Sequence[CollectionUploadUnitDocument] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_volume_plan(self) -> Self:
-        if [unit.unit for unit in self.units] != list(range(len(self.units))):
-            raise ValueError("upload volume units must be consecutive from zero")
-        if sum(unit.plaintext_bytes for unit in self.units) != self.plaintext_bytes:
-            raise ValueError("upload volume unit plaintext bytes differ from its total")
-        if sum(unit.payload_bytes for unit in self.units) != self.source_bytes:
-            raise ValueError("upload volume unit payload bytes differ from its source total")
         return self
 
 
@@ -162,29 +232,24 @@ class CollectionUploadUnitWorkDocument(CollectionUploadUnitDocument):
     state: CollectionUploadUnitState
 
 
-class CollectionUploadVolumeWorkDocument(CollectionUploadVolumeDocument):
-    """One exact volume plan and its durable construction state."""
+class CollectionUploadUnitAssignmentDocument(CollectionUploadDocument):
+    """One bounded, immutable unit offered by an exact upload session."""
 
-    state: CollectionUploadVolumeState
-    units: Sequence[CollectionUploadUnitWorkDocument] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_work_state(self) -> Self:
-        committed = sum(unit.state == "committed" for unit in self.units)
-        if self.state == "planned" and committed != 0:
-            raise ValueError("planned upload volumes cannot contain committed units")
-        if self.state == "uploading" and committed == len(self.units):
-            raise ValueError("uploading volumes must contain a pending unit")
-        if self.state == "sealed" and committed != len(self.units):
-            raise ValueError("upload volume state differs from its unit checkpoints")
-        return self
+    volume: CollectionUploadVolumeSummaryDocument
+    plan_sha256: Sha256
+    unit: CollectionUploadUnitWorkDocument
 
 
-class CollectionUploadVolumeSetDocument(CollectionUploadDocument):
-    """Complete canonically ordered upload work for one collection session."""
+class CollectionUploadWorkBatchDocument(CollectionUploadDocument):
+    """A bounded acquisition step over currently actionable upload units."""
 
     collection_id: CollectionId
-    volumes: Sequence[CollectionUploadVolumeWorkDocument]
+    planning_complete: bool
+    complete: bool
+    committed_payload_bytes: int = Field(ge=0, strict=True)
+    work: list[CollectionUploadUnitAssignmentDocument] = Field(
+        max_length=COLLECTION_UPLOAD_WORK_BATCH_MAX
+    )
 
     @field_validator("collection_id")
     @classmethod
@@ -192,19 +257,18 @@ class CollectionUploadVolumeSetDocument(CollectionUploadDocument):
         return validate_collection_id(value)
 
     @model_validator(mode="after")
-    def validate_complete_volume_set(self) -> Self:
-        sequences = [item.sequence for item in self.volumes]
-        identities = [item.volume_id for item in self.volumes]
-        if sequences != list(range(len(self.volumes))):
-            raise ValueError("upload volumes must be consecutive from sequence zero")
+    def validate_completion(self) -> Self:
+        if self.complete != (self.planning_complete and not self.work):
+            raise ValueError("upload work completion differs from planning and actionable work")
+        identities = [(item.volume.volume_id, item.unit.unit) for item in self.work]
         if len(identities) != len(set(identities)):
-            raise ValueError("upload volume IDs must be unique")
+            raise ValueError("upload work assignments must be unique")
         return self
 
 
 class CollectionUploadFileIn(ImmutableFileIdentityDocument):
     raw_parts: CollectionUploadRawPartsIn | None = None
-    provenance: FileProvenanceBinding
+    provenance: FileProvenanceBinding | None = None
 
 
 class CollectionUploadFileBatchDocument(CollectionUploadDocument):
@@ -239,7 +303,8 @@ class CollectionUploadArtifactCustodyReceiptDocument(CollectionUploadDocument):
     path: str
     bytes: int = Field(ge=0, strict=True)
     sha256: Sha256
-    archive_objects: tuple[CollectionUploadCustodyObjectDocument, ...] = Field(min_length=1)
+    archive_object_count: int = Field(ge=1, strict=True)
+    archive_object_set_sha256: Sha256
     receipt_sha256: Sha256
 
     @field_validator("collection_id")
@@ -254,9 +319,6 @@ class CollectionUploadArtifactCustodyReceiptDocument(CollectionUploadDocument):
 
     @model_validator(mode="after")
     def validate_receipt(self) -> Self:
-        object_ids = [item.volume_id for item in self.archive_objects]
-        if object_ids != sorted(set(object_ids)):
-            raise ValueError("custody receipt archive objects must be unique and ordered")
         payload = self.model_dump(mode="json", exclude={"receipt_sha256"})
         if canonical_json_sha256(payload) != self.receipt_sha256:
             raise ValueError("artifact custody receipt identity differs from its payload")
@@ -270,15 +332,29 @@ class CollectionUploadArtifactCustodyReceiptDocument(CollectionUploadDocument):
         path: str,
         bytes: int,
         sha256: str,
-        archive_objects: tuple[CollectionUploadCustodyObjectDocument, ...],
+        archive_objects: Sequence[CollectionUploadCustodyObjectDocument],
     ) -> CollectionUploadArtifactCustodyReceiptDocument:
+        digest = hashlib.sha256()
+        count = 0
+        previous: str | None = None
+        for item in archive_objects:
+            if previous is not None and item.volume_id <= previous:
+                raise ValueError("custody receipt archive objects must be unique and ordered")
+            encoded = canonical_json_bytes(item.model_dump(mode="json"))
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+            previous = item.volume_id
+            count += 1
+        if count < 1:
+            raise ValueError("custody receipt requires at least one archive object")
         payload = {
             "format": "riverhog-artifact-custody-receipt/v1",
             "collection_id": collection_id,
             "path": path,
             "bytes": bytes,
             "sha256": sha256,
-            "archive_objects": [item.model_dump(mode="json") for item in archive_objects],
+            "archive_object_count": count,
+            "archive_object_set_sha256": digest.hexdigest(),
         }
         return cls(
             format="riverhog-artifact-custody-receipt/v1",
@@ -286,7 +362,8 @@ class CollectionUploadArtifactCustodyReceiptDocument(CollectionUploadDocument):
             path=path,
             bytes=bytes,
             sha256=sha256,
-            archive_objects=archive_objects,
+            archive_object_count=count,
+            archive_object_set_sha256=digest.hexdigest(),
             receipt_sha256=canonical_json_sha256(payload),
         )
 
@@ -316,15 +393,15 @@ def validate_collection_upload_batch_against_registration_constraints(
     """Validate registration identities against server-issued constraints."""
 
     for item in batch.files:
-        collection_upload_raw_digest_manifest(item, constraints)
+        collection_upload_raw_digest_summary(item, constraints)
     return batch
 
 
-def collection_upload_raw_digest_manifest(
+def collection_upload_raw_digest_summary(
     item: CollectionUploadFileIn,
     constraints: CollectionUploadRegistrationConstraintsDocument,
-) -> RawSourceDigestManifest | None:
-    """Return the raw manifest required by the session constraints for one file."""
+) -> RawSourceDigestSummary | None:
+    """Return the bounded raw digest authority required for one large file."""
 
     raw = item.raw_parts
     if item.bytes < constraints.pack_member_bytes:
@@ -335,12 +412,13 @@ def collection_upload_raw_digest_manifest(
         raise ValueError(f"raw part digests are required for large file: {item.path}")
     if raw.part_plaintext_bytes != constraints.raw_part_plaintext_bytes:
         raise ValueError(f"raw part digest policy does not match the session: {item.path}")
-    return RawSourceDigestManifest(
+    return RawSourceDigestSummary(
         path=item.path,
         bytes=item.bytes,
         sha256=item.sha256,
         part_plaintext_bytes=raw.part_plaintext_bytes,
-        part_sha256s=tuple(raw.sha256s),
+        part_count=raw.part_count,
+        ordered_part_sha256=raw.ordered_sha256,
     )
 
 
@@ -352,22 +430,25 @@ __all__ = [
     "CollectionUploadCustodyMode",
     "CollectionUploadCustodyObjectDocument",
     "CollectionUploadRegistrationConstraintsDocument",
+    "CollectionUploadRawDigestBatchDocument",
+    "CollectionUploadRawDigestProgressDocument",
     "CollectionUploadRawPartsIn",
+    "CollectionUploadProvenanceJournalCreateDocument",
+    "CollectionUploadProvenanceJournalState",
+    "CollectionUploadProvenanceJournalStatusDocument",
     "CollectionUploadUnitDocument",
+    "CollectionUploadUnitAssignmentDocument",
     "CollectionUploadUnitNumber",
     "CollectionUploadUnitSourceDocument",
     "CollectionUploadUnitState",
     "CollectionUploadUnitWorkDocument",
-    "CollectionUploadVolumeDocument",
+    "CollectionUploadWorkBatchDocument",
     "CollectionUploadVolumeId",
     "CollectionUploadVolumeKind",
-    "CollectionUploadVolumeSetDocument",
-    "CollectionUploadVolumeState",
     "CollectionUploadVolumeSummaryDocument",
-    "CollectionUploadVolumeWorkDocument",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
-    "collection_upload_raw_digest_manifest",
+    "collection_upload_raw_digest_summary",
     "collection_upload_path_order_key",
     "validate_collection_upload_artifact_custody_receipt",
     "validate_collection_upload_batch_against_registration_constraints",

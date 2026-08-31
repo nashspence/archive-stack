@@ -71,7 +71,7 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
     assert plan["status"] == "ready"
     target = cast(dict[str, object], plan["target_copy"])
     retained = cast(list[dict[str, object]], plan["retained_copies"])
-    assert target["object_count"] == 4
+    assert target["object_count"] == 5
     assert [current["store"] for current in retained] == ["b2"]
     assert plan["retired_retrieval_job_count"] == 0
     assert plan["challenge"]
@@ -110,7 +110,13 @@ def test_retirement_verifies_a_retained_copy_then_deletes_every_target_object(
 
     assert result["status"] == "retired"
     assert result["verified_store"] == "b2"
-    expected = ("pack-000000000000", "manifest", "recovery-descriptor", "proof")
+    expected = (
+        "pack-" + "0" * 64,
+        "volume-metadata-" + "0" * 64,
+        "volume-terminal-" + "0" * 63 + "1",
+        "manifest",
+        "recovery-descriptor",
+    )
     assert b2_store.verified == [expected]
     assert deep_store.deleted == [expected]
     with session_scope(make_session_factory(config.database_url)) as session:

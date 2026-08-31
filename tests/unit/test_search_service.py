@@ -12,6 +12,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
+from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
@@ -35,6 +36,7 @@ def _seed(path: Path) -> None:
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
+                tag_set_identity=tag_set_identity(("docs",)),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,

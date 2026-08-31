@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
@@ -25,7 +27,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.list_controls import ClaimState, ProcessingClaimSort, SortOrder
-from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag, CollectionId, normalize_tag
+from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag, CollectionId
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 ProcessingClaimId = SHA256
@@ -38,6 +40,8 @@ CapabilityAction = Literal["read-inputs", "write-output"]
 
 WORK_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
 CONTROLLER_EVIDENCE_MAX_BYTES = 16 * 1024 * 1024
+DISPOSITION_BATCH_MAX = 128
+WORKFLOW_SET_BATCH_MAX = 128
 
 
 class RiverhogWorkflowDocument(BaseModel):
@@ -87,6 +91,123 @@ class CollectionArtifactIdentityDocument(RiverhogWorkflowDocument):
     def validate_identity(self) -> Self:
         CollectionArtifactIdentity.from_mapping(self.model_dump(mode="json"))
         return self
+
+
+class ExactSetAuthorityDocument(RiverhogWorkflowDocument):
+    """Small immutable identity for an exact canonically ordered logical set."""
+
+    count: int = Field(ge=1)
+    sha256: SHA256
+
+
+class ArtifactSetAuthorityDocument(ExactSetAuthorityDocument):
+    total_bytes: int = Field(ge=0)
+
+
+class ReceivingSetDocument(RiverhogWorkflowDocument):
+    state: Literal["receiving", "sealed"]
+    count: int = Field(ge=0)
+    authority: ExactSetAuthorityDocument | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealed") != (self.authority is not None):
+            raise ValueError("set authority is inconsistent with state")
+        if self.authority is not None and self.authority.count != self.count:
+            raise ValueError("set authority count differs from staged count")
+        return self
+
+
+class OutcomeSetDocument(RiverhogWorkflowDocument):
+    state: Literal["receiving", "sealing", "sealed", "failed"]
+    count: int = Field(ge=0)
+    authority: ExactSetAuthorityDocument | None = None
+    failure: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealed") != (self.authority is not None):
+            raise ValueError("outcome authority is inconsistent with state")
+        if (self.state == "failed") != (self.failure is not None):
+            raise ValueError("outcome failure is inconsistent with state")
+        if self.authority is not None and self.authority.count != self.count:
+            raise ValueError("outcome authority count differs from staged count")
+        return self
+
+
+class ArtifactReceivingSetDocument(RiverhogWorkflowDocument):
+    state: Literal["receiving", "sealed"]
+    count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    authority: ArtifactSetAuthorityDocument | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealed") != (self.authority is not None):
+            raise ValueError("artifact authority is inconsistent with state")
+        if self.authority is not None and (
+            self.authority.count != self.count or self.authority.total_bytes != self.total_bytes
+        ):
+            raise ValueError("artifact authority totals differ from staged totals")
+        return self
+
+
+class CollectionRootBatchDocument(RiverhogWorkflowDocument):
+    fence: int = Field(ge=1)
+    start_ordinal: int = Field(ge=0)
+    inputs: list[CollectionRootIdentityDocument] = Field(
+        min_length=1,
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+
+class CollectionRootPageDocument(RiverhogWorkflowDocument):
+    authority: ExactSetAuthorityDocument
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    inputs: list[CollectionRootIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+
+
+class CollectionArtifactBatchDocument(RiverhogWorkflowDocument):
+    fence: int = Field(ge=1)
+    start_ordinal: int = Field(ge=0)
+    artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        min_length=1,
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+
+class CollectionArtifactPageDocument(RiverhogWorkflowDocument):
+    authority: ArtifactSetAuthorityDocument
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    artifacts: list[CollectionArtifactIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+
+
+class OutputTagBatchDocument(RiverhogWorkflowDocument):
+    fence: int = Field(ge=1)
+    start_ordinal: int = Field(ge=0)
+    tags: list[CanonicalTag] = Field(
+        min_length=1,
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+
+class OutputTagPageDocument(RiverhogWorkflowDocument):
+    authority: ExactSetAuthorityDocument
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    tags: list[CanonicalTag] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+
+
+class ProcessingOutcomePageDocument(RiverhogWorkflowDocument):
+    authority: ExactSetAuthorityDocument
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
 
 
 class OperationIdentityDocument(RiverhogWorkflowDocument):
@@ -139,23 +260,13 @@ class ArtifactDispositionDocument(RiverhogWorkflowDocument):
             "oneOf": [
                 {
                     "properties": {
-                        "status": {"const": "transformed"},
-                        "outputs": {"minItems": 1},
-                        "failure": {"type": "null"},
-                    },
-                    "required": ["outputs"],
-                },
-                {
-                    "properties": {
-                        "status": {"const": "preserved"},
-                        "outputs": {"maxItems": 0},
+                        "status": {"enum": ["transformed", "preserved"]},
                         "failure": {"type": "null"},
                     }
                 },
                 {
                     "properties": {
                         "status": {"enum": ["omitted", "rejected"]},
-                        "outputs": {"maxItems": 0},
                         "failure": {"type": "object"},
                     },
                     "required": ["failure"],
@@ -166,16 +277,94 @@ class ArtifactDispositionDocument(RiverhogWorkflowDocument):
 
     input: ArtifactDispositionInputDocument
     status: Literal["transformed", "preserved", "omitted", "rejected"]
-    outputs: list[CanonicalRelPath] = Field(
-        default_factory=list,
-        json_schema_extra={"uniqueItems": True},
-    )
     failure: ArtifactDispositionFailureDocument | None = None
 
     @model_validator(mode="after")
     def validate_disposition(self) -> Self:
         ArtifactDisposition.from_mapping(self.model_dump(mode="json", exclude_none=True))
         return self
+
+
+class ArtifactDispositionOutputDocument(RiverhogWorkflowDocument):
+    input: ArtifactDispositionInputDocument
+    output_path: CanonicalRelPath
+
+    @model_validator(mode="after")
+    def validate_output(self) -> Self:
+        ArtifactDispositionOutput.from_mapping(self.model_dump(mode="json"))
+        return self
+
+
+class ArtifactDispositionBatchDocument(RiverhogWorkflowDocument):
+    fence: int = Field(ge=1)
+    dispositions: list[ArtifactDispositionDocument] = Field(
+        min_length=1,
+        max_length=DISPOSITION_BATCH_MAX,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+
+class ArtifactDispositionOutputBatchDocument(RiverhogWorkflowDocument):
+    fence: int = Field(ge=1)
+    outputs: list[ArtifactDispositionOutputDocument] = Field(
+        min_length=1,
+        max_length=DISPOSITION_BATCH_MAX,
+        json_schema_extra={"uniqueItems": True},
+    )
+
+
+class ArtifactDispositionSetIdentityDocument(RiverhogWorkflowDocument):
+    disposition_count: int = Field(ge=1)
+    output_edge_count: int = Field(ge=1)
+    output_artifact_count: int = Field(ge=1)
+    sha256: SHA256
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> Self:
+        ArtifactDispositionSetIdentity.from_mapping(self.model_dump(mode="json"))
+        return self
+
+
+class ArtifactDispositionSetDocument(RiverhogWorkflowDocument):
+    claim_id: ProcessingClaimId
+    state: Literal["receiving", "sealing", "sealed", "failed"]
+    disposition_count: int = Field(ge=0)
+    output_edge_count: int = Field(ge=0)
+    output_artifact_count: int = Field(ge=0)
+    identity: ArtifactDispositionSetIdentityDocument | None = None
+    failure: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealed") != (self.identity is not None):
+            raise ValueError("sealed disposition set identity is inconsistent with state")
+        if (self.state == "failed") != (self.failure is not None):
+            raise ValueError("disposition set failure is inconsistent with state")
+        if self.identity is not None and (
+            self.disposition_count != self.identity.disposition_count
+            or self.output_edge_count != self.identity.output_edge_count
+            or self.output_artifact_count != self.identity.output_artifact_count
+        ):
+            raise ValueError("disposition set counts differ from its sealed identity")
+        return self
+
+
+class ArtifactDispositionPageDocument(RiverhogWorkflowDocument):
+    authority: ArtifactDispositionSetIdentityDocument
+    page: int = Field(ge=1)
+    per_page: int = Field(ge=1, le=100)
+    total: int = Field(ge=1)
+    pages: int = Field(ge=1)
+    dispositions: list[ArtifactDispositionDocument] = Field(max_length=100)
+
+
+class ArtifactDispositionOutputPageDocument(RiverhogWorkflowDocument):
+    authority: ArtifactDispositionSetIdentityDocument
+    page: int = Field(ge=1)
+    per_page: int = Field(ge=1, le=100)
+    total: int = Field(ge=1)
+    pages: int = Field(ge=1)
+    outputs: list[ArtifactDispositionOutputDocument] = Field(max_length=100)
 
 
 class ClaimFenceDocument(RiverhogWorkflowDocument):
@@ -189,22 +378,14 @@ class CollectionDerivationDocument(RiverhogWorkflowDocument):
     claim: ClaimFenceDocument
     recipe: RecipeIdentityDocument
     operation: OperationIdentityDocument
-    inputs: list[CollectionRootIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
-    output_tags: list[CanonicalTag] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
+    input_set_sha256: SHA256
+    artifact_set_sha256: SHA256
+    output_tag_set_sha256: SHA256
     execution_envelope_sha256: SHA256
     execution_sha256: SHA256
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
-    dispositions: list[ArtifactDispositionDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
+    disposition_set: ArtifactDispositionSetIdentityDocument
 
     @model_validator(mode="after")
     def validate_derivation(self) -> Self:
@@ -222,23 +403,11 @@ class ProcessingClaimCreateDocument(RiverhogWorkflowDocument):
     work_id: SHA256
     work_document: dict[str, Any]
     work_document_sha256: SHA256
-    inputs: list[CollectionRootIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
     lease_seconds: int = Field(default=1800, ge=30, le=86400)
     purpose: str = Field(default="collection-work/v1", min_length=1, max_length=160)
 
     @model_validator(mode="after")
     def validate_claim(self) -> Self:
-        roots = tuple(
-            CollectionRootIdentity.from_mapping(item.model_dump(mode="json"))
-            for item in self.inputs
-        )
-        if roots != tuple(sorted(roots)) or len({item.collection_id for item in roots}) != len(
-            roots
-        ):
-            raise ValueError("input collection roots must be unique and canonically ordered")
         _validate_opaque_document(
             self.work_document,
             self.work_document_sha256,
@@ -270,14 +439,6 @@ class ProcessingClaimPlanSealDocument(RiverhogWorkflowDocument):
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
-    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
-    output_tags: list[CanonicalTag] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
 
@@ -289,18 +450,6 @@ class ProcessingClaimPlanSealDocument(RiverhogWorkflowDocument):
             label="controller evidence",
             maximum_bytes=CONTROLLER_EVIDENCE_MAX_BYTES,
         )
-        artifacts = tuple(
-            CollectionArtifactIdentity.from_mapping(item.model_dump(mode="json"))
-            for item in self.input_artifacts
-        )
-        keys = [(item.collection.collection_id, item.path) for item in artifacts]
-        if len(keys) != len(set(keys)):
-            raise ValueError("exact artifact scope must not repeat a collection file")
-        normalized_tags = tuple(sorted(normalize_tag(item) for item in self.output_tags))
-        if tuple(self.output_tags) != normalized_tags or len(normalized_tags) != len(
-            set(normalized_tags)
-        ):
-            raise ValueError("output tags must be nonempty, unique, and canonical")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
             raise ValueError("retained collection work cannot declare retirement grace")
         return self
@@ -323,10 +472,6 @@ class TransformCapabilityCreateDocument(RiverhogWorkflowDocument):
             ]
         },
     )
-    artifacts: list[CollectionArtifactIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
     ttl_seconds: int = Field(default=900, ge=30, le=86400)
 
     @model_validator(mode="after")
@@ -337,13 +482,6 @@ class TransformCapabilityCreateDocument(RiverhogWorkflowDocument):
             )
         if self.actions != sorted(set(self.actions)):
             raise ValueError("capability actions must be unique and canonically ordered")
-        artifacts = [
-            CollectionArtifactIdentity.from_mapping(item.model_dump(mode="json"))
-            for item in self.artifacts
-        ]
-        keys = [(item.collection.collection_id, item.path) for item in artifacts]
-        if len(keys) != len(set(keys)):
-            raise ValueError("capability artifact scope must be exact and unique")
         return self
 
 
@@ -369,26 +507,11 @@ class ProcessingClaimOutcomesSettleDocument(RiverhogWorkflowDocument):
     )
 
     fence: int = Field(ge=1)
-    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_outcomes(self) -> Self:
-        outcomes = tuple(
-            CollectionProcessingOutcomeIdentity.from_mapping(item.model_dump(mode="json"))
-            for item in self.outcomes
-        )
-        if outcomes != tuple(sorted(outcomes)):
-            raise ValueError("processing outcomes must be canonically ordered")
-        ids = [item.outcome_id for item in outcomes]
-        claims = [item.source_claim_id for item in outcomes]
-        collections = [item.output_collection.collection_id for item in outcomes]
-        if any(len(values) != len(set(values)) for values in (ids, claims, collections)):
-            raise ValueError("processing outcomes must be exact and unique")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
             raise ValueError("retained collection work cannot declare retirement grace")
         return self
@@ -419,14 +542,9 @@ class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
-    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
-    output_tags: list[CanonicalTag] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
+    inputs: ExactSetAuthorityDocument
+    artifacts: ArtifactSetAuthorityDocument
+    output_tags: ExactSetAuthorityDocument
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
     sealed_at: Timestamp
@@ -439,8 +557,6 @@ class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
             controller_evidence=self.controller_evidence,
             controller_evidence_sha256=self.controller_evidence_sha256,
             operation=self.operation,
-            input_artifacts=self.input_artifacts,
-            output_tags=self.output_tags,
             retirement_policy=self.retirement_policy,
             retirement_grace_seconds=self.retirement_grace_seconds,
         )
@@ -455,7 +571,7 @@ class ProcessingClaimOutcomeSettlementDocument(RiverhogWorkflowDocument):
         }
     )
 
-    outcomes_sha256: SHA256
+    outcomes: ExactSetAuthorityDocument
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
 
@@ -476,7 +592,7 @@ class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
                     "properties": {
                         "execution_id": {"type": "string"},
                         "output_collection_id": {"type": "integer"},
-                        "outcomes_sha256": {"type": "null"},
+                        "outcomes": {"type": "null"},
                     },
                     "required": ["execution_id", "output_collection_id"],
                 },
@@ -484,9 +600,9 @@ class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
                     "properties": {
                         "execution_id": {"type": "null"},
                         "output_collection_id": {"type": "null"},
-                        "outcomes_sha256": {"type": "string"},
+                        "outcomes": {"type": "object"},
                     },
-                    "required": ["outcomes_sha256"],
+                    "required": ["outcomes"],
                 },
             ]
         }
@@ -497,15 +613,15 @@ class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
     work_id: SHA256
     execution_id: SHA256 | None = None
     output_collection_id: CollectionId | None = None
-    outcomes_sha256: SHA256 | None = None
+    outcomes: ExactSetAuthorityDocument | None = None
 
     @model_validator(mode="after")
     def validate_settlement_form(self) -> Self:
         direct = self.execution_id is not None and self.output_collection_id is not None
-        delegated = self.outcomes_sha256 is not None
+        delegated = self.outcomes is not None
         if direct == delegated:
             raise ValueError("retirement claim must identify one direct or delegated settlement")
-        if direct and self.outcomes_sha256 is not None:
+        if direct and self.outcomes is not None:
             raise ValueError("direct retirement claims cannot identify delegated outcomes")
         if delegated and (self.execution_id is not None or self.output_collection_id is not None):
             raise ValueError("delegated retirement claims cannot identify a direct output")
@@ -519,41 +635,19 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
                 {
                     "if": {"properties": {"state": {"enum": ["settled", "retiring", "released"]}}},
                     "then": {
+                        "required": ["settled_at"],
                         "properties": {"settled_at": {"type": "string"}},
-                        "oneOf": [
-                            {
-                                "properties": {
-                                    "plan": {"type": "object"},
-                                    "output_collection_id": {"type": "integer"},
-                                    "outcomes": {"maxItems": 0},
-                                    "outcome_settlement": {"type": "null"},
-                                }
-                            },
-                            {
-                                "properties": {
-                                    "plan": {"type": "null"},
-                                    "output_collection_id": {"type": "null"},
-                                    "outcomes": {"minItems": 1},
-                                    "outcome_settlement": {"type": "object"},
-                                }
-                            },
-                        ],
                     },
-                    "else": {
-                        "properties": {
-                            "settled_at": {"type": "null"},
-                            "output_collection_id": {"type": "null"},
-                            "outcome_settlement": {"type": "null"},
-                        }
-                    },
+                    "else": {"properties": {"settled_at": {"type": "null"}}},
                 },
                 {
                     "if": {"properties": {"state": {"const": "abandoned"}}},
                     "then": {
+                        "required": ["abandoned_at", "abandonment_reason"],
                         "properties": {
                             "abandoned_at": {"type": "string"},
                             "abandonment_reason": {"type": "string"},
-                        }
+                        },
                     },
                     "else": {
                         "properties": {
@@ -564,17 +658,11 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
                 },
                 {
                     "if": {"properties": {"state": {"const": "released"}}},
-                    "then": {"properties": {"released_at": {"type": "string"}}},
+                    "then": {
+                        "required": ["released_at"],
+                        "properties": {"released_at": {"type": "string"}},
+                    },
                     "else": {"properties": {"released_at": {"type": "null"}}},
-                },
-                {
-                    "not": {
-                        "properties": {
-                            "plan": {"type": "object"},
-                            "outcomes": {"minItems": 1},
-                        },
-                        "required": ["plan", "outcomes"],
-                    }
                 },
             ]
         }
@@ -597,15 +685,9 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
     output_collection_id: CollectionId | None = None
     work_document: dict[str, Any]
     work_document_sha256: SHA256
-    inputs: list[CollectionRootIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
+    inputs: ReceivingSetDocument
     plan: ProcessingClaimPlanDocument | None = None
-    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(
-        default_factory=list,
-        json_schema_extra={"uniqueItems": True},
-    )
+    outcomes: OutcomeSetDocument
     outcome_settlement: ProcessingClaimOutcomeSettlementDocument | None = None
 
     @model_validator(mode="after")
@@ -614,14 +696,10 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
             work_id=self.work_id,
             work_document=self.work_document,
             work_document_sha256=self.work_document_sha256,
-            inputs=self.inputs,
             purpose=self.purpose,
         )
-        outcomes = [item.model_dump(mode="json") for item in self.outcomes]
-        if outcomes:
-            ProcessingClaimOutcomesSettleDocument(fence=self.fence, outcomes=self.outcomes)
         if self.outcome_settlement is not None:
-            if canonical_json_sha256(outcomes) != self.outcome_settlement.outcomes_sha256:
+            if self.outcomes.authority != self.outcome_settlement.outcomes:
                 raise ValueError("processing outcome settlement identity is invalid")
             if self.plan is not None or self.state not in {"settled", "retiring", "released"}:
                 raise ValueError("processing outcome settlement is inconsistent with claim state")
@@ -640,7 +718,7 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
         released = self.state == "released"
         if released != (self.released_at is not None):
             raise ValueError("claim release timestamp is inconsistent with claim state")
-        if self.plan is not None and self.outcomes:
+        if self.plan is not None and self.outcomes.count:
             raise ValueError("direct collection work cannot retain delegated outcomes")
         if settled:
             if self.plan is not None:
@@ -648,7 +726,7 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
                     raise ValueError("direct claim settlement evidence is incomplete")
             elif (
                 self.output_collection_id is not None
-                or not self.outcomes
+                or self.outcomes.authority is None
                 or self.outcome_settlement is None
             ):
                 raise ValueError("delegated claim settlement evidence is incomplete")
@@ -687,12 +765,10 @@ class TransformCapabilityDocument(RiverhogWorkflowDocument):
             ]
         },
     )
+    state: Literal["receiving", "active"]
     principal_app: str = Field(min_length=1, max_length=300)
     expires_at: Timestamp
-    artifacts: list[CollectionArtifactIdentityDocument] = Field(
-        min_length=1,
-        json_schema_extra={"uniqueItems": True},
-    )
+    artifacts: ArtifactReceivingSetDocument
     token: str = Field(pattern=r"^rhc_[A-Za-z0-9_-]+$")
 
     @model_validator(mode="after")
@@ -701,7 +777,6 @@ class TransformCapabilityDocument(RiverhogWorkflowDocument):
             fence=self.fence,
             audience=self.audience,
             actions=self.actions,
-            artifacts=self.artifacts,
         )
         return self
 
@@ -721,13 +796,32 @@ class CollectionDerivationResponseDocument(RiverhogWorkflowDocument):
 
 __all__ = [
     "CONTROLLER_EVIDENCE_MAX_BYTES",
+    "DISPOSITION_BATCH_MAX",
+    "ArtifactDispositionBatchDocument",
     "CapabilityAction",
     "ClaimState",
+    "ArtifactDispositionDocument",
+    "ArtifactDispositionOutputPageDocument",
+    "ArtifactDispositionOutputBatchDocument",
+    "ArtifactDispositionOutputDocument",
+    "ArtifactDispositionPageDocument",
+    "ArtifactDispositionSetDocument",
+    "ArtifactDispositionSetIdentityDocument",
+    "ArtifactReceivingSetDocument",
+    "ArtifactSetAuthorityDocument",
+    "CollectionArtifactBatchDocument",
     "CollectionArtifactIdentityDocument",
+    "CollectionArtifactPageDocument",
     "CollectionDerivationDocument",
     "CollectionDerivationResponseDocument",
     "CollectionRootIdentityDocument",
+    "CollectionRootBatchDocument",
+    "CollectionRootPageDocument",
+    "ExactSetAuthorityDocument",
     "OperationIdentityDocument",
+    "OutputTagBatchDocument",
+    "OutputTagPageDocument",
+    "OutcomeSetDocument",
     "ProcessingClaimAbandonDocument",
     "ProcessingClaimCreateDocument",
     "ProcessingClaimDocument",
@@ -741,10 +835,13 @@ __all__ = [
     "ProcessingClaimSettleDocument",
     "ProcessingOutcomeBindingDocument",
     "ProcessingOutcomeIdentityDocument",
+    "ProcessingOutcomePageDocument",
     "RecipeIdentityDocument",
+    "ReceivingSetDocument",
     "RetirementClaimReferenceDocument",
     "RiverhogWorkflowDocument",
     "TransformCapabilityCreateDocument",
     "TransformCapabilityDocument",
     "WORK_DOCUMENT_MAX_BYTES",
+    "WORKFLOW_SET_BATCH_MAX",
 ]

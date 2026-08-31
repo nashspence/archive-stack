@@ -34,7 +34,7 @@ def test_collection_planner_assigns_canonical_pack_then_segment_sequences() -> N
         policy=policy,
     )
 
-    assert [current.volume_id for current in plan.packs] == ["pack-000000000000"]
+    assert [current.volume_id for current in plan.packs] == [f"pack-{0:064x}"]
     assert [current.sequence for current in plan.raw_volumes] == [1, 2, 3]
     assert [current.file_offset for current in plan.raw_volumes] == [
         0,

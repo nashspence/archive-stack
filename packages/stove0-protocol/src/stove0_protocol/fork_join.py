@@ -9,6 +9,7 @@ retirement enforcement remain outside this kernel.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self
 
@@ -37,6 +38,7 @@ from stove0_protocol.models import (
 )
 
 ARTIFACT_SELECTION_FORMAT: Literal["stove0-artifact-selection/v1"] = "stove0-artifact-selection/v1"
+ARTIFACT_SELECTION_PAGE_MAX = 256
 BRANCH_SET_FORMAT: Literal["stove0-branch-set/v1"] = "stove0-branch-set/v1"
 JOIN_DECLARATION_FORMAT: Literal["stove0-join-declaration/v1"] = "stove0-join-declaration/v1"
 JOIN_PLAN_FORMAT: Literal["stove0-join-plan/v1"] = "stove0-join-plan/v1"
@@ -73,13 +75,36 @@ def _root_key(root: CollectionRootRef) -> tuple[int, str, str]:
     return root.collection_id, root.archive_root_sha256, root.content_identity
 
 
-def _artifact_key(artifact: ArtifactSubject) -> tuple[str, int, str, str]:
+def _artifact_key(artifact: ArtifactSubject) -> tuple[int, str, str, str, int, str, str]:
+    """Order selections by their generic Riverhog artifact identity first."""
+
     return (
-        artifact.id,
         artifact.collection.collection_id,
+        artifact.collection.archive_root_sha256,
+        artifact.collection.content_identity,
         artifact.path,
+        artifact.bytes,
         artifact.sha256,
+        artifact.id,
     )
+
+
+def update_artifact_selection_commitment(
+    digest: Any,
+    *,
+    ordinal: int,
+    artifact: ArtifactSubject,
+) -> None:
+    """Commit one ordered selection member without materializing the full set."""
+
+    if isinstance(ordinal, bool) or ordinal < 0:
+        raise ValueError("artifact-selection ordinal must be nonnegative")
+    encoded = canonical_json_bytes(artifact.model_dump(mode="json", exclude_none=True))
+    digest.update(b"stove0-artifact-selection/v1\x00")
+    digest.update(str(ordinal).encode("ascii"))
+    digest.update(b"\x00")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
 
 
 class ArtifactSelection(Stove0ProtocolModel):
@@ -116,7 +141,10 @@ class ArtifactSelection(Stove0ProtocolModel):
             raise ValueError("selection artifact count does not match its artifacts")
         if self.total_bytes != sum(item.bytes for item in self.artifacts):
             raise ValueError("selection byte count does not match its artifacts")
-        expected = canonical_json_sha256(_without_digest(self, "selection_sha256"))
+        digest = hashlib.sha256()
+        for ordinal, artifact in enumerate(self.artifacts):
+            update_artifact_selection_commitment(digest, ordinal=ordinal, artifact=artifact)
+        expected = digest.hexdigest()
         if expected != self.selection_sha256:
             raise ValueError("selection digest does not match its canonical payload")
         return self
@@ -124,13 +152,15 @@ class ArtifactSelection(Stove0ProtocolModel):
     @classmethod
     def seal(cls, artifacts: Sequence[ArtifactSubject]) -> ArtifactSelection:
         ordered = tuple(sorted(tuple(artifacts), key=_artifact_key))
-        payload = {
-            "format": ARTIFACT_SELECTION_FORMAT,
-            "artifacts": [item.model_dump(mode="json", exclude_none=True) for item in ordered],
-            "artifact_count": len(ordered),
-            "total_bytes": sum(item.bytes for item in ordered),
-        }
-        return cls.model_validate({**payload, "selection_sha256": canonical_json_sha256(payload)})
+        digest = hashlib.sha256()
+        for ordinal, artifact in enumerate(ordered):
+            update_artifact_selection_commitment(digest, ordinal=ordinal, artifact=artifact)
+        return cls(
+            artifacts=ordered,
+            artifact_count=len(ordered),
+            total_bytes=sum(item.bytes for item in ordered),
+            selection_sha256=digest.hexdigest(),
+        )
 
     def ref(self) -> ArtifactSelectionRef:
         return ArtifactSelectionRef(
@@ -157,6 +187,25 @@ class ArtifactSelectionRef(Stove0ProtocolModel):
     @classmethod
     def from_selection(cls, selection: ArtifactSelection) -> ArtifactSelectionRef:
         return selection.ref()
+
+
+class ArtifactSelectionPage(Stove0ProtocolModel):
+    """One bounded continuation step through an immutable artifact selection."""
+
+    authority: ArtifactSelectionRef
+    continuation: Sha256 | None = None
+    next_continuation: Sha256 | None = None
+    complete: bool
+    artifacts: tuple[ArtifactSubject, ...] = Field(max_length=ARTIFACT_SELECTION_PAGE_MAX)
+
+    @model_validator(mode="after")
+    def bind_page(self) -> Self:
+        if self.complete:
+            if self.next_continuation is not None:
+                raise ValueError("complete artifact-selection page cannot continue")
+        elif not self.artifacts or self.next_continuation is None:
+            raise ValueError("incomplete artifact-selection page requires continuation")
+        return self
 
 
 SelectionDocuments = Mapping[str, ArtifactSelection]
@@ -593,6 +642,7 @@ class BranchSettlement(Stove0ProtocolModel):
     work_id: Sha256
     workflow_plan_sha256: Sha256
     derivation_sha256: Sha256
+    producer_settlement_sha256: Sha256
     output_collection: CollectionRootRef
     output_selection: ArtifactSelectionRef
     settlement_sha256: Sha256
@@ -610,6 +660,7 @@ class BranchSettlement(Stove0ProtocolModel):
         *,
         branch: BranchPlan,
         derivation_sha256: str,
+        producer_settlement_sha256: str,
         output_collection: CollectionRootRef,
         output_selection: ArtifactSelection,
     ) -> BranchSettlement:
@@ -621,6 +672,7 @@ class BranchSettlement(Stove0ProtocolModel):
             "work_id": branch.workflow_plan.work.work_id,
             "workflow_plan_sha256": branch.workflow_plan.workflow_plan_sha256,
             "derivation_sha256": derivation_sha256,
+            "producer_settlement_sha256": producer_settlement_sha256,
             "output_collection": output_collection.model_dump(mode="json"),
             "output_selection": output_selection.ref().model_dump(mode="json"),
         }
@@ -781,6 +833,7 @@ class JoinSettlement(Stove0ProtocolModel):
     workflow_plan_sha256: Sha256
     join_plan_sha256: Sha256
     derivation_sha256: Sha256
+    producer_settlement_sha256: Sha256
     output_collection: CollectionRootRef
     output_selection: ArtifactSelectionRef
     settlement_sha256: Sha256
@@ -798,6 +851,7 @@ class JoinSettlement(Stove0ProtocolModel):
         *,
         plan: JoinPlan,
         derivation_sha256: str,
+        producer_settlement_sha256: str,
         output_collection: CollectionRootRef,
         output_selection: ArtifactSelection,
     ) -> JoinSettlement:
@@ -807,6 +861,7 @@ class JoinSettlement(Stove0ProtocolModel):
             "workflow_plan_sha256": plan.workflow_plan.workflow_plan_sha256,
             "join_plan_sha256": plan.join_plan_sha256,
             "derivation_sha256": derivation_sha256,
+            "producer_settlement_sha256": producer_settlement_sha256,
             "output_collection": output_collection.model_dump(mode="json"),
             "output_selection": output_selection.ref().model_dump(mode="json"),
         }
@@ -1395,6 +1450,7 @@ def resolve_join_plan(
         producer_settlement_sha256: str | None = None
         if settlement is not None:
             settlement_sha256 = settlement.settlement_sha256
+            producer_settlement_sha256 = settlement.producer_settlement_sha256
             derivation_sha256 = settlement.derivation_sha256
             output_collection = settlement.output_collection
             output_selection = settlement.output_selection
@@ -1634,6 +1690,7 @@ def evaluate_branch_set(
 
 __all__ = [
     "ARTIFACT_SELECTION_FORMAT",
+    "ARTIFACT_SELECTION_PAGE_MAX",
     "BRANCH_OUTCOME_FORMAT",
     "BRANCH_EFFECT_SETTLEMENT_FORMAT",
     "BRANCH_SET_FORMAT",
@@ -1644,6 +1701,7 @@ __all__ = [
     "JOIN_PLAN_FORMAT",
     "JOIN_SETTLEMENT_FORMAT",
     "ArtifactSelection",
+    "ArtifactSelectionPage",
     "ArtifactSelectionRef",
     "BranchOutcome",
     "BranchEffectSettlement",
@@ -1676,4 +1734,5 @@ __all__ = [
     "resolve_join_plan",
     "resolve_selection",
     "validate_branch_set_plan",
+    "update_artifact_selection_commitment",
 ]

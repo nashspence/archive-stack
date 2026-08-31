@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .archive import (
-    FileProvenanceBinding,
-    ValidatedProvenanceIndex,
-    validate_portable_provenance_set,
-)
+from .archive import FileProvenanceBinding
 from .interface import FileStateObserver
 from .journal import (
+    JournalSummary,
     ProvenanceValidationError,
     append_observation,
     create_observation_journal,
     validate_journal,
+    validate_journal_set,
+    verify_payload_binding,
+)
+from .segmented_archive import (
+    PROVENANCE_TERMINAL_SCHEMA,
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
+    ProvenanceVolumeDocument,
+    format_provenance_sequence,
+    parse_binding_segment,
+    update_ordered_volume_commitment,
 )
 
 SIDECAR_SUFFIX = ".riverhog-provenance.json-seq"
@@ -25,6 +34,14 @@ class PreparedFileProvenance:
     binding: FileProvenanceBinding
     journals: dict[str, bytes]
     source: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedSegmentedSet:
+    bindings: tuple[FileProvenanceBinding, ...]
+    journals: dict[str, JournalSummary]
+    journal_bytes: dict[str, bytes]
+    identity: str
 
 
 def canonical_sidecar_path(payload: Path) -> Path:
@@ -79,9 +96,9 @@ def prepare_file_provenance(
         return _captured(
             relative_path, byte_count, sha256, {summary.journal_id: journal}, "captured"
         )
-    if discovered.is_dir() or discovered.name == "index.json":
-        index_path = discovered / "index.json" if discovered.is_dir() else discovered
-        validated = _load_portable_set(index_path)
+    if discovered.is_dir() or discovered.name == "root.json":
+        root_path = discovered / "root.json" if discovered.is_dir() else discovered
+        validated = _load_segmented_set(root_path)
         matches = [
             item
             for item in validated.bindings
@@ -167,26 +184,131 @@ def _discover_provenance(payload: Path) -> Path | None:
     if adjacent.is_file():
         return adjacent
     for parent in (payload.parent, *payload.parents):
-        index = parent / ".riverhog" / "provenance" / "index.json"
-        if index.is_file():
-            return index
+        root = parent / ".riverhog" / "provenance" / "root.json"
+        if root.is_file():
+            return root
     return None
 
 
-def _load_portable_set(index_path: Path) -> ValidatedProvenanceIndex:
-    root = index_path.parent
-    journal_dir = root / "journals"
+def _load_segmented_set(root_path: Path) -> _ValidatedSegmentedSet:
+    root_dir = root_path.parent
+    root = ProvenanceRootDocument.from_json_bytes(root_path.read_bytes())
+    journal_dir = root_dir / "journals"
     journals: dict[str, bytes] = {}
     if journal_dir.is_dir():
         for path in sorted(journal_dir.glob("*.json-seq")):
             journal_id = path.name.removesuffix(".json-seq")
             journals[journal_id] = path.read_bytes()
-    return validate_portable_provenance_set(index_path.read_bytes(), journals)
+    bindings: list[FileProvenanceBinding] = []
+    ordered = hashlib.sha256()
+    next_file_order = 0
+    sequence = 0
+    while True:
+        sequence_token = format_provenance_sequence(sequence)
+        metadata = (root_dir / "metadata" / f"volume-{sequence_token}.json").read_bytes()
+        try:
+            value = json.loads(metadata)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProvenanceValidationError("provenance sequence is not valid JSON") from exc
+        if not isinstance(value, dict):
+            raise ProvenanceValidationError("provenance sequence is not an object")
+        if value.get("schema") == PROVENANCE_TERMINAL_SCHEMA:
+            terminal = ProvenanceTerminalDocument.from_json_bytes(metadata)
+            if (
+                terminal.sequence != sequence
+                or terminal.archive_generation != root.archive_generation
+                or terminal.archive_tree_sha256 != root.archive_tree_sha256
+            ):
+                raise ProvenanceValidationError("provenance sidecar terminal is invalid")
+            update_ordered_volume_commitment(ordered, terminal)
+            break
+        document = ProvenanceVolumeDocument.from_json_bytes(metadata)
+        update_ordered_volume_commitment(ordered, document)
+        if (
+            document.sequence != sequence
+            or document.archive_tree_sha256 != root.archive_tree_sha256
+        ):
+            raise ProvenanceValidationError("provenance sidecar volume sequence is invalid")
+        payload = (root_dir / "payloads" / f"volume-{sequence_token}.bin").read_bytes()
+        if (
+            len(payload) != document.payload.bytes
+            or hashlib.sha256(payload).hexdigest() != document.payload.sha256
+        ):
+            raise ProvenanceValidationError("provenance sidecar payload identity differs")
+        if document.payload.kind == "bindings":
+            first, rows = parse_binding_segment(payload)
+            if first != next_file_order:
+                raise ProvenanceValidationError("provenance sidecar bindings are not contiguous")
+            for row in rows:
+                bindings.append(_binding_from_mapping(row))
+                next_file_order += 1
+        sequence += 1
+    if ordered.hexdigest() != root.ordered_volume_sha256:
+        raise ProvenanceValidationError("provenance sidecar differs from its root")
+    summaries = validate_journal_set(journals)
+    directly_bound: set[str] = set()
+    for binding in bindings:
+        if binding.status != "captured":
+            continue
+        journal_id = str(binding.journal_id)
+        summary = summaries.get(journal_id)
+        if summary is None or binding.current_state_id != summary.current_state_id:
+            raise ProvenanceValidationError(f"captured file state is unresolved: {binding.path}")
+        verify_payload_binding(
+            summary,
+            path=binding.path,
+            byte_count=binding.bytes,
+            sha256=binding.sha256,
+        )
+        directly_bound.add(journal_id)
+    reachable = set(directly_bound)
+    pending = list(directly_bound)
+    while pending:
+        for reference in summaries[pending.pop()].external_states:
+            if reference.journal_id not in reachable:
+                reachable.add(reference.journal_id)
+                pending.append(reference.journal_id)
+    if reachable != set(summaries):
+        raise ProvenanceValidationError("provenance sidecar contains an unreachable journal")
+    return _ValidatedSegmentedSet(
+        bindings=tuple(bindings),
+        journals=summaries,
+        journal_bytes=journals,
+        identity=root.identity,
+    )
+
+
+def _binding_from_mapping(row: dict[str, object]) -> FileProvenanceBinding:
+    status = row.get("status")
+    if status == "captured":
+        return FileProvenanceBinding(
+            path=str(row["path"]),
+            bytes=_required_nonnegative_int(row["bytes"], "provenance binding bytes"),
+            sha256=str(row["sha256"]),
+            status="captured",
+            journal_id=str(row["journal_id"]),
+            current_state_id=str(row["current_state_id"]),
+        )
+    if status == "omitted":
+        return FileProvenanceBinding(
+            path=str(row["path"]),
+            bytes=_required_nonnegative_int(row["bytes"], "provenance binding bytes"),
+            sha256=str(row["sha256"]),
+            status="omitted",
+            omission_reason=str(row["omission_reason"]),
+        )
+    raise ProvenanceValidationError("provenance sidecar binding status is invalid")
+
+
+def _required_nonnegative_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ProvenanceValidationError(f"{label} is invalid")
+    return value
 
 
 def _journal_closure(
     journal_id: str,
-    validated: ValidatedProvenanceIndex,
+    validated: _ValidatedSegmentedSet,
 ) -> dict[str, bytes]:
     reachable = {journal_id}
     pending = [journal_id]

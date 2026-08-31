@@ -47,6 +47,14 @@ class Conflict(RiverhogError):
     code = "conflict"
 
 
+class PreconditionFailed(RiverhogError):
+    code = "precondition_failed"
+
+
+class PreconditionRequired(RiverhogError):
+    code = "precondition_required"
+
+
 class InvalidState(RiverhogError):
     code = "invalid_state"
 
@@ -72,6 +80,8 @@ RIVERHOG_ERROR_TYPES_BY_CODE: dict[str, type[RiverhogError]] = {
         InvalidPath,
         NotFound,
         Conflict,
+        PreconditionFailed,
+        PreconditionRequired,
         InvalidState,
         HashMismatch,
         ServiceUnavailable,

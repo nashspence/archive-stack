@@ -6,6 +6,7 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 from riverhog_protocol.collection_workflow_transport import (
     ArtifactDispositionDocument,
+    ArtifactDispositionOutputDocument,
     CollectionArtifactIdentityDocument,
     CollectionRootIdentityDocument,
     ProcessingClaimCreateDocument,
@@ -58,13 +59,6 @@ def test_opaque_work_document_is_digest_bound_without_application_ontology() -> 
         work_id="4" * 64,
         work_document=document,
         work_document_sha256=canonical_json_sha256(document),
-        inputs=[
-            {
-                "collection_id": 17,
-                "archive_root_sha256": "1" * 64,
-                "content_identity": "2" * 64,
-            }
-        ],
     )
 
     assert request.work_document == document
@@ -79,28 +73,15 @@ def test_opaque_work_document_is_digest_bound_without_application_ontology() -> 
             work_id="4" * 64,
             work_document=document,
             work_document_sha256="5" * 64,
-            inputs=request.inputs,
         )
 
 
 def test_transform_capability_actions_are_the_exact_read_contract() -> None:
-    artifact = {
-        "collection": {
-            "collection_id": 17,
-            "archive_root_sha256": "1" * 64,
-            "content_identity": "2" * 64,
-        },
-        "path": "camera/clip.mp4",
-        "bytes": 42,
-        "sha256": "3" * 64,
-    }
-
     for actions in (["read-inputs"], ["read-inputs", "write-output"]):
         capability = TransformCapabilityCreateDocument(
             fence=1,
             audience="transform:test",
             actions=actions,
-            artifacts=[artifact],
         )
         assert capability.actions == actions
         Draft202012Validator(TransformCapabilityCreateDocument.model_json_schema()).validate(
@@ -112,7 +93,6 @@ def test_transform_capability_actions_are_the_exact_read_contract() -> None:
             "fence": 1,
             "audience": "transform:test",
             "actions": actions,
-            "artifacts": [artifact],
             "ttl_seconds": 900,
         }
         with pytest.raises(ValidationError, match="read-inputs"):
@@ -132,37 +112,23 @@ def test_structural_workflow_relationships_match_their_published_schema() -> Non
     transformed = {
         "input": input_identity,
         "status": "transformed",
-        "outputs": ["archive/clip.mkv"],
         "failure": None,
     }
     disposition_validator = Draft202012Validator(ArtifactDispositionDocument.model_json_schema())
     assert ArtifactDispositionDocument.model_validate(transformed).status == "transformed"
     disposition_validator.validate(transformed)
 
-    impossible_disposition = {**transformed, "outputs": []}
-    with pytest.raises(ValidationError, match="requires output paths"):
-        ArtifactDispositionDocument.model_validate(impossible_disposition)
-    with pytest.raises(JsonSchemaValidationError):
-        disposition_validator.validate(impossible_disposition)
+    output = {"input": input_identity, "output_path": "archive/clip.mkv"}
+    assert ArtifactDispositionOutputDocument.model_validate(output).output_path == (
+        "archive/clip.mkv"
+    )
 
-    artifact = {
-        "collection": {
-            "collection_id": 17,
-            "archive_root_sha256": "1" * 64,
-            "content_identity": "2" * 64,
-        },
-        "path": "camera/clip.mp4",
-        "bytes": 42,
-        "sha256": "3" * 64,
-    }
     plan = {
         "fence": 1,
         "execution_id": "4" * 64,
         "controller_evidence": {},
         "controller_evidence_sha256": canonical_json_sha256({}),
         "operation": {"id": "fixture.operation/v1", "sha256": "5" * 64},
-        "input_artifacts": [artifact],
-        "output_tags": ["archive"],
         "retirement_policy": "retain",
         "retirement_grace_seconds": 0,
     }
@@ -192,13 +158,8 @@ def test_processing_claim_projection_rejects_impossible_state_evidence() -> None
         "updated_at": "2026-08-24T00:00:00.000000Z",
         "work_document": work_document,
         "work_document_sha256": canonical_json_sha256(work_document),
-        "inputs": [
-            {
-                "collection_id": 17,
-                "archive_root_sha256": "1" * 64,
-                "content_identity": "2" * 64,
-            }
-        ],
+        "inputs": {"state": "receiving", "count": 0, "authority": None},
+        "outcomes": {"state": "receiving", "count": 0, "authority": None, "failure": None},
     }
 
     schema_validator = Draft202012Validator(ProcessingClaimDocument.model_json_schema())
@@ -240,11 +201,12 @@ def test_retirement_reference_identifies_one_exact_settlement_form() -> None:
         claim_id="4" * 64,
         fence=3,
         work_id="5" * 64,
-        outcomes_sha256="6" * 64,
+        outcomes={"count": 2, "sha256": "6" * 64},
     )
 
     assert direct.output_collection_id == 42
-    assert delegated.outcomes_sha256 == "6" * 64
+    assert delegated.outcomes is not None
+    assert delegated.outcomes.sha256 == "6" * 64
     validator = Draft202012Validator(RetirementClaimReferenceDocument.model_json_schema())
     validator.validate(direct.model_dump(mode="json"))
     validator.validate(delegated.model_dump(mode="json"))
@@ -264,5 +226,5 @@ def test_retirement_reference_identifies_one_exact_settlement_form() -> None:
             work_id="2" * 64,
             execution_id="3" * 64,
             output_collection_id=42,
-            outcomes_sha256="4" * 64,
+            outcomes={"count": 2, "sha256": "4" * 64},
         )

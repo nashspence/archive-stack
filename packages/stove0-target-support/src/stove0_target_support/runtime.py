@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Self, cast
 
@@ -13,10 +12,8 @@ from riverhog_api_client.producer import (
     ProducerArtifactIdentity,
     ProducerFile,
     ProducerInput,
-    ProducerStream,
 )
 from riverhog_protocol.collection_workflows import (
-    ArtifactDisposition,
     OperationIdentity,
     RecipeIdentity,
 )
@@ -25,19 +22,22 @@ from riverhog_transform_sdk import (
     ClaimedCollectionRuntime,
     ClaimedRetrieval,
     CollectionTransformRuntime,
-    DerivedCollectionReceipt,
     DerivedCollectionSpec,
     IncrementalDerivedCollectionWriter,
     TransformWorkspace,
 )
+from stove0_target_client import TargetCallbackClient
 from stove0_target_protocol import (
     EFFECT_TARGET_PROTOCOL,
     ExternalEffectReceipt,
     ExternalEffectReceiptPayload,
     InputArtifact,
+    InputDisposition,
+    InputDispositionDeclaration,
     OperationContract,
     OutputArtifact,
     OutputCollectionRef,
+    OutputSourceEdge,
     TargetExecutionEvidence,
     TargetJobRequest,
     TargetJobStatus,
@@ -60,8 +60,6 @@ class TargetCollectionPublication:
     ) -> None:
         self.execution = execution
         self.writer = writer
-        self._inputs = {item.id: claimed for item, claimed in execution.inputs()}
-        self._artifacts: dict[str, OutputArtifact] = {}
         self._local_files: dict[str, Path] = {}
 
     @property
@@ -72,23 +70,11 @@ class TargetCollectionPublication:
         self,
         source: ProducerInput,
         artifact: OutputArtifact,
+        *,
+        derived_from: Iterable[str],
     ) -> tuple[ProducerArtifactCustody, ...]:
         if source.path != artifact.path:
             raise ValueError(f"target output path does not match its source: {artifact.id}")
-        source_artifacts: list[ClaimedArtifact] = []
-        for input_id in artifact.derived_from:
-            resolved = self._inputs.get(input_id)
-            if resolved is None:
-                raise ValueError(f"target output references an unknown input: {input_id}")
-            source_artifacts.append(resolved)
-        existing = self._artifacts.get(artifact.id)
-        if existing is not None and existing != artifact:
-            raise ValueError(f"target output artifact identity changed: {artifact.id}")
-        if any(
-            current.id != artifact.id and current.path == artifact.path
-            for current in self._artifacts.values()
-        ):
-            raise ValueError(f"target output path is repeated: {artifact.path}")
         if isinstance(source, ProducerFile):
             self._local_files[artifact.path] = source.source
         runtime = cast(CollectionTransformRuntime, self.execution.runtime)
@@ -100,9 +86,19 @@ class TargetCollectionPublication:
                 bytes=artifact.bytes,
                 sha256=artifact.sha256,
             ),
-            sources=source_artifacts,
         )
-        self._artifacts[artifact.id] = artifact
+        self.execution._input_client.declare_target_execution_output(
+            self.execution.job_id, artifact
+        )
+        source_count = 0
+        for input_id in derived_from:
+            self.execution._input_client.declare_target_execution_source_edge(
+                self.execution.job_id,
+                OutputSourceEdge(output_id=artifact.id, input_id=input_id),
+            )
+            source_count += 1
+        if source_count == 0:
+            raise ValueError("target output source references must be nonempty")
         self._release_custodied_files()
         return cast(tuple[ProducerArtifactCustody, ...], receipts)
 
@@ -111,17 +107,19 @@ class TargetCollectionPublication:
         *,
         operation: OperationContract,
         execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
         attempt: int = 1,
         runtime_evidence: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> TargetJobStatus:
-        declared = tuple(sorted(self._artifacts.values(), key=lambda item: item.id))
+        sealed = self.execution._input_client.seal_target_execution_production(
+            self.execution.job_id
+        )
+        disposition_set = sealed.production.riverhog_disposition_set
         runtime = cast(CollectionTransformRuntime, self.execution.runtime)
         receipt = runtime.finish_incremental_publication(
             self.writer,
             execution_sha256=execution_sha256,
-            dispositions=dispositions,
+            disposition_set=disposition_set,
             **kwargs,
         )
         self._release_custodied_files()
@@ -141,11 +139,11 @@ class TargetCollectionPublication:
             plan_sha256=plan.plan_sha256,
             progress=TargetProgress(
                 phase="done",
-                completed=len(declared),
-                total=len(declared),
+                completed=sealed.production.outputs.artifact_count,
+                total=sealed.production.outputs.artifact_count,
                 unit="artifacts",
             ),
-            outputs=declared,
+            production=sealed.production,
             output_collection=output_collection,
             execution_evidence=TargetExecutionEvidence(
                 target_contract_sha256=plan.target_contract_sha256,
@@ -186,7 +184,7 @@ class TargetExecutionRuntime:
         self.session = session
         self._runtime_binding: Any = None
         self._workspaces: list[TransformWorkspace] = []
-        self._resolved_inputs: tuple[tuple[InputArtifact, ClaimedArtifact], ...] | None = None
+        self._input_client = TargetCallbackClient(request.callback_access)
         self._completed = False
 
     @classmethod
@@ -281,6 +279,10 @@ class TargetExecutionRuntime:
             self.runtime.__exit__(exc_type, exc, tb)
         except Exception as cleanup_exc:
             failures.append(cleanup_exc)
+        try:
+            self._input_client.close()
+        except Exception as cleanup_exc:
+            failures.append(cleanup_exc)
         if exc is None and failures and not self._completed:
             raise RuntimeError("target execution cleanup failed before completion") from failures[0]
 
@@ -288,45 +290,66 @@ class TargetExecutionRuntime:
         self.runtime.refresh_capability(token)
 
     @property
+    def job_id(self) -> str:
+        return self.request.declaration.job_id
+
+    @property
     def completed(self) -> bool:
         """Whether this attempt has produced its one exact successful result."""
 
         return self._completed
 
-    def inputs(self) -> tuple[tuple[InputArtifact, ClaimedArtifact], ...]:
-        if self._resolved_inputs is not None:
-            return self._resolved_inputs
-        inventory = {item.key: item for item in self.runtime.inventory()}
-        resolved: list[tuple[InputArtifact, ClaimedArtifact]] = []
-        for expected in self.request.declaration.plan.inputs:
-            key = (expected.collection.collection_id, expected.path)
-            actual = inventory.get(key)
-            if (
-                actual is None
-                or actual.root != expected.collection.to_identity()
-                or actual.bytes != expected.bytes
-                or actual.sha256 != expected.sha256
-            ):
-                raise RuntimeError(
-                    "target input is not the current claimed artifact: " + expected.id
-                )
-            resolved.append((expected, actual))
-        self._resolved_inputs = tuple(resolved)
-        return self._resolved_inputs
+    def iter_inputs(self) -> Iterator[tuple[InputArtifact, ClaimedArtifact]]:
+        for expected in self._input_client.iter_inputs(self.request.declaration.job_id):
+            yield (
+                expected,
+                ClaimedArtifact(
+                    root=expected.collection.to_identity(),
+                    path=expected.path,
+                    bytes=expected.bytes,
+                    sha256=expected.sha256,
+                    control=False,
+                ),
+            )
+
+    def resolve_input_ids(self, input_ids: Sequence[str]) -> tuple[ClaimedArtifact, ...]:
+        wanted = set(input_ids)
+        if not wanted or len(wanted) != len(tuple(input_ids)):
+            raise ValueError("target input references must be nonempty and unique")
+        resolved: dict[str, ClaimedArtifact] = {}
+        for expected, claimed in self.iter_inputs():
+            if expected.id in wanted:
+                resolved[expected.id] = claimed
+                if len(resolved) == len(wanted):
+                    break
+        if set(resolved) != wanted:
+            missing = sorted(wanted - set(resolved))[0]
+            raise ValueError(f"target output references an unknown input: {missing}")
+        return tuple(resolved[item] for item in sorted(resolved))
+
+    def declare_disposition(self, input_id: str, status: InputDisposition) -> None:
+        self._input_client.declare_target_execution_disposition(
+            self.job_id,
+            InputDispositionDeclaration(input_id=input_id, status=status),
+        )
 
     def prepare_inputs(
         self,
         inputs: Sequence[InputArtifact] | None = None,
         **kwargs: Any,
     ) -> ClaimedRetrieval:
-        available = dict(self.inputs())
-        selected = tuple(inputs or self.request.declaration.plan.inputs)
-        artifacts: list[ClaimedArtifact] = []
-        for item in selected:
-            artifact = available.get(item)
-            if artifact is None:
-                raise ValueError(f"target input is not authorized: {item.id}")
-            artifacts.append(artifact)
+        if inputs is None:
+            raise ValueError("target retrieval requires an explicit bounded input selection")
+        artifacts = [
+            ClaimedArtifact(
+                root=item.collection.to_identity(),
+                path=item.path,
+                bytes=item.bytes,
+                sha256=item.sha256,
+                control=False,
+            )
+            for item in inputs
+        ]
         return self.runtime.prepare_inputs(artifacts, **kwargs)
 
     def open_workspace(self, root: Path) -> TransformWorkspace:
@@ -336,54 +359,6 @@ class TargetExecutionRuntime:
         )
         self._workspaces.append(workspace)
         return workspace
-
-    def publish(
-        self,
-        outputs: Mapping[str, ProducerInput],
-        *,
-        artifacts: Sequence[OutputArtifact],
-        execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
-        source_context: Mapping[str, object] | None = None,
-        **kwargs: Any,
-    ) -> tuple[DerivedCollectionReceipt, OutputCollectionRef]:
-        if not isinstance(self.runtime, CollectionTransformRuntime):
-            raise RuntimeError("external-effect execution cannot publish a Riverhog collection")
-        declared = tuple(artifacts)
-        if not declared:
-            raise ValueError("successful target execution requires output artifacts")
-        if [item.id for item in declared] != sorted(item.id for item in declared):
-            raise ValueError("target output artifacts must be ordered by ID")
-        if set(outputs) != {item.id for item in declared}:
-            raise ValueError("target output sources must match the declared output IDs")
-        producer_inputs: list[ProducerInput] = []
-        for artifact in declared:
-            source = outputs[artifact.id]
-            identity = _producer_identity(source)
-            if identity != (artifact.path, artifact.bytes, artifact.sha256):
-                raise ValueError(f"target output identity does not match its source: {artifact.id}")
-            producer_inputs.append(source)
-        receipt = self.runtime.publish(
-            producer_inputs,
-            execution_envelope_sha256=(
-                self.request.declaration.controller_evidence.execution_envelope.execution_envelope_sha256
-            ),
-            execution_sha256=execution_sha256,
-            dispositions=dispositions,
-            source_context={
-                **dict(source_context or {}),
-                "target_plan_sha256": self.request.declaration.plan.plan_sha256,
-                "target_request_sha256": self.request.request_sha256,
-            },
-            **kwargs,
-        )
-        self._completed = True
-        return receipt, OutputCollectionRef(
-            collection_id=receipt.collection_id,
-            archive_root_sha256=receipt.archive_root_sha256,
-            content_identity=receipt.content_identity,
-            derivation_sha256=receipt.derivation.sha256,
-        )
 
     def open_collection_publication(
         self,
@@ -403,60 +378,6 @@ class TargetExecutionRuntime:
             },
         )
         return TargetCollectionPublication(self, writer)
-
-    def publish_success(
-        self,
-        outputs: Mapping[str, ProducerInput],
-        *,
-        artifacts: Sequence[OutputArtifact],
-        operation: OperationContract,
-        execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
-        attempt: int = 1,
-        runtime_evidence: Mapping[str, object] | None = None,
-        source_context: Mapping[str, object] | None = None,
-        **kwargs: Any,
-    ) -> TargetJobStatus:
-        """Publish the one authorized output and build its verified terminal status."""
-
-        declared = tuple(artifacts)
-        receipt, output_collection = self.publish(
-            outputs,
-            artifacts=declared,
-            execution_sha256=execution_sha256,
-            dispositions=dispositions,
-            source_context=source_context,
-            **kwargs,
-        )
-        plan = self.request.declaration.plan
-        status = TargetJobStatus(
-            protocol=plan.protocol,
-            job_id=self.request.declaration.job_id,
-            state="succeeded",
-            attempt=attempt,
-            request_sha256=self.request.request_sha256,
-            plan_sha256=plan.plan_sha256,
-            progress=TargetProgress(
-                phase="done",
-                completed=len(declared),
-                total=len(declared),
-                unit="artifacts",
-            ),
-            outputs=declared,
-            output_collection=output_collection,
-            execution_evidence=TargetExecutionEvidence(
-                target_contract_sha256=plan.target_contract_sha256,
-                operation_contract_sha256=plan.operation_contract_sha256,
-                plan_sha256=plan.plan_sha256,
-                execution_sha256=execution_sha256,
-                runtime=cast(dict[str, JsonValue], dict(runtime_evidence or {})),
-            ),
-            derivation=receipt.derivation.as_dict(),
-        )
-        validate_status_against_request(status, self.request, operation)
-        if self.session is not None:
-            self.session.record_completed(status)
-        return status
 
     def effect_success(
         self,
@@ -506,29 +427,6 @@ class TargetExecutionRuntime:
         if self.session is not None:
             self.session.record_completed(status)
         return status
-
-
-def _producer_identity(source: ProducerInput) -> tuple[str, int, str]:
-    if isinstance(source, ProducerStream):
-        return source.path, source.bytes, source.sha256
-    if not isinstance(source, ProducerFile):
-        raise TypeError("unsupported target output source")
-    digest = hashlib.sha256()
-    byte_count = 0
-    before = source.source.stat()
-    with source.source.open("rb") as stream:
-        while chunk := stream.read(8 * 1024 * 1024):
-            byte_count += len(chunk)
-            digest.update(chunk)
-    after = source.source.stat()
-    if (
-        before.st_dev != after.st_dev
-        or before.st_ino != after.st_ino
-        or before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-    ):
-        raise RuntimeError(f"target output changed while identifying it: {source.path}")
-    return source.path, byte_count, digest.hexdigest()
 
 
 __all__ = ["CancellationCheck", "TargetCollectionPublication", "TargetExecutionRuntime"]

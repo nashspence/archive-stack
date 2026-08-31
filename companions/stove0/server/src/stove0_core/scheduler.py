@@ -21,6 +21,7 @@ from time_formats import format_utc_timestamp, utc_now
 from stove0_core.coordinator import Stove0Coordinator
 from stove0_core.persistence import SqlAlchemyStateStore
 from stove0_core.recipes import RecipeCatalog, RecipePlanner
+from stove0_core.riverhog import _collection_tags
 from stove0_core.work_state import ConcurrentWorkUpdate
 
 _TERMINAL_PHASES = frozenset({"complete", "inapplicable", "failed", "canceled"})
@@ -119,8 +120,7 @@ class Stove0Scheduler:
             archive_root_sha256=str(current.get("archive_root_sha256") or ""),
             content_identity=str(current.get("content_identity") or ""),
         )
-        with self.riverhog.stream_collection_tags(collection_id) as memberships:
-            tags = tuple(str(item["tag"]) for item in memberships)
+        tags = _collection_tags(self.riverhog, collection_id)
         derivation = self._derivation(collection_id)
         created: list[str] = []
         for recipe in self.catalog.matching(tags):
@@ -266,11 +266,35 @@ class Stove0Scheduler:
                 continue
             if derivation.recipe == expected:
                 return True
-            for item in derivation.inputs:
-                input_id = item.collection_id
+            for input_id in self._derivation_input_collection_ids(derivation):
                 if input_id not in visited:
                     pending.append(input_id)
         return False
+
+    def _derivation_input_collection_ids(
+        self,
+        derivation: CollectionDerivation,
+    ) -> set[int]:
+        collection_ids: set[int] = set()
+        page = 1
+        seen = 0
+        while seen < derivation.disposition_set.disposition_count:
+            current = self.riverhog.list_processing_claim_dispositions(
+                derivation.claim_id,
+                authority_sha256=derivation.disposition_set.sha256,
+                page=page,
+                per_page=100,
+            )
+            if current.authority.model_dump(mode="json") != derivation.disposition_set.as_dict():
+                raise RuntimeError("Riverhog derivation input authority changed")
+            if not current.dispositions:
+                raise RuntimeError("Riverhog derivation input traversal ended early")
+            collection_ids.update(item.input.collection_id for item in current.dispositions)
+            seen += len(current.dispositions)
+            page += 1
+        if seen != derivation.disposition_set.disposition_count:
+            raise RuntimeError("Riverhog derivation input traversal is incomplete")
+        return collection_ids
 
     def _advance_cursor(
         self,

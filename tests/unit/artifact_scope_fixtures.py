@@ -68,10 +68,11 @@ def persisted_artifact_scope(
                 capability_id=capability_id,
                 collection_id=collection_id,
                 path=path,
+                artifact_order=artifact_order,
                 bytes=byte_count,
                 sha256=sha256,
             )
-            for collection_id, path, byte_count, sha256 in members
+            for artifact_order, (collection_id, path, byte_count, sha256) in enumerate(members)
         )
     return ApplicationPrincipal(
         app=f"claim:{claim_id}",

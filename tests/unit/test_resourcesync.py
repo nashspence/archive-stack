@@ -3,28 +3,27 @@ from __future__ import annotations
 from types import SimpleNamespace
 from xml.etree import ElementTree
 
-import anyio
 import httpx
-from http_api_contracts import JSON_SEQUENCE_MEDIA_TYPE
-from pydantic import TypeAdapter
 from riverhog_api.app import create_app
 from riverhog_api.routers.resourcesync import (
+    get_portable_collection_inventory,
     resourcesync_capability_list,
     resourcesync_change_list,
     resourcesync_resource_list,
     resourcesync_resource_list_page,
-    stream_portable_collection_inventory,
     well_known_resourcesync,
 )
 from riverhog_api_client.client import ApiClient
 from riverhog_protocol import (
-    PortableCollectionInventoryBegin,
-    PortableCollectionInventoryEnd,
-    PortableCollectionInventoryFile,
-    PortableCollectionInventoryReader,
-    PortableCollectionRecord,
+    ImmutableFileIdentityDocument,
+    PortableCollectionFile,
+    PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
+    portable_collection_inventory_identity,
 )
 from starlette.requests import Request
+from starlette.responses import Response
 
 COLLECTION_ID = 42
 ETAG = "a" * 64
@@ -63,24 +62,40 @@ class RetrievalStub:
             ],
         }
 
-    def collection_inventory(self, collection_id: int, *, principal: object):
+    def collection_inventory_page(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None,
+        limit: int,
+        expected_identity: str | None,
+        principal: object,
+    ) -> PortableCollectionInventoryPage:
         assert collection_id == COLLECTION_ID
         assert principal == "app"
-        record = PortableCollectionRecord.create(
+        assert cursor is None
+        assert limit == 100
+        assert expected_identity is None
+        header = PortableCollectionHeader(
             collection=collection_id,
             content_identity="b" * 64,
             encryption_format="age-v1-scrypt",
             passphrase_id="collection-test-key-v1",
             provenance_mode="omitted",
             provenance_identity=None,
-            files=(("empty.txt", 0, "c" * 64),),
         )
-        return (
-            record.header,
-            iter(record.files),
-            record.identity,
-            len(record.files),
-            sum(file.bytes for file in record.files),
+        files = (PortableCollectionFile(path="empty.txt", bytes=0, sha256="c" * 64),)
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=header,
+                inventory_identity=portable_collection_inventory_identity(header, files),
+                file_count=len(files),
+                file_bytes=sum(file.bytes for file in files),
+            ),
+            files=[
+                ImmutableFileIdentityDocument.model_validate(file.to_mapping()) for file in files
+            ],
+            complete=True,
         )
 
 
@@ -114,26 +129,20 @@ def test_resourcesync_uses_the_configured_public_url_authority() -> None:
     assert b"https://public.example.test/riverhog/resourcesync/capabilitylist.xml" in response.body
 
 
-def test_portable_inventory_openapi_uses_the_exact_stream_projection() -> None:
-    response = create_app().openapi()["paths"]["/v1/catalog/collections/{collection_id}/inventory"][
-        "get"
-    ]["responses"]["200"]
+def test_portable_inventory_openapi_uses_one_bounded_exact_authority_page() -> None:
+    operation = create_app().openapi()["paths"][
+        "/v1/catalog/collections/{collection_id}/inventory"
+    ]["get"]
+    response = operation["responses"]["200"]
 
-    expected = TypeAdapter(
-        PortableCollectionInventoryBegin
-        | PortableCollectionInventoryFile
-        | PortableCollectionInventoryEnd
-    ).json_schema()
-    # FastAPI omits defaults from referenced response schemas. The field remains
-    # optional and its nullability is unchanged.
-    expected["$defs"]["PortableCollectionHeader"]["properties"]["provenance_identity"].pop(
-        "default"
-    )
-    assert response["content"][JSON_SEQUENCE_MEDIA_TYPE]["schema"] == expected
-    assert response["headers"]["ETag"]["schema"] == {
-        "type": "string",
-        "pattern": '^"[0-9a-f]{64}"$',
+    assert response["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/PortableCollectionInventoryPage"
     }
+    assert response["headers"]["ETag"]["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
+    parameters = {item["name"]: item for item in operation["parameters"]}
+    assert parameters["limit"]["schema"]["maximum"] == 1000
+    assert parameters["cursor"]["schema"]["anyOf"][0]["maxLength"] == 8192
+    assert parameters["If-Match"]["in"] == "header"
 
 
 def test_resourcesync_openapi_is_exact_about_xml_parameters_and_errors() -> None:
@@ -285,18 +294,18 @@ def test_api_client_parses_resourcesync_discovery_capabilities_and_resources() -
 
 
 def test_portable_inventory_response_has_an_exact_content_identity() -> None:
-    response = stream_portable_collection_inventory(
+    response = Response()
+    page = get_portable_collection_inventory(
         COLLECTION_ID,
         "app",
         SimpleNamespace(retrieval=RetrievalStub()),
+        response,
+        cursor=None,
+        limit=100,
+        if_match=None,
     )
 
-    async def content() -> bytes:
-        return b"".join([chunk async for chunk in response.body_iterator])
-
-    body = anyio.run(content)
-    reader = PortableCollectionInventoryReader([body])
-    assert [file.path for file in reader] == ["empty.txt"]
-    reader.require_complete()
-    assert response.headers["etag"] == f'"{reader.begin.inventory_identity}"'
-    assert reader.begin.header.format == "riverhog-collection/v1"
+    assert [file.path for file in page.files] == ["empty.txt"]
+    assert page.complete is True
+    assert response.headers["etag"] == f'"{page.authority.inventory_identity}"'
+    assert page.authority.header.format == "riverhog-collection/v1"

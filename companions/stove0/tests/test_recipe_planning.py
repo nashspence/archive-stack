@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 import pytest
 from riverhog_api_client import ApiClient
+from riverhog_protocol import (
+    ImmutableFileIdentityDocument,
+    PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
+)
 from riverhog_protocol.collection_workflows import canonical_json_sha256
 from stove0_core import (
     ObserverPort,
@@ -66,6 +70,7 @@ from stove0_review_target_contracts import (
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
 )
+from stove0_target_protocol import TargetInputRoleCount
 from stove0_target_support import (
     InputArtifactContract,
     OperationContract,
@@ -101,12 +106,33 @@ class CatalogApi:
             ]
         }
 
-    @contextmanager
-    def stream_search(self, **kwargs: object) -> Iterator[Iterator[dict[str, object]]]:
+    def get_portable_collection_inventory(
+        self,
+        collection_id: int,
+        **kwargs: object,
+    ) -> PortableCollectionInventoryPage:
+        assert collection_id == 11
+        assert kwargs["cursor"] is None
         files = self.search(**kwargs).get("files")
         if not isinstance(files, list):
             raise AssertionError("fixture search inventory must be a list")
-        yield iter(files)
+        files = sorted(files, key=lambda item: str(item["path"]).encode("utf-8"))
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=PortableCollectionHeader(
+                    collection=11,
+                    content_identity=_sha("2"),
+                    encryption_format="age-v1-scrypt",
+                    passphrase_id="fixture-archive-key-v1",
+                    provenance_mode="omitted",
+                ),
+                inventory_identity=_sha("a"),
+                file_count=len(files),
+                file_bytes=sum(int(item["bytes"]) for item in files),
+            ),
+            files=[ImmutableFileIdentityDocument.model_validate(item) for item in files],
+            complete=True,
+        )
 
 
 class Targets:
@@ -1118,6 +1144,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
         settlements.append(
             BranchSettlement.seal(
                 branch=branch,
+                producer_settlement_sha256=f"{(collection_id + 4) % 16:x}" * 64,
                 derivation_sha256=f"{(collection_id + 3) % 16:x}" * 64,
                 output_collection=output_root,
                 output_selection=output,
@@ -1130,9 +1157,13 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
         join_plan.workflow_plan,
         {item.selection_sha256: item for item in join_selections},
     )
-    assert len(request.inputs) == 2
-    assert len({item.id for item in request.inputs}) == 2
-    assert {item.collection.collection_id for item in request.inputs} == {21, 22}
+    assert request.inputs.selection.artifact_count == 2
+    assert request.inputs.roles == (TargetInputRoleCount(role="fixture.branch-output/v1", count=2),)
+    assert {
+        artifact.collection.collection_id
+        for selection in join_selections
+        for artifact in selection.artifacts
+    } == {21, 22}
 
 
 def _retirement_operation() -> OperationContract:

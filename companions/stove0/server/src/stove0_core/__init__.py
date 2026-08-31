@@ -37,6 +37,7 @@ from stove0_core.runtime_config import (
     database_url_from_environment,
 )
 from stove0_core.scheduler import SchedulerRole, Stove0Scheduler, scheduler_role
+from stove0_core.target_callbacks import TargetCallbackAuthority
 from stove0_core.work_state import (
     AbandonOutcome,
     ClaimBinding,
@@ -96,6 +97,7 @@ __all__ = [
     "Stove0StateError",
     "Stove0WorkService",
     "TargetInvocationAuthority",
+    "TargetCallbackAuthority",
     "TargetPort",
     "TerminalPhase",
     "WorkFailure",

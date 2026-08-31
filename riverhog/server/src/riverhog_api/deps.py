@@ -24,14 +24,12 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
-from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
 from riverhog_core.runtime_config import (
     RuntimeConfig,
     StorageAdapterRegistration,
     load_runtime_config,
 )
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
-from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
@@ -45,7 +43,6 @@ from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.interfaces import (
     AppKeyService,
-    ArchiveAttestationService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
     ArchiveMaintenanceService,
@@ -53,14 +50,12 @@ from riverhog_core.services.interfaces import (
     CollectionDeletionService,
     CollectionService,
     LifecycleEventService,
-    ProofMaturationService,
     ProvenanceService,
     RetrievalService,
     SearchService,
     TagService,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
-from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
@@ -91,8 +86,6 @@ class ServiceContainer:
     search: SearchService
     archive_maintenance: ArchiveMaintenanceService
     archive_copies: ArchiveCopyService
-    proof_maturations: ProofMaturationService
-    archive_attestations: ArchiveAttestationService
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_stores: ArchiveStoreService
     retrieval: RetrievalService
@@ -199,9 +192,6 @@ def _build_default_container(
         adapters=adapters,
         download_allowance=download_allowance,
     )
-    proof_stamper = CommandProofStamper(config.ots_stamp_command)
-    proof_verifier = CommandProofVerifier(config.ots_verify_command)
-    proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config, session_factory=session_factory),
         collection_access=SqlAlchemyCollectionAccessService(
@@ -213,7 +203,6 @@ def _build_default_container(
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             archive_stores,
-            proof_stamper=proof_stamper,
             retrieval_cache=retrieval_cache,
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
@@ -242,21 +231,6 @@ def _build_default_container(
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
-        ),
-        proof_maturations=SqlAlchemyProofMaturationService(
-            config,
-            archive_stores,
-            proof_upgrader=proof_upgrader,
-            proof_verifier=proof_verifier,
-            session_factory=session_factory,
-        ),
-        archive_attestations=SqlAlchemyArchiveAttestationService(
-            config,
-            archive_stores,
-            proof_stamper=proof_stamper,
-            proof_upgrader=proof_upgrader,
-            proof_verifier=proof_verifier,
-            session_factory=session_factory,
         ),
         archive_copy_retirements=SqlAlchemyArchiveCopyRetirementService(
             config,

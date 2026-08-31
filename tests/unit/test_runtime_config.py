@@ -189,22 +189,18 @@ def test_load_runtime_config_parses_incomplete_archive_write_safeguards(
     assert config.archive_incomplete_write_sweep_interval == timedelta(hours=2)
 
 
-def test_load_runtime_config_connects_archive_sweep_and_proof_verifier_settings(
+def test_load_runtime_config_connects_archive_sweep_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "17s")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES", "7MiB")
     monkeypatch.setenv("RIVERHOG_LOG_LEVEL", "debug")
-    monkeypatch.setenv("RIVERHOG_OTS_STAMP_COMMAND", "custom-ots --calendar example")
-    monkeypatch.setenv("RIVERHOG_OTS_VERIFY_COMMAND", "custom-ots --verify-policy strict")
 
     config = load_runtime_config()
 
     assert config.archive_upload_sweep_interval == timedelta(seconds=17)
     assert config.retrieval_cache_write_segment_bytes == 7 * 1024 * 1024
     assert config.log_level == "DEBUG"
-    assert config.ots_stamp_command == ("custom-ots", "--calendar", "example")
-    assert config.ots_verify_command == ("custom-ots", "--verify-policy", "strict")
 
 
 def test_load_runtime_config_parses_lifecycle_event_settings(
@@ -217,41 +213,6 @@ def test_load_runtime_config_parses_lifecycle_event_settings(
 
     assert config.event_source == "urn:test:riverhog"
     assert config.event_context_retention == timedelta(days=14)
-
-
-def test_load_runtime_config_parses_proof_maturation_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_OTS_UPGRADE_COMMAND", "custom-ots --calendar example")
-    monkeypatch.setenv("RIVERHOG_PROOF_MATURATION_RETRY_DELAY", "3h")
-    monkeypatch.setenv("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL", "20m")
-
-    config = load_runtime_config()
-
-    assert config.ots_upgrade_command == ("custom-ots", "--calendar", "example")
-    assert config.proof_maturation_retry_delay == timedelta(hours=3)
-    assert config.proof_maturation_sweep_interval == timedelta(minutes=20)
-
-
-def test_load_runtime_config_parses_archive_attestation_key_files(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key")
-    monkeypatch.setenv("RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE", "/run/keys/minisign.pub")
-
-    config = load_runtime_config()
-
-    assert config.attestation_secret_key_file == Path("/run/keys/minisign.key")
-    assert config.attestation_public_key_file == Path("/run/keys/minisign.pub")
-
-
-def test_archive_attestation_key_configuration_must_be_complete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "/run/keys/minisign.key")
-
-    with pytest.raises(ValueError, match="attestation key configuration is incomplete"):
-        load_runtime_config()
 
 
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:

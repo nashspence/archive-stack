@@ -75,6 +75,7 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
                         producer_plan,
                         producer,
                         selections,
+                        store,
                     )
                     result = settlement.collection_result
                     if (
@@ -98,12 +99,15 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
             raise RuntimeError("durable branch child differs from its sealed workflow plan")
         branch_settlement = _branch_settlement(child)
         if branch_settlement is not None:
-            output_selection = _output_selection(child)
+            if child.target_settlement is None:
+                raise RuntimeError("settled branch lacks post-root target settlement")
+            output_selection = _output_selection(child, store)
             _retain_selection(selections, output_selection)
             settlements.append(
                 BranchSettlement.seal(
                     branch=branch,
                     derivation_sha256=branch_settlement.derivation_sha256,
+                    producer_settlement_sha256=(child.target_settlement.settlement_sha256),
                     output_collection=_collection_root(branch_settlement),
                     output_selection=output_selection,
                 )
@@ -138,7 +142,7 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
         join_record = _load_declared_work(store, join_plan.work.work_id)
         if join_record.workflow_plan != join_plan.workflow_plan:
             raise RuntimeError("durable join child differs from its sealed workflow plan")
-        join_settlement = _join_settlement(join_plan, join_record, selections)
+        join_settlement = _join_settlement(join_plan, join_record, selections, store)
         if join_settlement is None:
             join_outcome = _join_outcome(join_plan, join_record)
     elif resolution is not None:
@@ -287,17 +291,21 @@ def _join_settlement(
     plan: JoinPlan,
     record: WorkRecord,
     selections: dict[str, ArtifactSelection],
+    store: WorkStore,
 ) -> JoinSettlement | None:
     if record.phase not in {"settled", "retirement_pending", "complete"}:
         return None
     output = record.output
     if output is None:
         raise RuntimeError("verified join work has no exact output collection")
-    selection = _output_selection(record)
+    if record.target_settlement is None:
+        raise RuntimeError("verified join work has no post-root target settlement")
+    selection = _output_selection(record, store)
     _retain_selection(selections, selection)
     return JoinSettlement.seal(
         plan=plan,
         derivation_sha256=output.derivation_sha256,
+        producer_settlement_sha256=record.target_settlement.settlement_sha256,
         output_collection=_collection_root(output),
         output_selection=selection,
     )
@@ -323,7 +331,7 @@ def _join_outcome(plan: JoinPlan, record: WorkRecord) -> JoinOutcome | None:
     )
 
 
-def _output_selection(record: WorkRecord) -> ArtifactSelection:
+def _output_selection(record: WorkRecord, store: WorkStore) -> ArtifactSelection:
     output = record.output
     status = record.target_status
     if (
@@ -331,6 +339,7 @@ def _output_selection(record: WorkRecord) -> ArtifactSelection:
         or status is None
         or status.state != "succeeded"
         or status.output_collection != output
+        or status.production is None
     ):
         raise RuntimeError("settled work lacks matching immutable target output evidence")
     root = _collection_root(output)
@@ -345,7 +354,7 @@ def _output_selection(record: WorkRecord) -> ArtifactSelection:
                 sha256=item.sha256,
                 media_type=item.media_type,
             )
-            for item in status.outputs
+            for item in store.iter_target_outputs(record.work_id)
         )
     )
 

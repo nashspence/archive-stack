@@ -4,25 +4,39 @@ import hashlib
 from dataclasses import dataclass
 
 from riverhog_age import encrypt_age_scrypt
-from riverhog_provenance import ProvenanceArchive
+from riverhog_provenance import (
+    ProvenanceRootDocument,
+    ProvenanceTerminalDocument,
+    ProvenanceVolumeDocument,
+    format_provenance_sequence,
+)
 
 from riverhog_core.archive_formats import (
-    PROVENANCE_BUNDLE_STORAGE_FORMAT,
-    PROVENANCE_INDEX_STORAGE_FORMAT,
+    PROVENANCE_BINDING_SEGMENT_STORAGE_FORMAT,
+    PROVENANCE_JOURNAL_SEGMENT_STORAGE_FORMAT,
+    PROVENANCE_ROOT_STORAGE_FORMAT,
+    PROVENANCE_TERMINAL_STORAGE_FORMAT,
+    PROVENANCE_VOLUME_METADATA_STORAGE_FORMAT,
 )
 from riverhog_core.domain.archive import SealedProvenanceObject
 from riverhog_core.ports.archive_objects import ImmutableArchiveObjectStore
 
 
 @dataclass(frozen=True, slots=True)
+class SealedArchiveProvenanceVolume:
+    sequence: int
+    payload: SealedProvenanceObject
+    metadata: SealedProvenanceObject
+
+
+@dataclass(frozen=True, slots=True)
 class SealedArchiveProvenance:
     identity: str
-    index: SealedProvenanceObject
-    bundles: tuple[SealedProvenanceObject, ...]
+    root: SealedProvenanceObject
 
 
 class ArchiveProvenancePublisher:
-    """Publish immutable encrypted provenance dependencies before the root manifest."""
+    """Publish one bounded provenance object at a time before its immutable root."""
 
     def __init__(
         self,
@@ -37,40 +51,82 @@ class ArchiveProvenancePublisher:
         self._passphrase = passphrase
         self._scrypt_log_n = scrypt_log_n
 
-    def publish(
+    def publish_volume(
         self,
         *,
         archive_storage_prefix: str,
-        provenance: ProvenanceArchive,
-    ) -> SealedArchiveProvenance:
-        prefix = archive_storage_prefix.strip("/")
-        if not prefix:
-            raise ValueError("archive storage prefix must not be empty")
-        bundles = tuple(
-            self._put(
-                prefix=prefix,
-                object_id=bundle.bundle_id,
-                kind="provenance-bundle",
-                relative_path=bundle.relative_path,
-                content=bundle.content,
-                plaintext_sha256=bundle.sha256,
-                storage_format=PROVENANCE_BUNDLE_STORAGE_FORMAT,
-            )
-            for bundle in provenance.bundles
-        )
-        index = self._put(
+        document: ProvenanceVolumeDocument,
+        payload: bytes,
+    ) -> SealedArchiveProvenanceVolume:
+        prefix = _prefix(archive_storage_prefix)
+        if (
+            len(payload) != document.payload.bytes
+            or hashlib.sha256(payload).hexdigest() != document.payload.sha256
+        ):
+            raise ValueError("provenance payload identity changed before publication")
+        payload_object = self._put(
             prefix=prefix,
-            object_id="provenance-index",
-            kind="provenance-index",
-            relative_path="provenance/index.json.age",
-            content=provenance.index_bytes,
-            plaintext_sha256=provenance.identity,
-            storage_format=PROVENANCE_INDEX_STORAGE_FORMAT,
+            object_id=f"provenance-payload-{format_provenance_sequence(document.sequence)}",
+            kind=(
+                "provenance-bindings"
+                if document.payload.kind == "bindings"
+                else "provenance-journal-segment"
+            ),
+            relative_path=document.payload.path,
+            content=payload,
+            storage_format=(
+                PROVENANCE_BINDING_SEGMENT_STORAGE_FORMAT
+                if document.payload.kind == "bindings"
+                else PROVENANCE_JOURNAL_SEGMENT_STORAGE_FORMAT
+            ),
         )
-        return SealedArchiveProvenance(
-            identity=provenance.identity,
-            index=index,
-            bundles=bundles,
+        metadata_object = self._put(
+            prefix=prefix,
+            object_id=f"provenance-volume-{format_provenance_sequence(document.sequence)}",
+            kind="provenance-volume-metadata",
+            relative_path=document.metadata_path,
+            content=document.to_json_bytes(),
+            storage_format=PROVENANCE_VOLUME_METADATA_STORAGE_FORMAT,
+        )
+        return SealedArchiveProvenanceVolume(
+            sequence=document.sequence,
+            payload=payload_object,
+            metadata=metadata_object,
+        )
+
+    def publish_root(
+        self,
+        *,
+        archive_storage_prefix: str,
+        root: ProvenanceRootDocument,
+    ) -> SealedArchiveProvenance:
+        sealed = self._put(
+            prefix=_prefix(archive_storage_prefix),
+            object_id="provenance-root",
+            kind="provenance-root",
+            relative_path="provenance/root.json.age",
+            content=root.to_json_bytes(),
+            storage_format=PROVENANCE_ROOT_STORAGE_FORMAT,
+        )
+        if sealed.plaintext_sha256 != root.identity:
+            raise RuntimeError("published provenance root identity changed")
+        return SealedArchiveProvenance(identity=root.identity, root=sealed)
+
+    def publish_terminal(
+        self,
+        *,
+        archive_storage_prefix: str,
+        terminal: ProvenanceTerminalDocument,
+    ) -> SealedProvenanceObject:
+        """Publish the authenticated sequence terminator before the root."""
+
+        return self._put(
+            prefix=_prefix(archive_storage_prefix),
+            object_id=f"provenance-terminal-{format_provenance_sequence(terminal.sequence)}",
+            kind="provenance-terminal",
+            relative_path=terminal.metadata_path,
+            content=terminal.to_json_bytes(),
+            storage_format=PROVENANCE_TERMINAL_STORAGE_FORMAT,
         )
 
     def _put(
@@ -81,25 +137,18 @@ class ArchiveProvenancePublisher:
         kind: str,
         relative_path: str,
         content: bytes,
-        plaintext_sha256: str,
         storage_format: str,
     ) -> SealedProvenanceObject:
-        if hashlib.sha256(content).hexdigest() != plaintext_sha256:
-            raise ValueError("provenance plaintext identity changed before publication")
+        plaintext_sha256 = hashlib.sha256(content).hexdigest()
         ciphertext = encrypt_age_scrypt(
             content,
             self._passphrase,
             log_n=self._scrypt_log_n,
         )
-        object_path = f"{prefix}/{relative_path}"
         receipt = self._object_store.put_immutable_object(
-            object_path=object_path,
+            object_path=f"{prefix}/{relative_path}",
             content=ciphertext,
-            content_type=(
-                "application/vnd.riverhog.provenance-index+age"
-                if kind == "provenance-index"
-                else "application/vnd.riverhog.provenance-bundle+age"
-            ),
+            content_type=f"application/vnd.{storage_format.replace('/', '.').replace('+', '.')}",
             required_identity_assertions={
                 "riverhog-format": storage_format,
                 "riverhog-plaintext-bytes": str(len(content)),
@@ -118,3 +167,17 @@ class ArchiveProvenancePublisher:
             revision=receipt.revision,
             completed_at=receipt.completed_at,
         )
+
+
+def _prefix(value: str) -> str:
+    prefix = value.strip("/")
+    if not prefix:
+        raise ValueError("archive storage prefix must not be empty")
+    return prefix
+
+
+__all__ = [
+    "ArchiveProvenancePublisher",
+    "SealedArchiveProvenance",
+    "SealedArchiveProvenanceVolume",
+]
