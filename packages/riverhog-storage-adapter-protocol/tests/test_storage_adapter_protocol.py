@@ -82,6 +82,48 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
     }
 
 
+def test_identity_assertion_runtime_and_schema_share_exact_bounds() -> None:
+    schema = SmallObjectWriteRequest.model_json_schema()["properties"][
+        "required_identity_assertions"
+    ]
+    maximum_items = schema["maxProperties"]
+    maximum_bytes = schema["x-riverhog-encoded-bytes-max"]
+    exact = {"x": "a" * (maximum_bytes - len(b'{"x":""}'))}
+
+    request = SmallObjectWriteRequest(
+        object_path="objects/item",
+        content_type="application/octet-stream",
+        required_identity_assertions=exact,
+        placement="immediate",
+        mode="create_only",
+        stored_bytes=0,
+        stored_sha256="a" * 64,
+    )
+    assert request.required_identity_assertions == exact
+    assert maximum_items == 64
+
+    with pytest.raises(ValueError, match="encoded-size bound"):
+        SmallObjectWriteRequest(
+            object_path="objects/item",
+            content_type="application/octet-stream",
+            required_identity_assertions={"x": exact["x"] + "a"},
+            placement="immediate",
+            mode="create_only",
+            stored_bytes=0,
+            stored_sha256="a" * 64,
+        )
+    with pytest.raises(ValidationError, match="at most 64 items"):
+        SmallObjectWriteRequest(
+            object_path="objects/item",
+            content_type="application/octet-stream",
+            required_identity_assertions={f"k{index}": "v" for index in range(65)},
+            placement="immediate",
+            mode="create_only",
+            stored_bytes=0,
+            stored_sha256="a" * 64,
+        )
+
+
 def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
     head_request = ObjectHeadRequest(
         object=ObjectLocator(object_path="objects/item", revision="revision-1"),

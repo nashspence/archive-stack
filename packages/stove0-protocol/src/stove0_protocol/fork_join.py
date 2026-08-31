@@ -196,7 +196,16 @@ class ArtifactSelectionPage(Stove0ProtocolModel):
     continuation: Sha256 | None = None
     next_continuation: Sha256 | None = None
     complete: bool
-    artifacts: tuple[ArtifactSubject, ...] = Field(max_length=ARTIFACT_SELECTION_PAGE_MAX)
+    artifacts: tuple[ArtifactSubject, ...] = Field(
+        max_length=ARTIFACT_SELECTION_PAGE_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-artifact-selection-page",
+                "progression": "selection-bound-start_ordinal",
+            }
+        },
+    )
 
     @model_validator(mode="after")
     def bind_page(self) -> Self:

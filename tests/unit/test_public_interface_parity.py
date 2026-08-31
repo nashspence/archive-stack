@@ -1246,7 +1246,7 @@ def test_provenance_upload_openapi_describes_bounded_resumable_transfer() -> Non
     (
         ({}, 8),
         ({"RIVERHOG_UPLOAD_FILE_CONCURRENCY": "1"}, 1),
-        ({"RIVERHOG_UPLOAD_FILE_CONCURRENCY": "64"}, 64),
+        ({"RIVERHOG_UPLOAD_FILE_CONCURRENCY": "256"}, 256),
     ),
 )
 def test_shared_direct_ingress_concurrency_contract(
@@ -1260,8 +1260,8 @@ def test_shared_direct_ingress_concurrency_contract(
     ("environment", "concurrency", "expected"),
     (
         ({}, 8, 16),
-        ({}, 16, 32),
-        ({"RIVERHOG_UPLOAD_FILE_WINDOW": "64"}, 16, 64),
+        ({}, 256, 512),
+        ({"RIVERHOG_UPLOAD_FILE_WINDOW": "1024"}, 256, 1024),
     ),
 )
 def test_shared_direct_ingress_window_contract(
@@ -1277,7 +1277,7 @@ def test_shared_direct_ingress_window_contract(
     (
         ({}, 4),
         ({"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY": "1"}, 1),
-        ({"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY": "64"}, 64),
+        ({"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY": "256"}, 256),
     ),
 )
 def test_shared_retrieval_download_concurrency_contract(
@@ -1291,8 +1291,8 @@ def test_shared_retrieval_download_concurrency_contract(
     ("environment", "concurrency", "expected"),
     (
         ({}, 4, 8),
-        ({}, 16, 32),
-        ({"RIVERHOG_DOWNLOAD_FILE_WINDOW": "64"}, 16, 64),
+        ({}, 256, 512),
+        ({"RIVERHOG_DOWNLOAD_FILE_WINDOW": "1024"}, 256, 1024),
     ),
 )
 def test_shared_retrieval_download_window_contract(

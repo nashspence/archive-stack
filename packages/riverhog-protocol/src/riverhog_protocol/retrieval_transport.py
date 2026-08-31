@@ -23,6 +23,13 @@ class RetrievalFileReferenceSetDocument(RetrievalTransportDocument):
     files: list[RetrievalFileReferenceDocument] = Field(
         min_length=1,
         max_length=RETRIEVAL_FILE_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-retrieval-work-request",
+                "progression": "multiple-retrieval-jobs",
+            }
+        },
     )
 
     @model_validator(mode="after")

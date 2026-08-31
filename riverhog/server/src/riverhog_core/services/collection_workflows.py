@@ -17,7 +17,11 @@ from riverhog_protocol import (
     RetirementClaimReferenceDocument,
     SortOrder,
 )
-from riverhog_protocol.collection_workflow_transport import ExactSetAuthorityDocument
+from riverhog_protocol.collection_workflow_transport import (
+    CONTROLLER_EVIDENCE_MAX_BYTES,
+    WORK_DOCUMENT_MAX_BYTES,
+    ExactSetAuthorityDocument,
+)
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     ArtifactDisposition,
@@ -33,6 +37,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, InvalidState, NotFound
+from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX
 from sqlalchemy import and_, asc, delete, desc, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
@@ -81,8 +86,6 @@ from riverhog_core.runtime_config import RuntimeConfig
 _MIN_LEASE_SECONDS = 30
 _MAX_LEASE_SECONDS = 24 * 60 * 60
 _DEFAULT_LEASE_SECONDS = 30 * 60
-_MAX_WORK_DOCUMENT_BYTES = 4 * 1024 * 1024
-_MAX_CONTROLLER_EVIDENCE_BYTES = 16 * 1024 * 1024
 _CAPABILITY_ACTIONS = frozenset({"read-inputs", "write-output"})
 _CAPABILITY_AUDIENCE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,299}$", re.ASCII)
 _RETIREMENT_POLICIES = frozenset({"retain", "retire-after-verified-output"})
@@ -128,7 +131,7 @@ class SqlAlchemyCollectionWorkflowService:
         encoded_work, normalized_work = _json_document(
             work_document,
             label="work document",
-            maximum_bytes=_MAX_WORK_DOCUMENT_BYTES,
+            maximum_bytes=WORK_DOCUMENT_MAX_BYTES,
         )
         normalized_work_sha256 = _sha256(
             work_document_sha256,
@@ -717,7 +720,7 @@ class SqlAlchemyCollectionWorkflowService:
         evidence_bytes, evidence = _json_document(
             controller_evidence,
             label="controller evidence",
-            maximum_bytes=_MAX_CONTROLLER_EVIDENCE_BYTES,
+            maximum_bytes=CONTROLLER_EVIDENCE_MAX_BYTES,
         )
         evidence_sha256 = _sha256(
             controller_evidence_sha256,
@@ -3336,7 +3339,7 @@ def processing_claim_blockers(
     collection_id: int,
     *,
     exempt_claim_id: str | None = None,
-    limit: int = 10,
+    limit: int = COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX,
 ) -> list[str]:
     """Return active workflow claims that must block collection deletion."""
 
@@ -3402,14 +3405,18 @@ def processing_claim_blockers(
             ),
         )
         .order_by(CollectionProcessingClaimRecord.created_at)
-        .limit(limit)
+        .limit(limit + 1)
     )
     if exempt_claim_id is not None:
         statement = statement.where(CollectionProcessingClaimRecord.id != exempt_claim_id)
-    return [
+    rows = list(session.execute(statement))
+    result = [
         f"collection processing claim is {state}: {claim_id} ({consumer})"
-        for claim_id, state, consumer in session.execute(statement)
+        for claim_id, state, consumer in rows[:limit]
     ]
+    if len(rows) > limit:
+        result.append("additional collection processing claims exist; list claims for details")
+    return result
 
 
 def require_retirement_exemption(

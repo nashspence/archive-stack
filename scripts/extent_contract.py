@@ -11,11 +11,42 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 SCHEMA = "riverhog-extent-contract/v1"
+EXTENT_DECLARATION = "x-riverhog-extent"
+PRINCIPLES: dict[str, object] = {
+    "logical_totals": (
+        "A finite logical total has no product-level semantic maximum unless its owning "
+        "contract declares one."
+    ),
+    "bounded_work": (
+        "Large logical totals cross bounded pages, segments, or restartable work steps; a "
+        "carrier bound does not redefine the logical total."
+    ),
+    "operational_capacity": (
+        "Capacity policy may explicitly reject, defer, or throttle work, but must not silently "
+        "truncate it or become an undocumented semantic ceiling."
+    ),
+    "configuration": (
+        "Hardware- or environment-dependent limits that observably affect accepted work are "
+        "operator-configurable and source-linked."
+    ),
+    "implementation_privacy": (
+        "Buffers, provider mechanics, database layout, and other non-observable implementation "
+        "extents are not frozen here."
+    ),
+}
 RULES: dict[str, dict[str, object]] = {
     "schema-bound/v1": {
         "policy": "fixed-or-contract-max",
         "authority": "the projected JSON Schema constraint",
         "exceeded": "schema-validation-error",
+        "requirement": "a non-fixed set maximum carries an owning reason declaration",
+    },
+    "bounded-segment/v1": {
+        "policy": "segmented_no_total_max",
+        "authority": "the owning schema's x-riverhog-extent declaration",
+        "semantic_maximum": None,
+        "exceeded": "bounded-carrier-validation-error",
+        "completion": "the owner-declared progression or repeated-work contract",
     },
     "route-progression/v1": {
         "policy": "segmented_no_total_max",
@@ -27,12 +58,28 @@ RULES: dict[str, dict[str, object]] = {
         "authority": "the independently versioned extension contract",
         "core_semantic_maximum": None,
     },
-    "unconstrained-finite-document/v1": {
+    "no-semantic-maximum/v1": {
         "policy": "operational_policy",
-        "authority": "the projected schema's deliberate absence of a semantic maximum",
+        "authority": "the owning schema's deliberate absence of a semantic maximum",
         "semantic_maximum": None,
+        "declared_operational_maximum": None,
+        "future_capacity_behavior": "explicit-configured-reject-defer-or-throttle",
+        "hidden_maximum": "forbidden",
+        "silent_truncation": "forbidden",
+    },
+    "configuration-composition/v1": {
+        "policy": "operational_policy",
+        "authority": "the owning validated deployment configuration document",
+        "semantic_maximum": None,
+        "declared_operational_maximum": None,
+        "hidden_maximum": "forbidden",
+        "silent_truncation": "forbidden",
+    },
+    "configured-capacity/v1": {
+        "policy": "operational_policy",
+        "authority": "the source-linked operator configuration field",
         "capacity_behavior": "explicit-reject-defer-or-throttle",
-        "partial_completion": "forbidden",
+        "silent_truncation": "forbidden",
     },
 }
 POLICIES = frozenset(
@@ -45,6 +92,17 @@ POLICIES = frozenset(
     }
 )
 _SCHEMA_BRANCHES = ("allOf", "anyOf", "oneOf", "prefixItems")
+_SCHEMA_SINGLE_CHILDREN = (
+    "items",
+    "additionalProperties",
+    "if",
+    "then",
+    "else",
+    "not",
+    "contains",
+    "propertyNames",
+    "unevaluatedProperties",
+)
 _EXTENT_NAME = re.compile(
     r"(?:^|_)(?:age|bytes|concurrency|count|depth|duration|entries|files?|interval|"
     r"items?|lease|length|limit|members?|offset|ordinal|outputs?|parts?|retention|"
@@ -57,6 +115,12 @@ _CONFIGURATION_EXTENT_NAME = re.compile(
     re.IGNORECASE,
 )
 _FIXED_WIDTH_PATTERN = re.compile(r"^\^\[[^]]+\]\{([1-9][0-9]*)\}\$$")
+_GENERATED_PROTOCOL_OWNERS = {
+    "generated:riverhog-storage-adapter": "riverhog-storage-adapter-protocol",
+    "generated:stove0-observer": "stove0-observer-protocol",
+    "generated:stove0-review-sampler": "stove0-review-sampler-protocol",
+    "generated:stove0-target": "stove0-target-protocol",
+}
 
 
 class ExtentContractError(RuntimeError):
@@ -83,12 +147,10 @@ def _schema_children(schema: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[s
             for name, child in sorted(children.items()):
                 if isinstance(child, Mapping):
                     yield f"/{_escape(keyword)}/{_escape(str(name))}", child
-    items = schema.get("items")
-    if isinstance(items, Mapping):
-        yield "/items", items
-    additional = schema.get("additionalProperties")
-    if isinstance(additional, Mapping):
-        yield "/additionalProperties", additional
+    for keyword in _SCHEMA_SINGLE_CHILDREN:
+        child = schema.get(keyword)
+        if isinstance(child, Mapping):
+            yield f"/{keyword}", child
     for keyword in _SCHEMA_BRANCHES:
         children = schema.get(keyword)
         if isinstance(children, list):
@@ -209,7 +271,12 @@ def _source_owner(section: str, authority: str) -> tuple[str, bool]:
         "/provenance/observers/schemas/" in authority
         and not authority.endswith(("/observation-policy.json", "/sparse-map.json"))
     )
-    if authority.startswith("generated:") or platform_observer_schema:
+    generated_owner = _GENERATED_PROTOCOL_OWNERS.get(authority)
+    if generated_owner is not None:
+        return generated_owner, False
+    if authority.startswith("generated:"):
+        raise ExtentContractError(f"generated protocol has no extent owner: {authority}")
+    if platform_observer_schema:
         return authority, True
     return authority, False
 
@@ -223,6 +290,7 @@ def _bound_decision(
     unit: str,
     minimum: int | float | None,
     maximum: int | float,
+    reason: str | None = None,
 ) -> dict[str, object]:
     fixed = minimum is not None and minimum == maximum
     decision: dict[str, object] = {
@@ -233,11 +301,142 @@ def _bound_decision(
         "unit": unit,
         "policy": "fixed" if fixed else "contract_max",
         "rule": "schema-bound/v1",
+        "reason": reason or ("fixed-public-representation" if fixed else "schema-maximum"),
         "maximum": maximum,
     }
     if minimum is not None:
         decision["minimum"] = minimum
     return decision
+
+
+def _extent_declaration(schema: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    declaration = schema.get(EXTENT_DECLARATION)
+    if declaration is None:
+        return None
+    if not isinstance(declaration, Mapping):
+        raise ExtentContractError(f"{EXTENT_DECLARATION} must be an object")
+    return declaration
+
+
+def _open_extent_decision(
+    *,
+    identity: str,
+    owner: str,
+    source_pointer: str,
+    dimension: str,
+    unit: str,
+    extension_owned: bool,
+    configuration_document: bool,
+) -> dict[str, object]:
+    if extension_owned:
+        return {
+            "id": identity,
+            "owner": owner,
+            "source_pointer": source_pointer,
+            "dimension": dimension,
+            "unit": unit,
+            "policy": "extension_owned",
+            "rule": "extension-contract/v1",
+            "reason": "independently-versioned-extension-authority",
+            "maximum": None,
+        }
+    rule = "configuration-composition/v1" if configuration_document else "no-semantic-maximum/v1"
+    return {
+        "id": identity,
+        "owner": owner,
+        "source_pointer": source_pointer,
+        "dimension": dimension,
+        "unit": unit,
+        "policy": "operational_policy",
+        "rule": rule,
+        "reason": (
+            "validated-deployment-composition"
+            if configuration_document
+            else "no-declared-semantic-maximum"
+        ),
+        "maximum": None,
+        "capacity_authority": {
+            "owner": owner,
+            "declared_maximum": None,
+            "hidden_maximum": "forbidden",
+        },
+    }
+
+
+def _declared_cardinality_decision(
+    *,
+    identity: str,
+    owner: str,
+    source_pointer: str,
+    schema: Mapping[str, Any],
+    maximum_keyword: str,
+    minimum_keyword: str,
+    unit: str,
+) -> dict[str, object] | None:
+    maximum = schema.get(maximum_keyword)
+    if not isinstance(maximum, int) or isinstance(maximum, bool):
+        return None
+    minimum = schema.get(minimum_keyword)
+    fixed = isinstance(minimum, int) and not isinstance(minimum, bool) and minimum == maximum
+    declaration = _extent_declaration(schema)
+    if fixed:
+        return _bound_decision(
+            identity=identity,
+            owner=owner,
+            source_pointer=source_pointer,
+            dimension="cardinality",
+            unit=unit,
+            minimum=minimum,
+            maximum=maximum,
+            reason="fixed-public-representation",
+        )
+    if declaration is None and maximum == 0:
+        return _bound_decision(
+            identity=identity,
+            owner=owner,
+            source_pointer=source_pointer,
+            dimension="cardinality",
+            unit=unit,
+            minimum=minimum if isinstance(minimum, int) else None,
+            maximum=maximum,
+            reason="state-conditioned-empty-set",
+        )
+    if declaration is None:
+        raise ExtentContractError(
+            f"set maximum has no {EXTENT_DECLARATION} reason: {source_pointer}"
+        )
+    policy = declaration.get("policy")
+    reason = declaration.get("reason")
+    if not isinstance(reason, str) or not reason:
+        raise ExtentContractError(f"set maximum has no reason: {source_pointer}")
+    if policy == "contract_max":
+        return _bound_decision(
+            identity=identity,
+            owner=owner,
+            source_pointer=source_pointer,
+            dimension="cardinality",
+            unit=unit,
+            minimum=minimum if isinstance(minimum, int) else None,
+            maximum=maximum,
+            reason=reason,
+        )
+    if policy != "segmented_no_total_max":
+        raise ExtentContractError(f"set maximum has invalid declared policy: {source_pointer}")
+    return {
+        "id": identity,
+        "owner": owner,
+        "source_pointer": source_pointer,
+        "dimension": "cardinality",
+        "unit": unit,
+        "policy": "segmented_no_total_max",
+        "rule": "bounded-segment/v1",
+        "reason": reason,
+        "minimum": minimum if isinstance(minimum, int) else None,
+        "maximum": maximum,
+        "progression": {
+            key: value for key, value in declaration.items() if key not in {"policy", "reason"}
+        },
+    }
 
 
 def _array_decision(
@@ -247,20 +446,11 @@ def _array_decision(
     source_pointer: str,
     schema: Mapping[str, Any],
     extension_owned: bool,
+    configuration_document: bool,
     read_policy: Mapping[str, object] | None,
 ) -> dict[str, object]:
     maximum = schema.get("maxItems")
     minimum = schema.get("minItems")
-    if isinstance(maximum, int):
-        return _bound_decision(
-            identity=identity,
-            owner=owner,
-            source_pointer=source_pointer,
-            dimension="cardinality",
-            unit="items",
-            minimum=minimum if isinstance(minimum, int) else None,
-            maximum=maximum,
-        )
     if read_policy is not None:
         decision: dict[str, object] = {
             "id": identity,
@@ -270,22 +460,75 @@ def _array_decision(
             "unit": "items",
             "policy": "segmented_no_total_max",
             "rule": "route-progression/v1",
+            "reason": "bounded-route-page",
+            **({"maximum": maximum} if isinstance(maximum, int) else {}),
+            **({"minimum": minimum} if isinstance(minimum, int) else {}),
             "progression": dict(read_policy),
         }
         return decision
-    policy = "extension_owned" if extension_owned else "operational_policy"
-    return {
-        "id": identity,
-        "owner": owner,
-        "source_pointer": source_pointer,
-        "dimension": "cardinality",
-        "unit": "items",
-        "policy": policy,
-        "rule": (
-            "extension-contract/v1" if extension_owned else "unconstrained-finite-document/v1"
-        ),
-        "maximum": None,
-    }
+    declared = _declared_cardinality_decision(
+        identity=identity,
+        owner=owner,
+        source_pointer=source_pointer,
+        schema=schema,
+        maximum_keyword="maxItems",
+        minimum_keyword="minItems",
+        unit="items",
+    )
+    if declared is not None:
+        return declared
+    return _open_extent_decision(
+        identity=identity,
+        owner=owner,
+        source_pointer=source_pointer,
+        dimension="cardinality",
+        unit="items",
+        extension_owned=extension_owned,
+        configuration_document=configuration_document,
+    )
+
+
+def _is_open_map(schema: Mapping[str, Any]) -> bool:
+    if schema.get("type") != "object":
+        return False
+    additional = schema.get("additionalProperties")
+    patterns = schema.get("patternProperties")
+    return (
+        additional is True
+        or isinstance(additional, Mapping)
+        or (isinstance(patterns, Mapping) and bool(patterns))
+    )
+
+
+def _map_decision(
+    *,
+    identity: str,
+    owner: str,
+    source_pointer: str,
+    schema: Mapping[str, Any],
+    extension_owned: bool,
+    configuration_document: bool,
+) -> dict[str, object]:
+    declared = _declared_cardinality_decision(
+        identity=identity,
+        owner=owner,
+        source_pointer=source_pointer,
+        schema=schema,
+        maximum_keyword="maxProperties",
+        minimum_keyword="minProperties",
+        unit="entries",
+    )
+    if declared is not None:
+        return declared
+    return _open_extent_decision(
+        identity=identity,
+        owner=owner,
+        source_pointer=source_pointer,
+        dimension="cardinality",
+        unit="entries",
+        extension_owned=extension_owned,
+        configuration_document=configuration_document,
+    )
 
 
 def _schema_decisions(
@@ -299,6 +542,7 @@ def _schema_decisions(
     include_definitions: bool = True,
 ) -> list[dict[str, object]]:
     owner, extension_owned = _source_owner(section, authority)
+    configuration_document = section == "configuration_documents"
     decisions: list[dict[str, object]] = []
     for pointer, node in _walk_schema(
         schema,
@@ -315,7 +559,7 @@ def _schema_decisions(
             if len(parts) >= 3 and parts[-2] == "properties":
                 model = parts[-3].replace("~1", "/").replace("~0", "~")
                 read_policy = response_arrays.get((model, field))
-        if node.get("type") == "array":
+        if node.get("type") == "array" or "maxItems" in node or "minItems" in node:
             decisions.append(
                 _array_decision(
                     identity=f"{identity_base}:cardinality",
@@ -323,9 +567,41 @@ def _schema_decisions(
                     source_pointer=pointer,
                     schema=node,
                     extension_owned=extension_owned,
+                    configuration_document=configuration_document,
                     read_policy=read_policy,
                 )
             )
+        if _is_open_map(node) or "maxProperties" in node or "minProperties" in node:
+            decisions.append(
+                _map_decision(
+                    identity=f"{identity_base}:map-cardinality",
+                    owner=owner,
+                    source_pointer=pointer,
+                    schema=node,
+                    extension_owned=extension_owned,
+                    configuration_document=configuration_document,
+                )
+            )
+        encoded_bytes_maximum = node.get("x-riverhog-encoded-bytes-max")
+        if isinstance(encoded_bytes_maximum, int) and not isinstance(encoded_bytes_maximum, bool):
+            declaration = _extent_declaration(node)
+            reason = declaration.get("reason") if declaration is not None else None
+            if not isinstance(reason, str) or not reason:
+                raise ExtentContractError(
+                    f"encoded byte maximum has no {EXTENT_DECLARATION} reason: {pointer}"
+                )
+            decision = _bound_decision(
+                identity=f"{identity_base}:encoded-bytes",
+                owner=owner,
+                source_pointer=pointer,
+                dimension="encoded-size",
+                unit="bytes",
+                minimum=None,
+                maximum=encoded_bytes_maximum,
+                reason=reason,
+            )
+            decision["source_constraint"] = {"field": "x-riverhog-encoded-bytes-max"}
+            decisions.append(decision)
         max_length = node.get("maxLength")
         fixed_pattern: str | None = None
         if max_length is None and isinstance(node.get("pattern"), str):
@@ -371,22 +647,16 @@ def _schema_decisions(
             and maximum is None
             and _EXTENT_NAME.search(str(title or field))
         ):
-            policy = "extension_owned" if extension_owned else "operational_policy"
             decisions.append(
-                {
-                    "id": f"{identity_base}:open-value",
-                    "owner": owner,
-                    "source_pointer": pointer,
-                    "dimension": "value",
-                    "unit": "schema-value",
-                    "policy": policy,
-                    "rule": (
-                        "extension-contract/v1"
-                        if extension_owned
-                        else "unconstrained-finite-document/v1"
-                    ),
-                    "maximum": None,
-                }
+                _open_extent_decision(
+                    identity=f"{identity_base}:open-value",
+                    owner=owner,
+                    source_pointer=pointer,
+                    dimension="value",
+                    unit="schema-value",
+                    extension_owned=extension_owned,
+                    configuration_document=configuration_document,
+                )
             )
     return decisions
 
@@ -480,6 +750,43 @@ def _openapi_decisions(openapi_by_application: Mapping[str, Any]) -> list[dict[s
                                     ),
                                 )
                             )
+                responses = operation.get("responses", {})
+                if isinstance(responses, Mapping):
+                    for status, response in sorted(responses.items()):
+                        if not isinstance(response, Mapping):
+                            continue
+                        content = response.get("content", {})
+                        if not isinstance(content, Mapping):
+                            continue
+                        for media_type, media in sorted(content.items()):
+                            if not isinstance(media, Mapping) or not isinstance(
+                                media.get("schema"), Mapping
+                            ):
+                                continue
+                            decisions.extend(
+                                _schema_decisions(
+                                    section="http_openapi",
+                                    authority=application,
+                                    schema=media["schema"],
+                                    source_pointer=_pointer(
+                                        "external_contract",
+                                        "http_openapi",
+                                        application,
+                                        "paths",
+                                        path,
+                                        method,
+                                        "responses",
+                                        str(status),
+                                        "content",
+                                        str(media_type),
+                                        "schema",
+                                    ),
+                                    identity_prefix=(
+                                        f"http:{application}:operation:{operation_id}:"
+                                        f"response:{status}:{media_type}"
+                                    ),
+                                )
+                            )
                 read = operation.get("x-riverhog-read-collection")
                 if not isinstance(read, Mapping):
                     continue
@@ -494,6 +801,7 @@ def _openapi_decisions(openapi_by_application: Mapping[str, Any]) -> list[dict[s
                         "unit": "items",
                         "policy": "segmented_no_total_max",
                         "rule": "route-progression/v1",
+                        "reason": "bounded-route-progression",
                         "progression": dict(read),
                     }
                 )
@@ -534,6 +842,7 @@ def _cli_decisions(cli_by_application: Mapping[str, Any]) -> list[dict[str, obje
                         "unit": "values-per-occurrence",
                         "policy": "fixed",
                         "rule": "schema-bound/v1",
+                        "reason": "fixed-command-argument-arity",
                         "minimum": nargs,
                         "maximum": nargs,
                         "source_constraint": {"field": "nargs"},
@@ -541,29 +850,27 @@ def _cli_decisions(cli_by_application: Mapping[str, Any]) -> list[dict[str, obje
                 )
             elif isinstance(nargs, str) and nargs in {"+", "*"}:
                 decisions.append(
-                    {
-                        "id": f"{identity}:values-per-occurrence",
-                        "owner": application,
-                        "source_pointer": source_pointer,
-                        "dimension": "cardinality",
-                        "unit": "values-per-occurrence",
-                        "policy": "operational_policy",
-                        "rule": "unconstrained-finite-document/v1",
-                        "maximum": None,
-                    }
+                    _open_extent_decision(
+                        identity=f"{identity}:values-per-occurrence",
+                        owner=application,
+                        source_pointer=source_pointer,
+                        dimension="cardinality",
+                        unit="values-per-occurrence",
+                        extension_owned=False,
+                        configuration_document=False,
+                    )
                 )
             if parameter.get("multiple") is True or parameter.get("count") is True:
                 decisions.append(
-                    {
-                        "id": f"{identity}:occurrences",
-                        "owner": application,
-                        "source_pointer": source_pointer,
-                        "dimension": "cardinality",
-                        "unit": "occurrences",
-                        "policy": "operational_policy",
-                        "rule": "unconstrained-finite-document/v1",
-                        "maximum": None,
-                    }
+                    _open_extent_decision(
+                        identity=f"{identity}:occurrences",
+                        owner=application,
+                        source_pointer=source_pointer,
+                        dimension="cardinality",
+                        unit="occurrences",
+                        extension_owned=False,
+                        configuration_document=False,
+                    )
                 )
             type_ = parameter.get("type")
             if isinstance(type_, Mapping):
@@ -621,7 +928,8 @@ def _configuration_environment_decisions(
                 "dimension": "value",
                 "unit": "configured-value",
                 "policy": "operational_policy",
-                "rule": "unconstrained-finite-document/v1",
+                "rule": "configured-capacity/v1",
+                "reason": "operator-configured-capacity",
                 "maximum": None,
                 "configuration": name,
             }
@@ -645,7 +953,8 @@ def _configuration_environment_decisions(
                     "dimension": "value",
                     "unit": "configured-value",
                     "policy": "operational_policy",
-                    "rule": "unconstrained-finite-document/v1",
+                    "rule": "configured-capacity/v1",
+                    "reason": "operator-configured-capacity",
                     "maximum": None,
                     "configuration": name,
                 }
@@ -722,10 +1031,18 @@ def extent_projection(external_contract: Mapping[str, Any]) -> dict[str, object]
     )
     if invalid_rules:
         raise ExtentContractError(f"extent decisions have invalid rule: {invalid_rules}")
+    unreasoned = sorted(
+        identity
+        for identity, decision in zip(identities, ordered, strict=True)
+        if not isinstance(decision.get("reason"), str) or not decision["reason"]
+    )
+    if unreasoned:
+        raise ExtentContractError(f"extent decisions have no reason: {unreasoned}")
     policy_counts = dict(sorted(Counter(str(item["policy"]) for item in ordered).items()))
     owner_counts = dict(sorted(Counter(str(item["owner"]) for item in ordered).items()))
     content = {
         "schema": SCHEMA,
+        "principles": PRINCIPLES,
         "rules": RULES,
         "decisions": ordered,
         "coverage": {

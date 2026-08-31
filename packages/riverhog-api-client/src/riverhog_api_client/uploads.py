@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 import httpx
 from riverhog_protocol import (
+    COLLECTION_UPLOAD_WORK_BATCH_MAX,
     CollectionId,
     CollectionUploadUnitAssignmentDocument,
     CollectionUploadUnitNumber,
@@ -20,8 +21,6 @@ from riverhog_protocol.errors import Conflict, ServiceUnavailable
 
 DEFAULT_UPLOAD_CONCURRENCY = 8
 DEFAULT_UPLOAD_WINDOW = 16
-MAX_UPLOAD_CONCURRENCY = 64
-MAX_UPLOAD_WINDOW = 256
 _TRANSIENT_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 UnitContent = Callable[[CollectionUploadUnitWorkDocument], bytes]
@@ -61,10 +60,8 @@ def configured_upload_concurrency(values: Mapping[str, str] | None = None) -> in
         value = int(raw_value)
     except ValueError as exc:
         raise ValueError("RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer") from exc
-    if value < 1 or value > MAX_UPLOAD_CONCURRENCY:
-        raise ValueError(
-            f"RIVERHOG_UPLOAD_FILE_CONCURRENCY must be between 1 and {MAX_UPLOAD_CONCURRENCY}"
-        )
+    if value < 1:
+        raise ValueError("RIVERHOG_UPLOAD_FILE_CONCURRENCY must be a positive integer")
     return value
 
 
@@ -77,19 +74,19 @@ def configured_upload_window(
     resolved_concurrency = (
         configured_upload_concurrency(environment) if concurrency is None else concurrency
     )
-    if resolved_concurrency < 1 or resolved_concurrency > MAX_UPLOAD_CONCURRENCY:
-        raise ValueError(f"upload concurrency must be between 1 and {MAX_UPLOAD_CONCURRENCY}")
+    if resolved_concurrency < 1:
+        raise ValueError("upload concurrency must be positive")
     raw_value = environment.get("RIVERHOG_UPLOAD_FILE_WINDOW", "").strip()
     if not raw_value:
-        return min(resolved_concurrency * 2, MAX_UPLOAD_WINDOW)
+        return resolved_concurrency * 2
     try:
         value = int(raw_value)
     except ValueError as exc:
         raise ValueError("RIVERHOG_UPLOAD_FILE_WINDOW must be a positive integer") from exc
-    if value < resolved_concurrency or value > MAX_UPLOAD_WINDOW:
+    if value < resolved_concurrency:
         raise ValueError(
-            "RIVERHOG_UPLOAD_FILE_WINDOW must be between upload concurrency "
-            f"({resolved_concurrency}) and {MAX_UPLOAD_WINDOW}"
+            "RIVERHOG_UPLOAD_FILE_WINDOW must be at least upload concurrency "
+            f"({resolved_concurrency})"
         )
     return value
 
@@ -164,19 +161,16 @@ def upload_collection_units(
     retry_notice: RetryNotice | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> int:
-    if concurrency < 1 or concurrency > MAX_UPLOAD_CONCURRENCY:
-        raise ValueError(f"upload concurrency must be between 1 and {MAX_UPLOAD_CONCURRENCY}")
-    if window < concurrency or window > MAX_UPLOAD_WINDOW:
-        raise ValueError(
-            f"upload window must be between upload concurrency ({concurrency}) "
-            f"and {MAX_UPLOAD_WINDOW}"
-        )
+    if concurrency < 1:
+        raise ValueError("upload concurrency must be positive")
+    if window < concurrency:
+        raise ValueError(f"upload window must be at least upload concurrency ({concurrency})")
     uploaded = 0
     resumed_reported = False
     while True:
         batch = api.acquire_collection_upload_session_work(
             collection_id,
-            limit=min(window, MAX_UPLOAD_CONCURRENCY),
+            limit=min(window, COLLECTION_UPLOAD_WORK_BATCH_MAX),
         )
         if on_resumed is not None and not resumed_reported:
             on_resumed(batch.committed_payload_bytes)
@@ -298,8 +292,6 @@ __all__ = [
     "CollectionUnitApi",
     "DEFAULT_UPLOAD_CONCURRENCY",
     "DEFAULT_UPLOAD_WINDOW",
-    "MAX_UPLOAD_CONCURRENCY",
-    "MAX_UPLOAD_WINDOW",
     "configured_upload_concurrency",
     "configured_upload_window",
     "put_collection_upload_unit",

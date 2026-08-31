@@ -54,7 +54,17 @@
         "age_state": {"$ref": "#/$defs/age_state"},
         "index_sha256": {"$ref": "#/$defs/sha256"},
         "plan_sha256": {"$ref": "#/$defs/sha256"},
-        "parts": {"type": "array", "minItems": 1, "maxItems": 1024, "items": {"$ref": "#/$defs/part"}}
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "x-riverhog-extent": {
+            "policy": "segmented_no_total_max",
+            "reason": "bounded-archive-volume-parts",
+            "progression": "ordered-archive-volume-sequence"
+          },
+          "items": {"$ref": "#/$defs/part"}
+        }
       }
     },
     "segment_file": {
@@ -81,7 +91,17 @@
         "plaintext_bytes": {"type": "integer", "minimum": 0},
         "age_state": {"$ref": "#/$defs/age_state"},
         "file": {"$ref": "#/$defs/segment_file"},
-        "parts": {"type": "array", "minItems": 1, "maxItems": 1024, "items": {"$ref": "#/$defs/part"}}
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "x-riverhog-extent": {
+            "policy": "segmented_no_total_max",
+            "reason": "bounded-archive-volume-parts",
+            "progression": "ordered-archive-volume-sequence"
+          },
+          "items": {"$ref": "#/$defs/part"}
+        }
       }
     }
   }

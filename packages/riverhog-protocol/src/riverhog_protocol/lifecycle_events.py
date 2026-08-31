@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
-from lifecycle_events.models import CloudEvent, normalize_event_context
+from lifecycle_events.models import CloudEvent, EventContext, normalize_event_context
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from riverhog_protocol.paths import CollectionId, normalize_collection_id
@@ -75,7 +75,7 @@ class RiverhogEventData(RiverhogEventModel):
     actor: RiverhogActor
     initiator: RiverhogActor
     cause: RiverhogEventCause | None = None
-    context: dict[str, Any] | None = None
+    context: EventContext | None = None
 
     @field_validator("context")
     @classmethod

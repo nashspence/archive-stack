@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal, Self
 
+from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, RootModel, model_validator
 from riverhog_application_access import ApplicationKeyId, ApplicationName
 from riverhog_protocol import (
@@ -107,7 +108,7 @@ class ArchiveCopyOut(
 
 class CreateArchiveCopyRequest(ArchiveCopyStoreSelectionDocument):
     collection_id: CollectionId
-    event_context: dict[str, Any] | None = None
+    event_context: EventContext | None = None
 
 
 class ArchiveCopyJobOut(RiverhogModel):

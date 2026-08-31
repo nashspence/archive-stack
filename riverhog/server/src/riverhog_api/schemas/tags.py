@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
+from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import CollectionId, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
+from riverhog_protocol.transport import TAG_DEPENDENCY_SAMPLE_MAX
 
 from riverhog_api.schemas.common import RiverhogModel
 
@@ -52,7 +54,15 @@ class CollectionTagsOut(RiverhogModel):
 
 class TagDependencySummaryOut(RiverhogModel):
     count: int
-    sample: list[str]
+    sample: list[str] = Field(
+        max_length=TAG_DEPENDENCY_SAMPLE_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-diagnostic-sample-with-complete-count",
+            }
+        },
+    )
     truncated: bool
 
 
@@ -113,7 +123,7 @@ class TagDeletionResultOut(RiverhogModel):
 
 
 class MutateCollectionTagRequest(RiverhogModel):
-    event_context: dict[str, Any] | None = None
+    event_context: EventContext | None = None
 
 
 class ReplaceCollectionTagsRequest(MutateCollectionTagRequest):

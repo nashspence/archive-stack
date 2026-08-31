@@ -118,7 +118,16 @@ class PortableCollectionInventoryPage(BaseModel):
         PORTABLE_COLLECTION_INVENTORY_PAGE_FORMAT
     )
     authority: PortableCollectionInventoryAuthority
-    files: list[ImmutableFileIdentityDocument] = Field(max_length=1000)
+    files: list[ImmutableFileIdentityDocument] = Field(
+        max_length=1000,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-portable-inventory-page",
+                "progression": "authority-bound-cursor",
+            }
+        },
+    )
     next_cursor: str | None = Field(default=None, min_length=1, max_length=8192)
     complete: bool
 

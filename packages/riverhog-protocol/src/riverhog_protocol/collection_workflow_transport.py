@@ -42,6 +42,30 @@ WORK_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
 CONTROLLER_EVIDENCE_MAX_BYTES = 16 * 1024 * 1024
 DISPOSITION_BATCH_MAX = 128
 WORKFLOW_SET_BATCH_MAX = 128
+ControllerEvidenceDocument = Annotated[
+    dict[str, Any],
+    Field(
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-controller-evidence-envelope",
+            },
+            "x-riverhog-encoded-bytes-max": CONTROLLER_EVIDENCE_MAX_BYTES,
+        }
+    ),
+]
+WorkDocument = Annotated[
+    dict[str, Any],
+    Field(
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-work-document-envelope",
+            },
+            "x-riverhog-encoded-bytes-max": WORK_DOCUMENT_MAX_BYTES,
+        }
+    ),
+]
 
 
 class RiverhogWorkflowDocument(BaseModel):
@@ -158,7 +182,14 @@ class CollectionRootBatchDocument(RiverhogWorkflowDocument):
     inputs: list[CollectionRootIdentityDocument] = Field(
         min_length=1,
         max_length=WORKFLOW_SET_BATCH_MAX,
-        json_schema_extra={"uniqueItems": True},
+        json_schema_extra={
+            "uniqueItems": True,
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-append",
+                "progression": "start_ordinal",
+            },
+        },
     )
 
 
@@ -166,7 +197,16 @@ class CollectionRootPageDocument(RiverhogWorkflowDocument):
     authority: ExactSetAuthorityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    inputs: list[CollectionRootIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+    inputs: list[CollectionRootIdentityDocument] = Field(
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class CollectionArtifactBatchDocument(RiverhogWorkflowDocument):
@@ -175,7 +215,14 @@ class CollectionArtifactBatchDocument(RiverhogWorkflowDocument):
     artifacts: list[CollectionArtifactIdentityDocument] = Field(
         min_length=1,
         max_length=WORKFLOW_SET_BATCH_MAX,
-        json_schema_extra={"uniqueItems": True},
+        json_schema_extra={
+            "uniqueItems": True,
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-append",
+                "progression": "start_ordinal",
+            },
+        },
     )
 
 
@@ -183,7 +230,16 @@ class CollectionArtifactPageDocument(RiverhogWorkflowDocument):
     authority: ArtifactSetAuthorityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    artifacts: list[CollectionArtifactIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+    artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class OutputTagBatchDocument(RiverhogWorkflowDocument):
@@ -192,7 +248,14 @@ class OutputTagBatchDocument(RiverhogWorkflowDocument):
     tags: list[CanonicalTag] = Field(
         min_length=1,
         max_length=WORKFLOW_SET_BATCH_MAX,
-        json_schema_extra={"uniqueItems": True},
+        json_schema_extra={
+            "uniqueItems": True,
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-append",
+                "progression": "start_ordinal",
+            },
+        },
     )
 
 
@@ -200,14 +263,32 @@ class OutputTagPageDocument(RiverhogWorkflowDocument):
     authority: ExactSetAuthorityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    tags: list[CanonicalTag] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+    tags: list[CanonicalTag] = Field(
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class ProcessingOutcomePageDocument(RiverhogWorkflowDocument):
     authority: ExactSetAuthorityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(max_length=WORKFLOW_SET_BATCH_MAX)
+    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(
+        max_length=WORKFLOW_SET_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class OperationIdentityDocument(RiverhogWorkflowDocument):
@@ -300,7 +381,14 @@ class ArtifactDispositionBatchDocument(RiverhogWorkflowDocument):
     dispositions: list[ArtifactDispositionDocument] = Field(
         min_length=1,
         max_length=DISPOSITION_BATCH_MAX,
-        json_schema_extra={"uniqueItems": True},
+        json_schema_extra={
+            "uniqueItems": True,
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-disposition-append",
+                "progression": "sealed-disposition-authority",
+            },
+        },
     )
 
 
@@ -309,7 +397,14 @@ class ArtifactDispositionOutputBatchDocument(RiverhogWorkflowDocument):
     outputs: list[ArtifactDispositionOutputDocument] = Field(
         min_length=1,
         max_length=DISPOSITION_BATCH_MAX,
-        json_schema_extra={"uniqueItems": True},
+        json_schema_extra={
+            "uniqueItems": True,
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-disposition-append",
+                "progression": "sealed-disposition-authority",
+            },
+        },
     )
 
 
@@ -353,14 +448,32 @@ class ArtifactDispositionPageDocument(RiverhogWorkflowDocument):
     authority: ArtifactDispositionSetIdentityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    dispositions: list[ArtifactDispositionDocument] = Field(max_length=DISPOSITION_BATCH_MAX)
+    dispositions: list[ArtifactDispositionDocument] = Field(
+        max_length=DISPOSITION_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class ArtifactDispositionOutputPageDocument(RiverhogWorkflowDocument):
     authority: ArtifactDispositionSetIdentityDocument
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
-    outputs: list[ArtifactDispositionOutputDocument] = Field(max_length=DISPOSITION_BATCH_MAX)
+    outputs: list[ArtifactDispositionOutputDocument] = Field(
+        max_length=DISPOSITION_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-authority-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
 
 class ClaimFenceDocument(RiverhogWorkflowDocument):
@@ -379,7 +492,7 @@ class CollectionDerivationDocument(RiverhogWorkflowDocument):
     output_tag_set_sha256: SHA256
     execution_envelope_sha256: SHA256
     execution_sha256: SHA256
-    controller_evidence: dict[str, Any]
+    controller_evidence: ControllerEvidenceDocument
     controller_evidence_sha256: SHA256
     disposition_set: ArtifactDispositionSetIdentityDocument
 
@@ -397,7 +510,7 @@ class CollectionDerivationDocument(RiverhogWorkflowDocument):
 
 class ProcessingClaimCreateDocument(RiverhogWorkflowDocument):
     work_id: SHA256
-    work_document: dict[str, Any]
+    work_document: WorkDocument
     work_document_sha256: SHA256
     lease_seconds: int = Field(default=1800, ge=30, le=86400)
     purpose: str = Field(default="collection-work/v1", min_length=1, max_length=160)
@@ -432,7 +545,7 @@ class ProcessingClaimPlanSealDocument(RiverhogWorkflowDocument):
 
     fence: int = Field(ge=1)
     execution_id: SHA256
-    controller_evidence: dict[str, Any]
+    controller_evidence: ControllerEvidenceDocument
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
     retirement_policy: RetirementPolicy = "retain"
@@ -535,7 +648,7 @@ class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
     )
 
     execution_id: SHA256
-    controller_evidence: dict[str, Any]
+    controller_evidence: ControllerEvidenceDocument
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
     inputs: ExactSetAuthorityDocument
@@ -679,7 +792,7 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
     abandonment_reason: str | None = Field(default=None, min_length=1, max_length=1000)
     released_at: Timestamp | None = None
     output_collection_id: CollectionId | None = None
-    work_document: dict[str, Any]
+    work_document: WorkDocument
     work_document_sha256: SHA256
     inputs: ReceivingSetDocument
     plan: ProcessingClaimPlanDocument | None = None

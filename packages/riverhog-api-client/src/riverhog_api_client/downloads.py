@@ -14,8 +14,6 @@ from riverhog_protocol import CollectionId
 
 DEFAULT_DOWNLOAD_CONCURRENCY = 4
 DEFAULT_DOWNLOAD_WINDOW = 8
-MAX_DOWNLOAD_CONCURRENCY = 64
-MAX_DOWNLOAD_WINDOW = 256
 
 DownloadProgress = Callable[["RetrievalDownload", int], None]
 DownloadHeartbeat = Callable[[], None]
@@ -52,10 +50,8 @@ def configured_download_concurrency(values: Mapping[str, str] | None = None) -> 
         value = int(raw_value)
     except ValueError as exc:
         raise ValueError("RIVERHOG_DOWNLOAD_FILE_CONCURRENCY must be a positive integer") from exc
-    if value < 1 or value > MAX_DOWNLOAD_CONCURRENCY:
-        raise ValueError(
-            f"RIVERHOG_DOWNLOAD_FILE_CONCURRENCY must be between 1 and {MAX_DOWNLOAD_CONCURRENCY}"
-        )
+    if value < 1:
+        raise ValueError("RIVERHOG_DOWNLOAD_FILE_CONCURRENCY must be a positive integer")
     return value
 
 
@@ -68,19 +64,19 @@ def configured_download_window(
     resolved_concurrency = (
         configured_download_concurrency(environment) if concurrency is None else concurrency
     )
-    if resolved_concurrency < 1 or resolved_concurrency > MAX_DOWNLOAD_CONCURRENCY:
-        raise ValueError(f"download concurrency must be between 1 and {MAX_DOWNLOAD_CONCURRENCY}")
+    if resolved_concurrency < 1:
+        raise ValueError("download concurrency must be positive")
     raw_value = environment.get("RIVERHOG_DOWNLOAD_FILE_WINDOW", "").strip()
     if not raw_value:
-        return min(resolved_concurrency * 2, MAX_DOWNLOAD_WINDOW)
+        return resolved_concurrency * 2
     try:
         value = int(raw_value)
     except ValueError as exc:
         raise ValueError("RIVERHOG_DOWNLOAD_FILE_WINDOW must be a positive integer") from exc
-    if value < resolved_concurrency or value > MAX_DOWNLOAD_WINDOW:
+    if value < resolved_concurrency:
         raise ValueError(
-            "RIVERHOG_DOWNLOAD_FILE_WINDOW must be between download concurrency "
-            f"({resolved_concurrency}) and {MAX_DOWNLOAD_WINDOW}"
+            "RIVERHOG_DOWNLOAD_FILE_WINDOW must be at least download concurrency "
+            f"({resolved_concurrency})"
         )
     return value
 
@@ -97,13 +93,10 @@ def download_retrieval_files(
     heartbeat: DownloadHeartbeat | None = None,
     heartbeat_interval_seconds: float = 60.0,
 ) -> int:
-    if concurrency < 1 or concurrency > MAX_DOWNLOAD_CONCURRENCY:
-        raise ValueError(f"download concurrency must be between 1 and {MAX_DOWNLOAD_CONCURRENCY}")
-    if window < concurrency or window > MAX_DOWNLOAD_WINDOW:
-        raise ValueError(
-            f"download window must be between download concurrency ({concurrency}) "
-            f"and {MAX_DOWNLOAD_WINDOW}"
-        )
+    if concurrency < 1:
+        raise ValueError("download concurrency must be positive")
+    if window < concurrency:
+        raise ValueError(f"download window must be at least download concurrency ({concurrency})")
     if not downloads:
         return 0
     if heartbeat is not None and heartbeat_interval_seconds <= 0:
@@ -202,8 +195,6 @@ __all__ = [
     "DownloadHeartbeat",
     "DEFAULT_DOWNLOAD_CONCURRENCY",
     "DEFAULT_DOWNLOAD_WINDOW",
-    "MAX_DOWNLOAD_CONCURRENCY",
-    "MAX_DOWNLOAD_WINDOW",
     "RetrievalDownload",
     "RetrievalDownloadApi",
     "configured_download_concurrency",

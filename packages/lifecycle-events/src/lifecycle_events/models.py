@@ -4,13 +4,25 @@ import json
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 CLOUDEVENTS_JSON_CONTENT_TYPE = "application/cloudevents+json"
 MAX_EVENT_CONTEXT_BYTES = 4096
+EventContext = Annotated[
+    dict[str, Any],
+    Field(
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-lifecycle-event-context",
+            },
+            "x-riverhog-encoded-bytes-max": MAX_EVENT_CONTEXT_BYTES,
+        }
+    ),
+]
 
 
 def event_time(value: datetime | None = None) -> str:
@@ -142,6 +154,7 @@ __all__ = [
     "CLOUDEVENTS_JSON_CONTENT_TYPE",
     "MAX_EVENT_CONTEXT_BYTES",
     "CloudEvent",
+    "EventContext",
     "EventPage",
     "caused_event",
     "cloud_event",

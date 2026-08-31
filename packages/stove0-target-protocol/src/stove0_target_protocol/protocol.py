@@ -279,7 +279,7 @@ class TargetInputAuthority(TargetProtocolModel):
     """Small exact input authority retained by Stove0 and traversed in bounded pages."""
 
     selection: ArtifactSelectionRef
-    roles: tuple[TargetInputRoleCount, ...] = Field(min_length=1, max_length=256)
+    roles: tuple[TargetInputRoleCount, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_summary(self) -> Self:
@@ -321,7 +321,16 @@ class TargetInputPage(TargetProtocolModel):
     continuation: Sha256 | None = None
     next_continuation: Sha256 | None = None
     complete: bool
-    artifacts: tuple[InputArtifact, ...] = Field(max_length=TARGET_INPUT_PAGE_MAX)
+    artifacts: tuple[InputArtifact, ...] = Field(
+        max_length=TARGET_INPUT_PAGE_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-target-input-page",
+                "progression": "authority-bound-start_ordinal",
+            }
+        },
+    )
 
     @model_validator(mode="after")
     def bind_page(self) -> Self:
@@ -372,7 +381,7 @@ class OutputArtifactSetIdentity(TargetProtocolModel):
 
     artifact_count: int = Field(ge=1)
     total_bytes: int = Field(ge=0)
-    roles: tuple[OutputArtifactRoleCount, ...] = Field(min_length=1, max_length=256)
+    roles: tuple[OutputArtifactRoleCount, ...] = Field(min_length=1)
     sha256: Sha256
 
     @model_validator(mode="after")
@@ -839,7 +848,15 @@ class ExternalEffectReceiptPayload(TargetProtocolModel):
     operation_contract_sha256: Sha256
     plan_sha256: Sha256
     execution_sha256: Sha256
-    result: dict[str, JsonValue]
+    result: dict[str, JsonValue] = Field(
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-external-effect-receipt",
+            },
+            "x-riverhog-encoded-bytes-max": MAXIMUM_EFFECT_RECEIPT_RESULT_BYTES,
+        }
+    )
 
     @model_validator(mode="after")
     def bounded_result(self) -> Self:

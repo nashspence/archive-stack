@@ -19,7 +19,6 @@ DEFAULT_RETRIEVAL_READ_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_SOURCE_READ_CHUNK_BYTES = 8 * 1024 * 1024
 DEFAULT_AGE_SESSION_CACHE_ENTRIES = 128
 DEFAULT_AGE_DERIVATION_CONCURRENCY = 4
-MAX_WORKER_CONCURRENCY = 128
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 _TRANSFER_LOG = logging.getLogger("riverhog.transfer")
 
@@ -45,23 +44,20 @@ class ArchiveThroughputTuning:
     age_derivation_concurrency: int = DEFAULT_AGE_DERIVATION_CONCURRENCY
 
     def __post_init__(self) -> None:
-        _bounded_int(
+        _minimum_int(
             self.upload_prepare_concurrency,
             name="archive preparation concurrency",
             minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
         )
-        _bounded_int(
+        _minimum_int(
             self.write_concurrency,
             name="write concurrency",
             minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
         )
-        _bounded_int(
+        _minimum_int(
             self.upload_request_concurrency,
             name="upload request concurrency",
             minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
         )
         for name, value in (
             ("upload maximum in-flight bytes", self.upload_max_inflight_bytes),
@@ -69,24 +65,21 @@ class ArchiveThroughputTuning:
             ("retrieval maximum in-flight bytes", self.retrieval_max_inflight_bytes),
             ("retrieval read chunk bytes", self.retrieval_read_chunk_bytes),
         ):
-            _bounded_int(value, name=name, minimum=64 * 1024, maximum=1 << 50)
-        _bounded_int(
+            _minimum_int(value, name=name, minimum=64 * 1024)
+        _minimum_int(
             self.retrieval_request_concurrency,
             name="retrieval request concurrency",
             minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
         )
-        _bounded_int(
+        _minimum_int(
             self.age_session_cache_entries,
             name="age session cache entries",
             minimum=0,
-            maximum=4096,
         )
-        _bounded_int(
+        _minimum_int(
             self.age_derivation_concurrency,
             name="age derivation concurrency",
             minimum=1,
-            maximum=MAX_WORKER_CONCURRENCY,
         )
 
     @classmethod
@@ -341,9 +334,9 @@ def log_transfer_timing(timing: TransferTiming) -> None:
     )
 
 
-def _bounded_int(value: int, *, name: str, minimum: int, maximum: int) -> int:
-    if isinstance(value, bool) or value < minimum or value > maximum:
-        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+def _minimum_int(value: int, *, name: str, minimum: int) -> int:
+    if isinstance(value, bool) or value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
     return value
 
 

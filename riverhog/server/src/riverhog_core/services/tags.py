@@ -9,6 +9,7 @@ from http_api_contracts import closed_literal_values
 from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.errors import BadRequest, Conflict, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_tag
+from riverhog_protocol.transport import TAG_DEPENDENCY_SAMPLE_MAX
 from sqlalchemy import asc, delete, desc, exists, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
@@ -62,7 +63,6 @@ from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 _SORT_FIELDS = closed_literal_values(TagSort)
 _SORT_ORDERS = closed_literal_values(SortOrder)
 _DELETE_CHALLENGE_PREFIX = "delete-tag"
-_DEPENDENCY_SAMPLE_LIMIT = 10
 _TAG_DELETE_WARNING = (
     "Deleting this empty tag removes only its Riverhog catalog definition. "
     "Riverhog can inspect only dependencies recorded in its own catalog. Confirm that "
@@ -733,11 +733,11 @@ def _dependency_summary(
     total = int(
         session.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
     )
-    rows = session.execute(query.limit(_DEPENDENCY_SAMPLE_LIMIT)).all()
+    rows = session.execute(query.limit(TAG_DEPENDENCY_SAMPLE_MAX)).all()
     return {
         "count": total,
         "sample": [render(row) for row in rows],
-        "truncated": total > _DEPENDENCY_SAMPLE_LIMIT,
+        "truncated": total > TAG_DEPENDENCY_SAMPLE_MAX,
     }
 
 

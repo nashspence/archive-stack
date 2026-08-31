@@ -101,6 +101,13 @@ class CollectionUploadRawDigestBatchDocument(CollectionUploadDocument):
     sha256s: list[Sha256] = Field(
         min_length=1,
         max_length=RAW_SOURCE_DIGEST_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-raw-digest-append",
+                "progression": "first_part",
+            }
+        },
     )
 
     @field_validator("path")
@@ -196,7 +203,14 @@ class CollectionUploadUnitDocument(CollectionUploadDocument):
     payload_bytes: int = Field(ge=0, strict=True)
     plaintext_bytes: int = Field(ge=0, strict=True)
     sources: list[CollectionUploadUnitSourceDocument] = Field(
-        max_length=COLLECTION_UPLOAD_UNIT_SOURCE_MAX
+        max_length=COLLECTION_UPLOAD_UNIT_SOURCE_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-upload-unit-source-map",
+                "progression": "collection-volume-sequence",
+            }
+        },
     )
 
     @model_validator(mode="after")
@@ -248,7 +262,14 @@ class CollectionUploadWorkBatchDocument(CollectionUploadDocument):
     complete: bool
     committed_payload_bytes: int = Field(ge=0, strict=True)
     work: list[CollectionUploadUnitAssignmentDocument] = Field(
-        max_length=COLLECTION_UPLOAD_WORK_BATCH_MAX
+        max_length=COLLECTION_UPLOAD_WORK_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-actionable-work-acquisition",
+                "progression": "repeated-acquisition-until-complete",
+            }
+        },
     )
 
     @field_validator("collection_id")
@@ -275,6 +296,13 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
     files: list[CollectionUploadFileIn] = Field(
         min_length=1,
         max_length=COLLECTION_UPLOAD_FILE_BATCH_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-upload-registration",
+                "progression": "repeated-canonical-registration",
+            }
+        },
     )
 
     @model_validator(mode="after")

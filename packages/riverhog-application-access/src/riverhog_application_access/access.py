@@ -174,7 +174,13 @@ class ApplicationAccessGrantSet(RootModel[list[ApplicationAccessGrant]]):
                         "properties": {"permission": {"const": ALL_PERMISSIONS}},
                     }
                 },
-                "then": {"maxItems": 1},
+                "then": {
+                    "maxItems": 1,
+                    "x-riverhog-extent": {
+                        "policy": "contract_max",
+                        "reason": "wildcard-access-grant-is-exclusive",
+                    },
+                },
             }
         )
         return schema
