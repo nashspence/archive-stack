@@ -153,6 +153,13 @@ def test_exact_sha_evidence_contains_only_generated_current_rows(
     assert payload["performance"]["cold_cli_startup"]["riverhog"]["median_ms"] == 1.0
     assert payload["performance"]["local_api"]["operations"]
     assert payload["qualification"]["positive_local_lifecycles"]["status"] == "passed"
+    extent = payload["qualification"]["extent_contract"]
+    assert extent["status"] == "passed"
+    assert extent["schema"] == "riverhog-contract-freeze/v1"
+    assert extent["extent_schema"] == "riverhog-extent-contract/v1"
+    assert extent["extent_decisions"] > 0
+    assert len(extent["projection_sha256"]) == 64
+    assert len(extent["extent_sha256"]) == 64
     assert payload["qualification"]["cli_human_json_projection"]["status"] == "passed"
     assert payload["qualification"]["bounded_state_access"]["status"] == "passed"
     assert payload["qualification"]["event_cursor_restart_resume"]["status"] == "passed"
@@ -172,6 +179,39 @@ def test_exact_sha_evidence_contains_only_generated_current_rows(
         assert "commands lack executed human/JSON projection parity" in str(exc)
     else:
         raise AssertionError("missing executable CLI projection parity must fail qualification")
+
+
+def test_operation_evidence_rejects_an_incomplete_extent_authority(tmp_path: Path) -> None:
+    module = load_script()
+    authority = tmp_path / "contract.json"
+    authority.write_text(
+        json.dumps(
+            {
+                "schema": "riverhog-contract-freeze/v1",
+                "external_contract": {
+                    "extents": {
+                        "schema": "riverhog-extent-contract/v1",
+                        "sha256": "a" * 64,
+                        "coverage": {
+                            "classified": 1,
+                            "discovered": 2,
+                            "missing": 1,
+                            "duplicate": 0,
+                            "stale": 0,
+                            "undecided": 0,
+                        },
+                    }
+                },
+            }
+        )
+    )
+
+    try:
+        module._contract_freeze_identity(authority)
+    except module.QualificationError as exc:
+        assert "extent authority is incomplete" in str(exc)
+    else:
+        raise AssertionError("incomplete extent authority must fail runtime qualification")
 
 
 def test_timing_evidence_fails_closed_on_missing_local_operation(tmp_path: Path) -> None:

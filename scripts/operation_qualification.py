@@ -55,6 +55,7 @@ TIMING_SCHEMA = "riverhog-operation-timings/v1"
 HTTP_METHODS = frozenset({"delete", "get", "patch", "post", "put"})
 SUPPORTED_ROUTE_METHODS = HTTP_METHODS | {"head"}
 SOURCE_SHA_PATTERN = "0123456789abcdef"
+CONTRACT_FREEZE = Path(__file__).resolve().parents[1] / "qualification/contracts/riverhog-v1.json"
 
 
 class _RiverhogContractApi:
@@ -785,6 +786,33 @@ def _source_sha(value: str) -> str:
     return normalized
 
 
+def _contract_freeze_identity(path: Path = CONTRACT_FREEZE) -> dict[str, object]:
+    """Bind runtime evidence to the exact checked-in semantic extent authority."""
+
+    try:
+        content = path.read_bytes()
+        payload = json.loads(content)
+        extents = payload["external_contract"]["extents"]
+        coverage = extents["coverage"]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+        raise QualificationError("contract-freeze extent authority is unavailable") from exc
+    if (
+        payload.get("schema") != "riverhog-contract-freeze/v1"
+        or extents.get("schema") != "riverhog-extent-contract/v1"
+        or any(coverage.get(key) != 0 for key in ("missing", "duplicate", "stale", "undecided"))
+        or coverage.get("classified") != coverage.get("discovered")
+        or not isinstance(extents.get("sha256"), str)
+    ):
+        raise QualificationError("contract-freeze extent authority is incomplete")
+    return {
+        "schema": payload["schema"],
+        "projection_sha256": hashlib.sha256(content).hexdigest(),
+        "extent_schema": extents["schema"],
+        "extent_sha256": extents["sha256"],
+        "extent_decisions": coverage["classified"],
+    }
+
+
 def _cold_cli_timings(*, trials: int = 3) -> dict[str, object]:
     entrypoints = {
         "riverhog": "from riverhog_cli.main import main; raise SystemExit(main())",
@@ -978,6 +1006,10 @@ def evidence(*, source_sha: str, timings: Path) -> dict[str, object]:
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "summary": _summary(matrix),
         "qualification": {
+            "extent_contract": {
+                "status": "passed",
+                **_contract_freeze_identity(),
+            },
             "positive_local_lifecycles": {
                 "status": "passed",
                 "operations": sum(item.provider_evidence is None for item in matrix),

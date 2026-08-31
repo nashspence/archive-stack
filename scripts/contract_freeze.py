@@ -12,14 +12,15 @@ import json
 import re
 import sys
 import tomllib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import MISSING, asdict, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
-import click
+import extent_contract
+import gogurt_core
 import operation_qualification
 import release as release_contract
 from gogurt.cli import app as gogurt_app
@@ -45,7 +46,9 @@ from typer.main import get_command
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "qualification/contracts/riverhog-v1.json"
+TRACE_OUTPUT = ROOT / "qualification/contracts/riverhog-v1-trace.json"
 SCHEMA = "riverhog-contract-freeze/v1"
+TRACE_SCHEMA = "riverhog-contract-trace/v1"
 ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]+$")
 CONFIGURATION_ENVIRONMENT_NAME = re.compile(
     r"^(?:GOGURT|MANGO|RIVERHOG|STOVE0|VCRUNCH)_[A-Z0-9_]+$"
@@ -380,6 +383,12 @@ def _click_type(parameter: Any) -> dict[str, object]:
     choices = getattr(type_, "choices", None)
     if choices is not None:
         result["choices"] = list(choices)
+    minimum = _json_value(getattr(type_, "min", None))
+    maximum = _json_value(getattr(type_, "max", None))
+    if minimum is not None:
+        result["minimum"] = minimum
+    if maximum is not None:
+        result["maximum"] = maximum
     return result
 
 
@@ -392,12 +401,13 @@ def _click_parameter(parameter: Any) -> dict[str, object]:
         "multiple": parameter.multiple,
         "type": _click_type(parameter),
     }
-    if isinstance(parameter, click.Option):
+    if hasattr(parameter, "opts"):
         result["options"] = list(parameter.opts)
+    if hasattr(parameter, "secondary_opts"):
         result["secondary_options"] = list(parameter.secondary_opts)
-        result["is_flag"] = parameter.is_flag
-        result["count"] = parameter.count
-        result["envvar"] = _json_value(parameter.envvar)
+    for attribute in ("is_flag", "count", "envvar"):
+        if hasattr(parameter, attribute):
+            result[attribute] = _json_value(getattr(parameter, attribute))
     default = _json_value(parameter.default)
     if default is not None:
         result["default"] = default
@@ -409,9 +419,10 @@ def _click_command(command: Any) -> dict[str, object]:
         "name": command.name,
         "parameters": [_click_parameter(parameter) for parameter in command.params],
     }
-    if isinstance(command, click.Group):
+    commands = getattr(command, "commands", None)
+    if isinstance(commands, Mapping):
         result["commands"] = {
-            name: _click_command(child) for name, child in sorted(command.commands.items())
+            name: _click_command(child) for name, child in sorted(commands.items())
         }
     return result
 
@@ -466,11 +477,10 @@ def _cli_surfaces() -> dict[str, object]:
     }
 
 
-def _environment_names(
+def _environment_inventory(
     projects: list[release_contract.Project],
 ) -> list[dict[str, object]]:
-    consumers: dict[str, set[str]] = defaultdict(set)
-    expressions: dict[str, set[str]] = defaultdict(set)
+    bindings: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
 
     def literal_name(node: ast.AST, constants: Mapping[str, str]) -> str | None:
         value: object = (
@@ -509,19 +519,36 @@ def _environment_names(
                     name = literal_name(candidate, constants)
                     if name is None:
                         continue
-                    consumers[name].add(project.name)
-                    expressions[name].add(ast.unparse(node))
+                    bindings[name].add(
+                        (
+                            project.name,
+                            source.relative_to(ROOT).as_posix(),
+                            ast.unparse(node),
+                        )
+                    )
     return [
         {
             "name": name,
-            "consumers": sorted(names),
-            "acceptance_expressions": sorted(expressions[name]),
+            "consumers": sorted({consumer for consumer, _, _ in values}),
+            "bindings": [
+                {"consumer": consumer, "path": path, "expression": expression}
+                for consumer, path, expression in sorted(values)
+            ],
         }
-        for name, names in sorted(consumers.items())
+        for name, values in sorted(bindings.items())
     ]
 
 
-def _configuration_documents() -> list[dict[str, object]]:
+def _environment_names(
+    projects: list[release_contract.Project],
+) -> list[dict[str, object]]:
+    return [
+        {"name": item["name"], "consumers": item["consumers"]}
+        for item in _environment_inventory(projects)
+    ]
+
+
+def _configuration_documents() -> dict[str, object]:
     documents = {
         "gogurt-routes": GOGURT_ROUTES_SCHEMA,
         "mango-fish": MangoFishConfig.model_json_schema(mode="validation"),
@@ -530,9 +557,7 @@ def _configuration_documents() -> list[dict[str, object]]:
         "stove0-review-target": ReviewTargetConfig.model_json_schema(mode="validation"),
         "stove0-review-target-sampler": SamplerConfig.model_json_schema(mode="validation"),
     }
-    return [
-        {"authority": name, "document": document} for name, document in sorted(documents.items())
-    ]
+    return dict(sorted(documents.items()))
 
 
 def _configuration_environment_patterns() -> list[dict[str, object]]:
@@ -551,36 +576,31 @@ def _configuration_environment_patterns() -> list[dict[str, object]]:
     ]
 
 
-def _schema_documents() -> list[dict[str, object]]:
-    documents: list[dict[str, object]] = []
+def _schema_documents() -> dict[str, object]:
+    documents: dict[str, object] = {}
     for path in sorted(ROOT.glob("**/*.schema.json")):
         if ".venv" in path.parts or ".git" in path.parts:
             continue
-        documents.append(
-            {
-                "authority": path.relative_to(ROOT).as_posix(),
-                "document": json.loads(path.read_text(encoding="utf-8")),
-            }
-        )
+        document = json.loads(path.read_text(encoding="utf-8"))
+        authority = document.get("$id")
+        if not isinstance(authority, str) or not authority:
+            raise ContractFreezeError(f"protocol schema has no stable $id: {path}")
+        if authority in documents:
+            raise ContractFreezeError(f"protocol schema $id is not unique: {authority}")
+        documents[authority] = document
     bundles = {name: factory() for name, factory in PROCESS_SCHEMA_BUNDLES.items()}
-    documents.extend(
-        {"authority": f"generated:{name}", "document": document}
-        for name, document in sorted(bundles.items())
-    )
-    return documents
+    documents.update({f"generated:{name}": document for name, document in sorted(bundles.items())})
+    return dict(sorted(documents.items()))
 
 
 def _state_contract(config: dict[str, Any]) -> dict[str, object]:
     owners: list[dict[str, object]] = []
     for owner in config["state"]["owners"]:
         current = dict(owner)
-        current["fixtures"] = [
-            {
-                "path": path,
-                "sha256": hashlib.sha256((ROOT / path).read_bytes()).hexdigest(),
-            }
-            for path in owner["fixtures"]
-        ]
+        current["fixture_sha256s"] = sorted(
+            hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+            for path in current.pop("fixtures")
+        )
         owners.append(current)
     return {"schema": config["state"]["schema"], "owners": owners}
 
@@ -592,11 +612,229 @@ def _openapi_surfaces() -> dict[str, object]:
     }
 
 
+def _source_ref(value: object) -> dict[str, str]:
+    module: str
+    candidate: object
+    if inspect.ismodule(value):
+        module = str(value.__name__)
+        symbol = "<module>"
+        candidate = value
+    else:
+        module = str(getattr(value, "__module__", type(value).__module__))
+        symbol = str(getattr(value, "__qualname__", type(value).__qualname__))
+        candidate = value if callable(value) else type(value)
+    try:
+        source = inspect.getsourcefile(candidate)
+    except TypeError:
+        source = None
+    result = {"module": module, "symbol": symbol}
+    if source is not None:
+        path = Path(source).resolve()
+        if path.is_relative_to(ROOT):
+            result["path"] = path.relative_to(ROOT).as_posix()
+    return result
+
+
+def _openapi_trace() -> list[dict[str, object]]:
+    traced: list[dict[str, object]] = []
+    for surface in operation_qualification.application_surfaces():
+        routes: list[dict[str, object]] = []
+        for route, path in operation_qualification._application_routes(surface.app):
+            operation_id = getattr(route, "operation_id", None) or getattr(route, "name", None)
+            endpoint = getattr(route, "endpoint", None)
+            if not operation_id or endpoint is None:
+                continue
+            routes.append(
+                {
+                    "operation_id": operation_id,
+                    "path": path,
+                    "methods": sorted(getattr(route, "methods", ()) or ()),
+                    "source": _source_ref(endpoint),
+                }
+            )
+        traced.append(
+            {
+                "id": f"openapi:{surface.name}",
+                "source": _source_ref(type(surface.app)),
+                "routes": sorted(
+                    routes,
+                    key=lambda item: (str(item["path"]), str(item["operation_id"])),
+                ),
+            }
+        )
+    return traced
+
+
+def _configuration_trace() -> list[dict[str, object]]:
+    authorities = {
+        "gogurt-routes": gogurt_core,
+        "mango-fish": MangoFishConfig,
+        "riverhog-ftp-adapter": FtpAdapterConfig,
+        "stove0-recipes": RecipeCatalog,
+        "stove0-review-target": ReviewTargetConfig,
+        "stove0-review-target-sampler": SamplerConfig,
+    }
+    return [
+        {"id": f"configuration:{name}", "source": _source_ref(value)}
+        for name, value in sorted(authorities.items())
+    ]
+
+
+def _protocol_trace() -> list[dict[str, object]]:
+    traced: list[dict[str, object]] = []
+    for path in sorted(ROOT.glob("**/*.schema.json")):
+        if ".venv" in path.parts or ".git" in path.parts:
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        document = json.loads(path.read_text(encoding="utf-8"))
+        authority = document.get("$id")
+        if not isinstance(authority, str) or not authority:
+            raise ContractFreezeError(f"protocol schema has no stable $id: {path}")
+        traced.append(
+            {
+                "id": f"protocol:{authority}",
+                "source": {"path": relative},
+            }
+        )
+    traced.extend(
+        {
+            "id": f"protocol:generated:{name}",
+            "source": _source_ref(factory),
+        }
+        for name, factory in sorted(PROCESS_SCHEMA_BUNDLES.items())
+    )
+    return traced
+
+
+def _cli_trace() -> list[dict[str, object]]:
+    modules = {
+        "gogurt": "gogurt.cli",
+        "riverhog": "riverhog_cli.main",
+        "riverhog-ftp-adapter": "riverhog_ftp_adapter.app",
+        "riverhog-recover": "riverhog_recover.cli",
+        "stove0": "stove0_cli.main",
+    }
+    return [
+        {
+            "id": f"cli:{name}",
+            "source": _source_ref(importlib.import_module(module)),
+        }
+        for name, module in sorted(modules.items())
+    ]
+
+
+def _python_trace(projection: Mapping[str, object]) -> list[dict[str, object]]:
+    external = cast(Mapping[str, object], projection["external_contract"])
+    surfaces = cast(list[dict[str, object]], external["python"])
+    return [
+        {
+            "id": f"python:{surface['distribution']}",
+            "source": _source_ref(importlib.import_module(str(surface["module"]))),
+        }
+        for surface in surfaces
+    ]
+
+
+def _state_trace() -> list[dict[str, object]]:
+    config = _project_config(ROOT / "release.toml")
+    return [
+        {
+            "id": f"state:{owner['id']}",
+            "fixtures": [
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256((ROOT / path).read_bytes()).hexdigest(),
+                }
+                for path in owner["fixtures"]
+            ],
+        }
+        for owner in config["state"]["owners"]
+    ]
+
+
+def _environment_trace() -> list[dict[str, object]]:
+    projects = release_contract.validate_release_contract(ROOT)
+    return [
+        {
+            "id": f"configuration-environment:{item['name']}",
+            "bindings": item["bindings"],
+        }
+        for item in _environment_inventory(projects)
+    ]
+
+
+def trace_projection(projection: Mapping[str, object]) -> dict[str, object]:
+    external = cast(Mapping[str, object], projection["external_contract"])
+    extents = cast(Mapping[str, object], external["extents"])
+    decisions = cast(list[dict[str, object]], extents["decisions"])
+    semantic_payload = json.dumps(projection, separators=(",", ":"), sort_keys=True).encode()
+    rendered_payload = (json.dumps(projection, indent=2, sort_keys=True) + "\n").encode()
+    sources: list[dict[str, object]] = [
+        {"id": "release:release.toml", "source": {"path": "release.toml"}},
+        *_openapi_trace(),
+        *_cli_trace(),
+        *_configuration_trace(),
+        *_environment_trace(),
+        *_protocol_trace(),
+        *_python_trace(projection),
+        *_state_trace(),
+    ]
+    source_ids = [str(source["id"]) for source in sources]
+    if len(source_ids) != len(set(source_ids)):
+        raise ContractFreezeError("contract trace source identities are not unique")
+    source_kinds = dict(
+        sorted(Counter(identity.split(":", 1)[0] for identity in source_ids).items())
+    )
+    return {
+        "schema": TRACE_SCHEMA,
+        "contract_schema": projection["schema"],
+        "contract_canonical_sha256": hashlib.sha256(semantic_payload).hexdigest(),
+        "contract_projection_sha256": hashlib.sha256(rendered_payload).hexdigest(),
+        "sources": sources,
+        "extent_sources": [
+            {
+                "id": decision["id"],
+                "owner": decision["owner"],
+                "source_pointer": decision["source_pointer"],
+            }
+            for decision in decisions
+        ],
+        "coverage": {
+            "source_authorities": len(sources),
+            "source_kinds": source_kinds,
+            "extent_decisions": len(decisions),
+            "extent_source_links": len(decisions),
+        },
+    }
+
+
 def contract_projection() -> dict[str, object]:
     projects = release_contract.validate_release_contract(ROOT)
     config = _project_config(ROOT / "release.toml")
     components = _component_boundaries(projects)
     python_surfaces = _python_surfaces(projects)
+    external_contract: dict[str, object] = {
+        "release": {
+            "installation": config["installation"],
+            "artifacts": config["artifacts"],
+            "compatibility": config["compatibility"],
+            "platforms": config["platforms"],
+            "tag_template": config["tag_template"],
+            "version_policy": config["version_policy"],
+        },
+        "http_openapi": _openapi_surfaces(),
+        "operations": [
+            asdict(operation) for operation in operation_qualification.operation_matrix()
+        ],
+        "cli": _cli_surfaces(),
+        "configuration_environment": _environment_names(projects),
+        "configuration_environment_patterns": _configuration_environment_patterns(),
+        "configuration_documents": _configuration_documents(),
+        "protocol_schemas": _schema_documents(),
+        "python": python_surfaces,
+        "durable_state": _state_contract(config),
+    }
+    external_contract["extents"] = extent_contract.extent_projection(external_contract)
     return {
         "schema": SCHEMA,
         "series": "v1",
@@ -607,32 +845,56 @@ def contract_projection() -> dict[str, object]:
             "entry_point_extensions": _extension_points(projects),
             "process_extensions": _process_extensions(projects),
         },
-        "external_contract": {
-            "release": {
-                "installation": config["installation"],
-                "artifacts": config["artifacts"],
-                "compatibility": config["compatibility"],
-                "platforms": config["platforms"],
-                "tag_template": config["tag_template"],
-                "version_policy": config["version_policy"],
-            },
-            "http_openapi": _openapi_surfaces(),
-            "operations": [
-                asdict(operation) for operation in operation_qualification.operation_matrix()
-            ],
-            "cli": _cli_surfaces(),
-            "configuration_environment": _environment_names(projects),
-            "configuration_environment_patterns": _configuration_environment_patterns(),
-            "configuration_documents": _configuration_documents(),
-            "protocol_schemas": _schema_documents(),
-            "python": python_surfaces,
-            "durable_state": _state_contract(config),
-        },
+        "external_contract": external_contract,
     }
 
 
 def _render() -> str:
     return json.dumps(contract_projection(), indent=2, sort_keys=True) + "\n"
+
+
+def _render_trace(projection: Mapping[str, object]) -> str:
+    return json.dumps(trace_projection(projection), indent=2, sort_keys=True) + "\n"
+
+
+def _extent_diff(
+    previous: Mapping[str, object] | None,
+    current: Mapping[str, object],
+) -> dict[str, dict[str, int]]:
+    """Summarize the semantic extent diff by its owning contract boundary."""
+
+    def decisions(projection: Mapping[str, object] | None) -> dict[str, dict[str, object]]:
+        if projection is None:
+            return {}
+        try:
+            values = cast(
+                list[dict[str, object]],
+                cast(
+                    Mapping[str, object],
+                    cast(Mapping[str, object], projection["external_contract"])["extents"],
+                )["decisions"],
+            )
+        except (KeyError, TypeError):
+            return {}
+        return {str(value["id"]): value for value in values}
+
+    old = decisions(previous)
+    new = decisions(current)
+    summary: dict[str, Counter[str]] = defaultdict(Counter)
+    for identity in sorted(set(old) | set(new)):
+        before = old.get(identity)
+        after = new.get(identity)
+        if before == after:
+            continue
+        value = after if after is not None else before
+        if value is None:
+            continue
+        change = "added" if before is None else "removed" if after is None else "changed"
+        summary[str(value["owner"])][change] += 1
+    return {
+        owner: {kind: counts.get(kind, 0) for kind in ("added", "changed", "removed")}
+        for owner, counts in sorted(summary.items())
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -646,13 +908,30 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        rendered = _render()
+        projection = contract_projection()
+        rendered = json.dumps(projection, indent=2, sort_keys=True) + "\n"
+        trace_rendered = _render_trace(projection)
+        extent_diff: dict[str, dict[str, int]] | None = None
         if args.command == "update":
+            previous: Mapping[str, object] | None = None
+            if OUTPUT.is_file():
+                try:
+                    loaded = json.loads(OUTPUT.read_text(encoding="utf-8"))
+                    previous = loaded if isinstance(loaded, Mapping) else None
+                except json.JSONDecodeError:
+                    previous = None
+            extent_diff = _extent_diff(previous, projection)
             OUTPUT.parent.mkdir(parents=True, exist_ok=True)
             OUTPUT.write_text(rendered, encoding="utf-8")
-        elif not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
+            TRACE_OUTPUT.write_text(trace_rendered, encoding="utf-8")
+        elif (
+            not OUTPUT.is_file()
+            or OUTPUT.read_text(encoding="utf-8") != rendered
+            or not TRACE_OUTPUT.is_file()
+            or TRACE_OUTPUT.read_text(encoding="utf-8") != trace_rendered
+        ):
             raise ContractFreezeError(
-                "qualification/contracts/riverhog-v1.json is stale; "
+                "the v1 contract or trace projection is stale; "
                 "run `make contract-freeze-update` and review the semantic diff"
             )
         print(
@@ -660,7 +939,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "output": OUTPUT.relative_to(ROOT).as_posix(),
                     "sha256": hashlib.sha256(rendered.encode()).hexdigest(),
+                    "trace_output": TRACE_OUTPUT.relative_to(ROOT).as_posix(),
+                    "trace_sha256": hashlib.sha256(trace_rendered.encode()).hexdigest(),
                     "status": "updated" if args.command == "update" else "current",
+                    **({"extent_diff": extent_diff} if extent_diff is not None else {}),
                 },
                 sort_keys=True,
             )
