@@ -36,7 +36,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     class FakeClient:
         def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
             calls.append(("list", (collection_id, kwargs)))
-            return {"files": [shown], "page": 1, "pages": 1, "total": 1}
+            return {"files": [shown], "page_size": 25, "next_page_token": None}
 
         def get_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
             calls.append(("show", (collection_id, path)))
@@ -51,10 +51,8 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             calls.append(("trace", (collection_id, path, kwargs)))
             return {
                 **shown,
-                "page": kwargs["page"],
-                "per_page": kwargs["per_page"],
-                "total": 1,
-                "pages": 1,
+                "page_size": kwargs["page_size"],
+                "next_page_token": None,
                 "items": [{"kind": "journal", "journal": shown["journal"]}],
             }
 
@@ -171,8 +169,8 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             (
                 41,
                 {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
+                    "page_token": None,
                     "q": "movie",
                     "status": "captured",
                     "sort": "path",
@@ -181,7 +179,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             ),
         ),
         ("show", (41, "media/movie.mov")),
-        ("trace", (41, "media/movie.mov", {"page": 1, "per_page": 25})),
+        ("trace", (41, "media/movie.mov", {"page_size": 25, "page_token": None})),
         ("export", (41, JOURNAL_ID)),
         ("export", (41, JOURNAL_ID)),
         ("verify", 41),
@@ -207,9 +205,8 @@ def test_provenance_list_selectors_match_other_file_list_commands(monkeypatch) -
                     {"collection_id": 41, "path": "one.mov"},
                     {"collection_id": 41, "path": "nested/two.mov"},
                 ],
-                "page": 1,
-                "pages": 1,
-                "total": 2,
+                "page_size": 25,
+                "next_page_token": None,
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)

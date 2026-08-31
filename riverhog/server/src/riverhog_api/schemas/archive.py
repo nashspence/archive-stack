@@ -155,10 +155,8 @@ class ArchiveCopyJobListFiltersOut(RiverhogModel):
 
 
 class ArchiveCopyJobListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: ArchiveCopySort
     order: SortOrder
     query: str | None

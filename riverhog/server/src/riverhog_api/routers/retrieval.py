@@ -8,7 +8,7 @@ from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from http_api_contracts import (
     QuotedSha256Identity,
-    bounded_list_operation,
+    mutable_browse_operation,
     operation_interface,
     parse_quoted_sha256_identity,
 )
@@ -25,6 +25,7 @@ from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.retrieval import (
     CreateRetrievalJobRequest,
@@ -57,13 +58,13 @@ def retrieval_cache_status(
 @router.get(
     "/retrieval-cache/objects",
     response_model=RetrievalCacheObjectListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_retrieval_cache_objects(
     principal: CatalogReader,
     container: ContainerDep,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     q: str | None = Query(None),
     tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
@@ -76,22 +77,48 @@ def list_retrieval_cache_objects(
     sort: Annotated[RetrievalCacheSort, Query()] = "cached_at",
     order: Annotated[SortOrder, Query()] = "desc",
 ) -> RetrievalCacheObjectListOut:
+    selectors = canonical_selectors(
+        q=q,
+        tag=tag,
+        collection_id=collection_id,
+        source_store=source_store,
+        cache_store=cache_store,
+        state=state,
+        protection=protection,
+        expires_before=expires_before,
+        expires_after=expires_after,
+        sort=sort,
+        order=order,
+    )
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_retrieval_cache_objects",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return RetrievalCacheObjectListOut.model_validate(
-        container.retrieval.list_cache_objects(
-            page=page,
-            per_page=per_page,
-            q=q,
-            tag=tag,
-            collection_id=collection_id,
-            source_store=source_store,
-            cache_store=cache_store,
-            state=state,
-            protection=protection,
-            expires_before=expires_before,
-            expires_after=expires_after,
-            sort=sort,
-            order=order,
+        page_payload(
+            container.retrieval.list_cache_objects(
+                page_size=page_size,
+                position=position,
+                q=q,
+                tag=tag,
+                collection_id=collection_id,
+                source_store=source_store,
+                cache_store=cache_store,
+                state=state,
+                protection=protection,
+                expires_before=expires_before,
+                expires_after=expires_after,
+                sort=sort,
+                order=order,
+                principal=principal,
+            ),
+            container=container,
             principal=principal,
+            operation="list_retrieval_cache_objects",
+            selectors=selectors,
         )
     )
 

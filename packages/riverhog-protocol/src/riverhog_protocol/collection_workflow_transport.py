@@ -351,20 +351,16 @@ class ArtifactDispositionSetDocument(RiverhogWorkflowDocument):
 
 class ArtifactDispositionPageDocument(RiverhogWorkflowDocument):
     authority: ArtifactDispositionSetIdentityDocument
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=1, le=100)
-    total: int = Field(ge=1)
-    pages: int = Field(ge=1)
-    dispositions: list[ArtifactDispositionDocument] = Field(max_length=100)
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    dispositions: list[ArtifactDispositionDocument] = Field(max_length=DISPOSITION_BATCH_MAX)
 
 
 class ArtifactDispositionOutputPageDocument(RiverhogWorkflowDocument):
     authority: ArtifactDispositionSetIdentityDocument
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=1, le=100)
-    total: int = Field(ge=1)
-    pages: int = Field(ge=1)
-    outputs: list[ArtifactDispositionOutputDocument] = Field(max_length=100)
+    start_ordinal: int = Field(ge=0)
+    next_ordinal: int | None = Field(default=None, ge=1)
+    outputs: list[ArtifactDispositionOutputDocument] = Field(max_length=DISPOSITION_BATCH_MAX)
 
 
 class ClaimFenceDocument(RiverhogWorkflowDocument):
@@ -740,10 +736,8 @@ class ProcessingClaimFiltersDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingClaimPageDocument(RiverhogWorkflowDocument):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None = None
     sort: ProcessingClaimSort
     order: SortOrder
     filters: ProcessingClaimFiltersDocument

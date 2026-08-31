@@ -11,6 +11,7 @@ from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.browse import bounded_page, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -77,17 +78,14 @@ class SqlAlchemyArchiveStoreService:
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         principal: ApplicationPrincipal | None = None,
     ) -> ArchiveStoreListPage:
-        if page < 1:
-            raise BadRequest("page must be at least 1")
-        if per_page < 1:
-            raise BadRequest("per_page must be at least 1")
+        validate_page_size(page_size)
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
         if order not in _SORT_ORDERS:
@@ -123,15 +121,26 @@ class SqlAlchemyArchiveStoreService:
             key=lambda current: (getattr(current, sort), current.store),
             reverse=order == "desc",
         )
-        total = len(summaries)
-        pages = (total + per_page - 1) // per_page if total else 0
-        start = (page - 1) * per_page
-        selected = summaries[start : start + per_page]
+        if position is not None:
+            if len(position) != 2:
+                raise BadRequest("page token position is invalid")
+            summaries = [
+                current
+                for current in summaries
+                if (
+                    _archive_store_position(current, sort=sort) > position
+                    if order == "asc"
+                    else _archive_store_position(current, sort=sort) < position
+                )
+            ]
+        selected, next_position = bounded_page(
+            summaries,
+            page_size=page_size,
+            position_of=lambda current: _archive_store_position(current, sort=sort),
+        )
         return ArchiveStoreListPage(
-            page=page,
-            per_page=per_page,
-            total=total,
-            pages=pages,
+            page_size=page_size,
+            next_position=next_position,
             sort=sort,
             order=order,
             query=needle,
@@ -147,8 +156,8 @@ class SqlAlchemyArchiveStoreService:
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[ArchiveStoreSummary]:
         page = self.list(
-            page=1,
-            per_page=max(1, len(self._config.archive_stores)),
+            page_size=max(1, len(self._config.archive_stores)),
+            position=None,
             q=q,
             sort=sort,
             order=order,
@@ -178,6 +187,17 @@ class SqlAlchemyArchiveStoreService:
             stored_bytes=stored_bytes,
             download_allowance=allowances.get(config.name),
         )
+
+
+def _archive_store_position(
+    summary: ArchiveStoreSummary,
+    *,
+    sort: str,
+) -> tuple[str | int, str]:
+    value = getattr(summary, sort)
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise RuntimeError("archive-store browse position has an invalid value")
+    return value, summary.store
 
 
 def _store_aggregates(

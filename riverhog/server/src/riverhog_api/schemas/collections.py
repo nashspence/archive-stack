@@ -386,10 +386,8 @@ class CollectionSummaryOut(RiverhogModel):
 
 
 class ListCollectionsResponse(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: CollectionSort
     order: SortOrder
     query: str | None
@@ -401,10 +399,8 @@ class ListCollectionsResponse(RiverhogModel):
 
 class CollectionArchiveCopyListOut(RiverhogModel):
     collection_id: CollectionId
-    page: int = Field(ge=1, strict=True)
-    per_page: int = Field(ge=1, le=100, strict=True)
-    total: int = Field(ge=0, strict=True)
-    pages: int = Field(ge=0, strict=True)
+    page_size: int = Field(ge=1, le=100, strict=True)
+    next_page_token: str | None
     copies: list[ArchiveCopyOut]
 
 
@@ -516,10 +512,8 @@ CollectionUploadVolumeSummaryOut = CollectionUploadVolumeSummaryDocument
 
 class ListCollectionUploadSessionFilesResponse(RiverhogModel):
     collection_id: CollectionId
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     files: list[CollectionUploadFileOut]
 
     @model_validator(mode="after")
@@ -540,10 +534,8 @@ class CollectionUploadTagOut(RiverhogModel):
 
 class ListCollectionUploadSessionTagsResponse(RiverhogModel):
     collection_id: CollectionId
-    page: int = Field(ge=1, strict=True)
-    per_page: int = Field(ge=1, le=100, strict=True)
-    total: int = Field(ge=0, strict=True)
-    pages: int = Field(ge=0, strict=True)
+    page_size: int = Field(ge=1, le=100, strict=True)
+    next_page_token: str | None
     tags: list[CollectionUploadTagOut]
 
 
@@ -597,10 +589,8 @@ class CollectionUploadListFiltersOut(RiverhogModel):
 
 
 class ListCollectionUploadSessionsResponse(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: CollectionUploadSort
     order: SortOrder
     query: str | None

@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
+from .browse import BrowseScalar, BrowseTokenCodec, BrowseTokenError
+
 CANONICAL_VISIBLE_TEXT_PATTERN = r"^\S(?:[\s\S]*\S)?$"
 CanonicalVisibleText = Annotated[
     str,
@@ -94,12 +96,23 @@ def closed_literal_values(literal_type: object) -> frozenset[str]:
     return frozenset(values)
 
 
-def bounded_list_operation() -> dict[str, Any]:
-    """Classify one public read collection as a bounded interactive page."""
+def mutable_browse_operation(
+    *,
+    default_page_size: int = 25,
+    maximum_page_size: int = 100,
+) -> dict[str, Any]:
+    """Classify one bounded page through a mutable catalog projection."""
 
+    if default_page_size < 1 or maximum_page_size < default_page_size:
+        raise ValueError("mutable browse page-size bounds are invalid")
     return {
         "x-riverhog-read-collection": {
-            "kind": "bounded-list",
+            "kind": "mutable-browse",
+            "page_size_parameter": "page_size",
+            "page_token_parameter": "page_token",
+            "next_page_token_field": "next_page_token",
+            "default_page_size": default_page_size,
+            "maximum_page_size": maximum_page_size,
         }
     }
 
@@ -744,6 +757,9 @@ def parse_declared_error_payload(
 
 
 __all__ = [
+    "BrowseScalar",
+    "BrowseTokenCodec",
+    "BrowseTokenError",
     "CANONICAL_VISIBLE_TEXT_PATTERN",
     "ERROR_STATUS_BY_CODE",
     "FRAMED_BODY_DECLARATION_LENGTH_BYTES",
@@ -766,7 +782,6 @@ __all__ = [
     "OperationInterface",
     "apply_openapi_error_contract",
     "canonical_json_bytes",
-    "bounded_list_operation",
     "cursor_feed_operation",
     "error_code_for_status",
     "error_payload",
@@ -787,4 +802,5 @@ __all__ = [
     "status_for_error_code",
     "structural_model_catalog",
     "validate_sha256_identity",
+    "mutable_browse_operation",
 ]

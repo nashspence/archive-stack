@@ -163,6 +163,7 @@ umask 077
 printf '%s\n' 'postgresql+psycopg://riverhog:riverhog@postgres:5432/stove0' > "${secret_root}/stove0-database-url"
 printf '%s\n' 'stove0-compose-smoke-token' > "${secret_root}/stove0-api-token"
 printf '%s\n' 'stove0-compose-target-callback-signing-key' > "${secret_root}/stove0-target-callback-signing-key"
+printf '%s\n' 'stove0-compose-browse-token-signing-key-v1' > "${secret_root}/stove0-browse-token-signing-key"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-api-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-controller-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-worker-riverhog-token"
@@ -212,6 +213,7 @@ export STOVE0_REVIEW_TMPFS_SIZE=256m
 export STOVE0_DATABASE_URL_FILE="${secret_root}/stove0-database-url"
 export STOVE0_API_TOKEN_FILE="${secret_root}/stove0-api-token"
 export STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE="${secret_root}/stove0-target-callback-signing-key"
+export STOVE0_BROWSE_TOKEN_SIGNING_KEY_FILE="${secret_root}/stove0-browse-token-signing-key"
 export STOVE0_API_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-api-riverhog-token"
 export STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-controller-riverhog-token"
 export STOVE0_WORKER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-worker-riverhog-token"
@@ -337,14 +339,14 @@ adapter_compose exec -T \
 
 cache_code="from riverhog_api_client import ApiClient
 def collect(method, key, **kwargs):
-    page = 1
+    page_token = None
     rows = []
     while True:
-        payload = method(page=page, per_page=100, **kwargs)
+        payload = method(page_size=100, page_token=page_token, **kwargs)
         rows.extend(payload[key])
-        if page >= payload['pages']:
+        page_token = payload.get('next_page_token')
+        if page_token is None:
             return rows
-        page += 1
 with ApiClient() as client:
     collections = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
     assert len(collections) == 1, collections
@@ -377,7 +379,7 @@ deadline = time.monotonic() + 180
 last = None
 while time.monotonic() < deadline:
     request = urllib.request.Request(
-        'http://127.0.0.1:8080/v1/work?per_page=100&sort=updated_at&order=asc',
+        'http://127.0.0.1:8080/v1/work?page_size=100&sort=updated_at&order=asc',
         headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
     )
     payload = json.load(urllib.request.urlopen(request, timeout=5))
@@ -424,14 +426,14 @@ scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 lineage_code="import json, os
 from riverhog_api_client import ApiClient
 def collect(method, key, **kwargs):
-    page = 1
+    page_token = None
     rows = []
     while True:
-        payload = method(page=page, per_page=100, **kwargs)
+        payload = method(page_size=100, page_token=page_token, **kwargs)
         rows.extend(payload[key])
-        if page >= payload['pages']:
+        page_token = payload.get('next_page_token')
+        if page_token is None:
             return rows
-        page += 1
 with ApiClient() as client:
     inputs = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
     outputs = collect(client.list_collections, 'collections', tag='archive-audio')

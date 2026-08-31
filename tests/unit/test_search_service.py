@@ -85,11 +85,21 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
     initialize_db(sqlite_url(path))
     _seed(path)
 
-    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
+    service = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path)))
+    first = service.search(
         q="tax",
         collection="1",
-        page=2,
-        per_page=1,
+        page_size=1,
+        position=None,
+        sort="path",
+        order="asc",
+    )
+    assert first["_next_position"] is not None
+    payload = service.search(
+        q="tax",
+        collection="1",
+        page_size=1,
+        position=first["_next_position"],
         sort="path",
         order="asc",
     )
@@ -97,10 +107,8 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
     assert payload == {
         "query": "tax",
         "collection": 1,
-        "page": 2,
-        "per_page": 1,
-        "total": 2,
-        "pages": 2,
+        "page_size": 1,
+        "_next_position": None,
         "sort": "path",
         "order": "asc",
         "files": [
@@ -146,15 +154,15 @@ def test_search_applies_tag_grants_in_the_database(tmp_path: Path) -> None:
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
         q=None,
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         sort="file_ref",
         order="asc",
         principal=principal,
     )
 
-    assert payload["total"] == 0
     assert payload["files"] == []
+    assert payload["_next_position"] is None
 
 
 def test_search_returns_only_the_exact_artifact_capability_scope(tmp_path: Path) -> None:
@@ -169,15 +177,15 @@ def test_search_returns_only_the_exact_artifact_capability_scope(tmp_path: Path)
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
         q=None,
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         sort="file_ref",
         order="asc",
         principal=principal,
     )
 
-    assert payload["total"] == 1
     assert [item["file_ref"] for item in payload["files"]] == ["1/tax/receipt.pdf"]
+    assert payload["_next_position"] is None
 
 
 def test_search_uses_canonical_utf8_order_and_stable_ascii_case_projection(

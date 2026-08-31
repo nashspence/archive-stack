@@ -30,10 +30,8 @@ class AppSummaryOut(RiverhogModel):
 
 
 class AppListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: ApplicationSort
     order: SortOrder
     query: str | None
@@ -105,10 +103,8 @@ class AppKeyCreatedOut(AppKeyOut):
 
 
 class AppKeyListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: ApplicationKeySort
     order: SortOrder
     query: str | None
@@ -131,10 +127,8 @@ class MutateAppAccessRequest(AppAccessIn):
 
 
 class AppAccessListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: ApplicationAccessSort
     order: SortOrder
     query: str | None

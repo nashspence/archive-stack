@@ -212,15 +212,14 @@ class CollectionWorkflowMethods:
     def list_processing_claims(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         state: ClaimState | None = None,
         sort: ProcessingClaimSort = "updated_at",
         order: SortOrder = "desc",
     ) -> ProcessingClaimPageDocument:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            "page_size": page_size,
             "sort": _one_of(
                 sort,
                 _CLAIM_SORTS,
@@ -228,6 +227,8 @@ class CollectionWorkflowMethods:
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
+        if page_token is not None:
+            params["page_token"] = page_token
         if state:
             params["state"] = _one_of(state, _CLAIM_STATES, "processing-claim state")
         return ProcessingClaimPageDocument.model_validate(
@@ -558,8 +559,7 @@ class CollectionWorkflowMethods:
         claim_id: ProcessingClaimId,
         *,
         authority_sha256: str,
-        page: int = 1,
-        per_page: int = 100,
+        start_ordinal: int = 0,
     ) -> ArtifactDispositionPageDocument:
         return ArtifactDispositionPageDocument.model_validate(
             self._json(
@@ -567,8 +567,7 @@ class CollectionWorkflowMethods:
                 f"/v1/collection-processing-claims/{_claim_id(claim_id)}/derivation/dispositions",
                 params={
                     "authority_sha256": authority_sha256,
-                    "page": page,
-                    "per_page": per_page,
+                    "start_ordinal": start_ordinal,
                 },
             )
         )
@@ -602,8 +601,7 @@ class CollectionWorkflowMethods:
         claim_id: ProcessingClaimId,
         *,
         authority_sha256: str,
-        page: int = 1,
-        per_page: int = 100,
+        start_ordinal: int = 0,
     ) -> ArtifactDispositionOutputPageDocument:
         return ArtifactDispositionOutputPageDocument.model_validate(
             self._json(
@@ -611,8 +609,7 @@ class CollectionWorkflowMethods:
                 f"/v1/collection-processing-claims/{_claim_id(claim_id)}/derivation/output-edges",
                 params={
                     "authority_sha256": authority_sha256,
-                    "page": page,
-                    "per_page": per_page,
+                    "start_ordinal": start_ordinal,
                 },
             )
         )

@@ -16,8 +16,8 @@ def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
     class FakeClient:
         def list_apps(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "q": "review",
                 "sort": "name",
                 "order": "asc",
@@ -25,9 +25,8 @@ def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
             }
             return {
                 "apps": [{"name": "review-station"}],
-                "page": 1,
-                "pages": 1,
-                "total": 1,
+                "page_size": 25,
+                "next_page_token": None,
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -121,9 +120,8 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
             assert kwargs["active"] is False
             return {
                 "keys": [{"id": "0123456789abcdef", "status": "revoked"}],
-                "page": 1,
-                "pages": 1,
-                "total": 1,
+                "page_size": 25,
+                "next_page_token": None,
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -140,7 +138,7 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
     assert human.exit_code == structured.exit_code == 0
     assert "0123456789abcdef" in human.stdout
     assert json.loads(structured.stdout)["keys"][0]["id"] == "0123456789abcdef"
-    assert "token" not in structured.stdout
+    assert "token" not in json.loads(structured.stdout)["keys"][0]
 
 
 def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
@@ -150,8 +148,8 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             **kwargs: Any,
         ) -> dict[str, object]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "q": "photos",
                 "sort": "permission",
                 "order": "asc",
@@ -171,15 +169,14 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "resource": "tag:photos",
                     },
                 ],
-                "page": 1,
-                "pages": 1,
-                "total": 1,
+                "page_size": 25,
+                "next_page_token": None,
             }
 
         def list_download_quotas(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "q": "review",
                 "sort": "remaining_bytes",
                 "order": "desc",
@@ -200,9 +197,8 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "resets_at": "2026-09-01T00:00:00Z",
                     },
                 ],
-                "page": 1,
-                "pages": 1,
-                "total": 1,
+                "page_size": 25,
+                "next_page_token": None,
             }
 
         def remove_app_key_access(

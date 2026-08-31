@@ -188,10 +188,8 @@ class RetrievalCacheObjectListFiltersOut(RiverhogModel):
 
 
 class RetrievalCacheObjectListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: RetrievalCacheSort
     order: SortOrder
     query: str | None

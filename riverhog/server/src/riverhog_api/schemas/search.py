@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from riverhog_protocol import (
     CollectionId,
     ImmutableFileIdentityDocument,
@@ -25,10 +25,8 @@ class SearchFileOut(ImmutableFileIdentityDocument):
 class SearchResponse(RiverhogModel):
     query: str | None
     collection: CollectionId | None
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: SearchSort
     order: SortOrder
     files: list[SearchFileOut]

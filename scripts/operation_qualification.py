@@ -61,8 +61,8 @@ class _RiverhogContractApi:
     def close(self) -> None:
         pass
 
-    def list_archive_stores(self, *, per_page: int) -> dict[str, object]:
-        del per_page
+    def list_archive_stores(self, *, page_size: int) -> dict[str, object]:
+        del page_size
         return {"items": []}
 
 

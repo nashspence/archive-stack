@@ -318,6 +318,7 @@ class CollectionProcessingDispositionRecord(Base):
     claim_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
+    disposition_order: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -339,8 +340,12 @@ class CollectionProcessingDispositionRecord(Base):
         Index(
             "ix_processing_dispositions_order",
             "claim_id",
-            "collection_id",
-            "path",
+            "disposition_order",
+            unique=True,
+        ),
+        CheckConstraint(
+            "disposition_order IS NULL OR disposition_order >= 0",
+            name="ck_processing_dispositions_order_nonnegative",
         ),
     )
 
@@ -352,6 +357,7 @@ class CollectionProcessingDispositionOutputRecord(Base):
     output_path: Mapped[str] = mapped_column(String, primary_key=True)
     input_collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, primary_key=True)
     input_path: Mapped[str] = mapped_column(String, primary_key=True)
+    output_order: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -373,9 +379,12 @@ class CollectionProcessingDispositionOutputRecord(Base):
         Index(
             "ix_processing_disposition_outputs_order",
             "claim_id",
-            "output_path",
-            "input_collection_id",
-            "input_path",
+            "output_order",
+            unique=True,
+        ),
+        CheckConstraint(
+            "output_order IS NULL OR output_order >= 0",
+            name="ck_processing_disposition_outputs_order_nonnegative",
         ),
     )
 

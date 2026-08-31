@@ -4,8 +4,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 from http_api_contracts import (
-    bounded_list_operation,
     exact_authority_page_operation,
+    mutable_browse_operation,
     operation_interface,
 )
 from riverhog_protocol import (
@@ -27,6 +27,7 @@ from riverhog_api.auth import (
     CollectionTransformExecutor,
     CollectionTransformLeaseManager,
 )
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.workflows import (
     ArtifactDispositionBatchIn,
@@ -310,26 +311,40 @@ def list_processing_claim_output_tags(
     response_model=ProcessingClaimPageOut,
     openapi_extra={
         **operation_interface("client-only-primitive"),
-        **bounded_list_operation(),
+        **mutable_browse_operation(),
     },
 )
 def list_processing_claims(
     container: ContainerDep,
     principal: CollectionTransformController,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_token: str | None = None,
     state: ClaimState | None = None,
     sort: ProcessingClaimSort = "updated_at",
     order: SortOrder = "desc",
 ) -> ProcessingClaimPageOut:
+    selectors = canonical_selectors(state=state, sort=sort, order=order)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_processing_claims",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return ProcessingClaimPageOut.model_validate(
-        container.collection_workflows.list_claims(
-            page=page,
-            per_page=per_page,
-            state=state,
-            sort=sort,
-            order=order,
+        page_payload(
+            container.collection_workflows.list_claims(
+                page_size=page_size,
+                position=position,
+                state=state,
+                sort=sort,
+                order=order,
+                principal=principal,
+            ),
+            container=container,
             principal=principal,
+            operation="list_processing_claims",
+            selectors=selectors,
         )
     )
 
@@ -540,7 +555,12 @@ def record_processing_claim_dispositions(
     response_model=ArtifactDispositionPageOut,
     openapi_extra={
         **operation_interface("client-only-primitive"),
-        **bounded_list_operation(),
+        **exact_authority_page_operation(
+            authority="processing-claim-dispositions",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
     },
 )
 def list_processing_claim_dispositions(
@@ -548,15 +568,13 @@ def list_processing_claim_dispositions(
     container: ContainerDep,
     principal: CollectionTransformController,
     authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 100,
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
 ) -> ArtifactDispositionPageOut:
     return ArtifactDispositionPageOut.model_validate(
         container.collection_workflows.list_dispositions(
             claim_id,
             authority_sha256=authority_sha256,
-            page=page,
-            per_page=per_page,
+            start_ordinal=start_ordinal,
             principal=principal,
         )
     )
@@ -591,7 +609,12 @@ def record_processing_claim_disposition_outputs(
     response_model=ArtifactDispositionOutputPageOut,
     openapi_extra={
         **operation_interface("client-only-primitive"),
-        **bounded_list_operation(),
+        **exact_authority_page_operation(
+            authority="processing-claim-disposition-outputs",
+            authority_parameter="authority_sha256",
+            cursor_parameter="start_ordinal",
+            fixed_limit=128,
+        ),
     },
 )
 def list_processing_claim_disposition_outputs(
@@ -599,15 +622,13 @@ def list_processing_claim_disposition_outputs(
     container: ContainerDep,
     principal: CollectionTransformController,
     authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 100,
+    start_ordinal: Annotated[int, Query(ge=0)] = 0,
 ) -> ArtifactDispositionOutputPageOut:
     return ArtifactDispositionOutputPageOut.model_validate(
         container.collection_workflows.list_disposition_outputs(
             claim_id,
             authority_sha256=authority_sha256,
-            page=page,
-            per_page=per_page,
+            start_ordinal=start_ordinal,
             principal=principal,
         )
     )

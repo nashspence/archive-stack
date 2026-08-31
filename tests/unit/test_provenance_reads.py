@@ -228,7 +228,13 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             )
 
     service = SqlAlchemyProvenanceService(RuntimeConfig(database_url=database_url))
-    traced = service.trace_file(1, "derivative.tar", page=1, per_page=100, principal=READER)
+    traced = service.trace_file(
+        1,
+        "derivative.tar",
+        page_size=100,
+        position=None,
+        principal=READER,
+    )
 
     derivative_summary = validate_journal(derivative)
     source_ids = {validate_journal(first).journal_id, validate_journal(second).journal_id}
@@ -248,18 +254,22 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
     }
     streamed_trace = list(service.iter_trace_file(1, "derivative.tar", principal=READER))
     assert streamed_trace == traced["items"]
-    bounded_pages = [
-        service.trace_file(
+    bounded_pages = []
+    position = None
+    while True:
+        current = service.trace_file(
             1,
             "derivative.tar",
-            page=page,
-            per_page=2,
+            page_size=2,
+            position=position,
             principal=READER,
         )
-        for page in range(1, 4)
-    ]
+        bounded_pages.append(current)
+        position = current["_next_position"]
+        if position is None:
+            break
     assert [item for current in bounded_pages for item in current["items"]] == streamed_trace
-    assert {(current["total"], current["pages"]) for current in bounded_pages} == {(5, 3)}
+    assert len(bounded_pages) == 3
 
     scoped = persisted_artifact_scope(
         database_url,
@@ -291,8 +301,8 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
     scoped_trace = service.trace_file(
         1,
         "derivative.tar",
-        page=1,
-        per_page=100,
+        page_size=100,
+        position=None,
         principal=scoped,
     )
     assert {

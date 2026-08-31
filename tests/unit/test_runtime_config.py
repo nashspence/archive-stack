@@ -143,11 +143,18 @@ def test_load_runtime_config_parses_archive_security_settings(
     )
     monkeypatch.setenv("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID", "runtime-test-key-v1")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR", "12")
+    monkeypatch.setenv(
+        "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY",
+        "riverhog-test-browse-token-signing-key-v1",
+    )
+    monkeypatch.setenv("RIVERHOG_BROWSE_TOKEN_LIFETIME", "2h")
 
     config = load_runtime_config()
 
     assert config.archive_require_explicit_passphrases is True
     assert config.archive_active_passphrase_id == "runtime-test-key-v1"
+    assert config.browse_token_signing_key == "riverhog-test-browse-token-signing-key-v1"
+    assert config.browse_token_lifetime == timedelta(hours=2)
     assert config.archive_passphrase_for("runtime-test-key-v1") == "archive-secret"
     assert config.archive_scrypt_work_factor == 12
 

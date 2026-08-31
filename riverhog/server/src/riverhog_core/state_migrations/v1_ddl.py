@@ -1501,17 +1501,19 @@ CREATE TABLE collection_processing_dispositions (
 	claim_id VARCHAR(64) NOT NULL,
 	collection_id INTEGER NOT NULL,
 	path VARCHAR NOT NULL,
+	disposition_order BIGINT,
 	status VARCHAR NOT NULL,
 	failure_code VARCHAR,
 	failure_message TEXT,
 	PRIMARY KEY (claim_id, collection_id, path),
 	FOREIGN KEY(claim_id, collection_id, path) REFERENCES collection_processing_claim_artifacts (claim_id, collection_id, path) ON DELETE CASCADE,
 	CONSTRAINT ck_processing_dispositions_status CHECK (status IN ('transformed','preserved','omitted','rejected')),
+	CONSTRAINT ck_processing_dispositions_order_nonnegative CHECK (disposition_order IS NULL OR disposition_order >= 0),
 	CONSTRAINT ck_collection_processing_dispositions_claim_id_hex CHECK (length(claim_id) = 64 AND lower(claim_id) = claim_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(claim_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_processing_dispositions_order ON collection_processing_dispositions (claim_id, collection_id, path)
+CREATE UNIQUE INDEX ix_processing_dispositions_order ON collection_processing_dispositions (claim_id, disposition_order)
     """.strip(),
     """
 CREATE TABLE retrieval_cache_leases (
@@ -1536,13 +1538,15 @@ CREATE TABLE collection_processing_disposition_outputs (
 	output_path VARCHAR NOT NULL,
 	input_collection_id INTEGER NOT NULL,
 	input_path VARCHAR NOT NULL,
+	output_order BIGINT,
 	PRIMARY KEY (claim_id, output_path, input_collection_id, input_path),
 	FOREIGN KEY(claim_id, input_collection_id, input_path) REFERENCES collection_processing_dispositions (claim_id, collection_id, path) ON DELETE CASCADE,
+	CONSTRAINT ck_processing_disposition_outputs_order_nonnegative CHECK (output_order IS NULL OR output_order >= 0),
 	CONSTRAINT ck_collection_processing_disposition_outputs_claim_id_hex CHECK (length(claim_id) = 64 AND lower(claim_id) = claim_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(claim_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_processing_disposition_outputs_order ON collection_processing_disposition_outputs (claim_id, output_path, input_collection_id, input_path)
+CREATE UNIQUE INDEX ix_processing_disposition_outputs_order ON collection_processing_disposition_outputs (claim_id, output_order)
     """.strip(),
     """
 CREATE INDEX ix_processing_disposition_outputs_source ON collection_processing_disposition_outputs (claim_id, input_collection_id, input_path, output_path)
@@ -3047,17 +3051,19 @@ CREATE TABLE collection_processing_dispositions (
 	claim_id VARCHAR(64) NOT NULL,
 	collection_id BIGINT NOT NULL,
 	path VARCHAR NOT NULL,
+	disposition_order BIGINT,
 	status VARCHAR NOT NULL,
 	failure_code VARCHAR,
 	failure_message TEXT,
 	PRIMARY KEY (claim_id, collection_id, path),
 	FOREIGN KEY(claim_id, collection_id, path) REFERENCES collection_processing_claim_artifacts (claim_id, collection_id, path) ON DELETE CASCADE,
 	CONSTRAINT ck_processing_dispositions_status CHECK (status IN ('transformed','preserved','omitted','rejected')),
+	CONSTRAINT ck_processing_dispositions_order_nonnegative CHECK (disposition_order IS NULL OR disposition_order >= 0),
 	CONSTRAINT ck_collection_processing_dispositions_claim_id_hex CHECK (length(claim_id) = 64 AND lower(claim_id) = claim_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(claim_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_processing_dispositions_order ON collection_processing_dispositions (claim_id, collection_id, path)
+CREATE UNIQUE INDEX ix_processing_dispositions_order ON collection_processing_dispositions (claim_id, disposition_order)
     """.strip(),
     """
 CREATE TABLE retrieval_cache_leases (
@@ -3082,13 +3088,15 @@ CREATE TABLE collection_processing_disposition_outputs (
 	output_path VARCHAR NOT NULL,
 	input_collection_id BIGINT NOT NULL,
 	input_path VARCHAR NOT NULL,
+	output_order BIGINT,
 	PRIMARY KEY (claim_id, output_path, input_collection_id, input_path),
 	FOREIGN KEY(claim_id, input_collection_id, input_path) REFERENCES collection_processing_dispositions (claim_id, collection_id, path) ON DELETE CASCADE,
+	CONSTRAINT ck_processing_disposition_outputs_order_nonnegative CHECK (output_order IS NULL OR output_order >= 0),
 	CONSTRAINT ck_collection_processing_disposition_outputs_claim_id_hex CHECK (length(claim_id) = 64 AND lower(claim_id) = claim_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(claim_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_processing_disposition_outputs_order ON collection_processing_disposition_outputs (claim_id, output_path, input_collection_id, input_path)
+CREATE UNIQUE INDEX ix_processing_disposition_outputs_order ON collection_processing_disposition_outputs (claim_id, output_order)
     """.strip(),
     """
 CREATE INDEX ix_processing_disposition_outputs_source ON collection_processing_disposition_outputs (claim_id, input_collection_id, input_path, output_path)

@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    and_,
     asc,
     create_engine,
     delete,
@@ -925,35 +926,40 @@ class SqlAlchemyStateStore:
     def list_work(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        position: tuple[str | int | bool | bytes | None, ...] | None = None,
         phase: str | None = None,
         query: str | None = None,
         sort: WorkSort = "updated_at",
         order: SortOrder = "desc",
     ) -> dict[str, object]:
-        _pagination(page, per_page)
-        filters, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
+        _page_size(page_size)
+        _, statement, key_columns = _work_list_statement(
+            phase=phase, query=query, sort=sort, order=order
+        )
         with read_snapshot(self.sessions) as session:
-            total = int(
-                session.scalar(
-                    select(func.count()).select_from(
-                        select(_WorkRow.work_id).where(*filters).subquery()
+            rows = list(
+                session.scalars(
+                    _keyset_statement(
+                        statement,
+                        columns=key_columns,
+                        position=position,
+                        order=order,
+                        page_size=page_size,
                     )
                 )
-                or 0
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            records = [
-                WorkRecord.model_validate_json(row.document_json)
-                for row in session.scalars(statement)
-            ]
+        page_rows = rows[:page_size]
+        records = [WorkRecord.model_validate_json(row.document_json) for row in page_rows]
         return _page(
             records,
             item_key="work",
-            page=page,
-            per_page=per_page,
-            total=total,
+            page_size=page_size,
+            next_position=(
+                _work_position(page_rows[-1], sort=sort)
+                if len(rows) > page_size and page_rows
+                else None
+            ),
             sort=sort,
             order=order,
             filters={"phase": phase, "query": query},
@@ -967,7 +973,11 @@ class SqlAlchemyStateStore:
         sort: WorkSort = "updated_at",
         order: SortOrder = "desc",
     ) -> Iterator[WorkRecord]:
-        _, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
+        _, statement, key_columns = _work_list_statement(
+            phase=phase, query=query, sort=sort, order=order
+        )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self.sessions) as session:
             for row in session.scalars(statement.execution_options(yield_per=100)):
                 yield WorkRecord.model_validate_json(row.document_json)
@@ -1079,37 +1089,40 @@ class SqlAlchemyStateStore:
     def list_evaluations(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        position: tuple[str | int | bool | bytes | None, ...] | None = None,
         phase: str | None = None,
         query: str | None = None,
         sort: EvaluationSort = "updated_at",
         order: SortOrder = "desc",
     ) -> dict[str, object]:
-        _pagination(page, per_page)
-        filters, statement = _evaluation_list_statement(
+        _page_size(page_size)
+        _, statement, key_columns = _evaluation_list_statement(
             phase=phase, query=query, sort=sort, order=order
         )
         with read_snapshot(self.sessions) as session:
-            total = int(
-                session.scalar(
-                    select(func.count()).select_from(
-                        select(_EvaluationRow.evaluation_id).where(*filters).subquery()
+            rows = list(
+                session.scalars(
+                    _keyset_statement(
+                        statement,
+                        columns=key_columns,
+                        position=position,
+                        order=order,
+                        page_size=page_size,
                     )
                 )
-                or 0
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            records = [
-                EvaluationRecord.model_validate_json(row.document_json)
-                for row in session.scalars(statement)
-            ]
+        page_rows = rows[:page_size]
+        records = [EvaluationRecord.model_validate_json(row.document_json) for row in page_rows]
         return _model_page(
             records,
             item_key="evaluations",
-            page=page,
-            per_page=per_page,
-            total=total,
+            page_size=page_size,
+            next_position=(
+                _evaluation_position(page_rows[-1], sort=sort)
+                if len(rows) > page_size and page_rows
+                else None
+            ),
             sort=sort,
             order=order,
             filters={"phase": phase, "query": query},
@@ -1123,7 +1136,11 @@ class SqlAlchemyStateStore:
         sort: EvaluationSort = "updated_at",
         order: SortOrder = "desc",
     ) -> Iterator[EvaluationRecord]:
-        _, statement = _evaluation_list_statement(phase=phase, query=query, sort=sort, order=order)
+        _, statement, key_columns = _evaluation_list_statement(
+            phase=phase, query=query, sort=sort, order=order
+        )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self.sessions) as session:
             for row in session.scalars(statement.execution_options(yield_per=100)):
                 yield EvaluationRecord.model_validate_json(row.document_json)
@@ -1801,7 +1818,7 @@ def _work_list_statement(
     query: str | None,
     sort: WorkSort,
     order: SortOrder,
-) -> tuple[list[Any], Select[tuple[_WorkRow]]]:
+) -> tuple[list[Any], Select[tuple[_WorkRow]], tuple[Any, ...]]:
     if (
         sort not in _WORK_SORTS
         or order not in _SORT_ORDERS
@@ -1818,15 +1835,8 @@ def _work_list_statement(
         filters.append(_WorkRow.phase == phase)
     if query:
         filters.append(_WorkRow.work_id.contains(query.strip().casefold()))
-    statement = (
-        select(_WorkRow)
-        .where(*filters)
-        .order_by(
-            (desc if order == "desc" else asc)(columns[sort]),
-            (desc if order == "desc" else asc)(_WorkRow.work_id),
-        )
-    )
-    return filters, statement
+    key_columns = tuple(dict.fromkeys((columns[sort], _WorkRow.work_id)))
+    return filters, select(_WorkRow).where(*filters), key_columns
 
 
 def _evaluation_list_statement(
@@ -1835,7 +1845,7 @@ def _evaluation_list_statement(
     query: str | None,
     sort: EvaluationSort,
     order: SortOrder,
-) -> tuple[list[Any], Select[tuple[_EvaluationRow]]]:
+) -> tuple[list[Any], Select[tuple[_EvaluationRow]], tuple[Any, ...]]:
     if (
         sort not in _EVALUATION_SORTS
         or order not in _SORT_ORDERS
@@ -1852,38 +1862,76 @@ def _evaluation_list_statement(
         filters.append(_EvaluationRow.phase == phase)
     if query:
         filters.append(_EvaluationRow.evaluation_id.contains(query.strip().casefold()))
-    statement = (
-        select(_EvaluationRow)
-        .where(*filters)
-        .order_by(
-            (desc if order == "desc" else asc)(columns[sort]),
-            (desc if order == "desc" else asc)(_EvaluationRow.evaluation_id),
-        )
+    key_columns = tuple(dict.fromkeys((columns[sort], _EvaluationRow.evaluation_id)))
+    return filters, select(_EvaluationRow).where(*filters), key_columns
+
+
+def _page_size(page_size: int) -> None:
+    if page_size < 1 or page_size > 100:
+        raise ValueError("stove0 page_size is invalid")
+
+
+def _keyset_statement(
+    statement: Select[Any],
+    *,
+    columns: Sequence[Any],
+    position: Sequence[str | int | bool | bytes | None] | None,
+    order: str,
+    page_size: int,
+) -> Select[Any]:
+    _page_size(page_size)
+    if order not in _SORT_ORDERS or not columns:
+        raise ValueError("stove0 browse ordering is invalid")
+    if position is not None:
+        if len(position) != len(columns):
+            raise ValueError("stove0 page token position differs from the ordering")
+        comparisons = []
+        for index, (column, value) in enumerate(zip(columns, position, strict=True)):
+            preceding = [
+                (earlier.is_(None) if earlier_value is None else earlier == earlier_value)
+                for earlier, earlier_value in zip(columns[:index], position[:index], strict=True)
+            ]
+            if value is None:
+                if order == "desc":
+                    comparisons.append(and_(*preceding, column.is_not(None)))
+            else:
+                comparison = (
+                    or_(column > value, column.is_(None)) if order == "asc" else column < value
+                )
+                comparisons.append(and_(*preceding, comparison))
+        if comparisons:
+            statement = statement.where(or_(*comparisons))
+    ordering = (
+        tuple(asc(column).nulls_last() for column in columns)
+        if order == "asc"
+        else tuple(desc(column).nulls_first() for column in columns)
     )
-    return filters, statement
+    return statement.order_by(*ordering).limit(page_size + 1)
 
 
-def _pagination(page: int, per_page: int) -> None:
-    if page < 1 or per_page < 1 or per_page > 100:
-        raise ValueError("stove0 pagination is invalid")
+def _work_position(row: _WorkRow, *, sort: str) -> tuple[str, ...]:
+    value = getattr(row, sort)
+    return (value,) if sort == "work_id" else (value, row.work_id)
+
+
+def _evaluation_position(row: _EvaluationRow, *, sort: str) -> tuple[str, ...]:
+    value = getattr(row, sort)
+    return (value,) if sort == "evaluation_id" else (value, row.evaluation_id)
 
 
 def _page(
     records: Sequence[WorkRecord],
     *,
     item_key: str,
-    page: int,
-    per_page: int,
-    total: int,
+    page_size: int,
+    next_position: tuple[str, ...] | None,
     sort: str,
     order: str,
     filters: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": (total + per_page - 1) // per_page,
+        "page_size": page_size,
+        "_next_position": next_position,
         "sort": sort,
         "order": order,
         "filters": filters,
@@ -1897,18 +1945,15 @@ def _model_page(
     records: Sequence[EvaluationRecord],
     *,
     item_key: str,
-    page: int,
-    per_page: int,
-    total: int,
+    page_size: int,
+    next_position: tuple[str, ...] | None,
     sort: str,
     order: str,
     filters: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": (total + per_page - 1) // per_page,
+        "page_size": page_size,
+        "_next_position": next_position,
         "sort": sort,
         "order": order,
         "filters": filters,

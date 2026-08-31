@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import secrets
 from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from typing import Any
 
-from http_api_contracts import closed_literal_values
+from http_api_contracts import BrowseScalar, closed_literal_values
 from riverhog_application_access import (
     validate_application_key_id,
     validate_application_name,
@@ -27,6 +26,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
     normalize_access,
 )
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
@@ -90,31 +90,12 @@ def _status(record: AppKeyRecord, *, now: str) -> str:
     return "active"
 
 
-def _validate_list(
-    *, page: int, per_page: int, sort: str, order: str, fields: frozenset[str]
-) -> None:
-    if page < 1:
-        raise BadRequest("page must be greater than or equal to 1")
-    if per_page < 1 or per_page > 100:
-        raise BadRequest("per_page must be between 1 and 100")
+def _validate_list(*, page_size: int, sort: str, order: str, fields: frozenset[str]) -> None:
+    validate_page_size(page_size)
     if sort not in fields:
         raise BadRequest(f"sort must be one of {', '.join(sorted(fields))}")
     if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
-
-
-def _page_metadata(
-    *,
-    page: int,
-    per_page: int,
-    total: int,
-) -> dict[str, int]:
-    return {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": math.ceil(total / per_page) if total else 0,
-    }
 
 
 class SqlAlchemyAppKeyService:
@@ -383,8 +364,8 @@ class SqlAlchemyAppKeyService:
     def list_access(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
@@ -395,8 +376,7 @@ class SqlAlchemyAppKeyService:
         active: bool | None = None,
     ) -> dict[str, object]:
         _validate_list(
-            page=page,
-            per_page=per_page,
+            page_size=page_size,
             sort=sort,
             order=order,
             fields=_ACCESS_SORT_FIELDS,
@@ -408,8 +388,9 @@ class SqlAlchemyAppKeyService:
             normalized_key_id,
             normalized_permission,
             normalized_resource,
-            filters,
+            _,
             statement,
+            key_columns,
         ) = _access_list_statement(
             q=q,
             sort=sort,
@@ -422,26 +403,24 @@ class SqlAlchemyAppKeyService:
             now=now,
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(AppKeyRecord)
-                    .join(
-                        AppKeyAccessGrantRecord,
-                        AppKeyAccessGrantRecord.key_id == AppKeyRecord.id,
+            records, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
                     )
-                    .where(*filters)
-                )
-                or 0
+                ),
+                page_size=page_size,
+                position_of=lambda row: _access_list_position(row[0], row[1], sort=sort),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            records = session.execute(statement).all()
         return {
-            **_page_metadata(
-                page=page,
-                per_page=per_page,
-                total=total,
-            ),
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
@@ -468,34 +447,42 @@ class SqlAlchemyAppKeyService:
     def list_apps(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         active: bool | None = None,
     ) -> dict[str, object]:
         _validate_list(
-            page=page,
-            per_page=per_page,
+            page_size=page_size,
             sort=sort,
             order=order,
             fields=_APP_SORT_FIELDS,
         )
         now = format_utc_timestamp(utc_now())
-        query, grouped, statement = _app_list_statement(
+        query, statement, key_columns = _app_list_statement(
             q=q, sort=sort, order=order, active=active, now=now
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(session.scalar(select(func.count()).select_from(grouped)) or 0)
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = session.execute(statement).mappings().all()
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    ).mappings()
+                ),
+                page_size=page_size,
+                position_of=lambda row: _app_list_position(row, sort=sort),
+            )
         return {
-            **_page_metadata(
-                page=page,
-                per_page=per_page,
-                total=total,
-            ),
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
@@ -507,22 +494,21 @@ class SqlAlchemyAppKeyService:
         self,
         *,
         app: str,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         active: bool | None = None,
     ) -> dict[str, object]:
         _validate_list(
-            page=page,
-            per_page=per_page,
+            page_size=page_size,
             sort=sort,
             order=order,
             fields=_KEY_SORT_FIELDS,
         )
         now = format_utc_timestamp(utc_now())
-        normalized_app, query, filters, statement = _key_list_statement(
+        normalized_app, query, _, statement, key_columns = _key_list_statement(
             app=app,
             q=q,
             sort=sort,
@@ -531,18 +517,25 @@ class SqlAlchemyAppKeyService:
             now=now,
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(select(func.count()).select_from(AppKeyRecord).where(*filters)) or 0
+            records, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda record: _key_list_position(record, sort=sort),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            records = session.scalars(statement).all()
             access_by_key = _record_access_for_records(records, session=session)
         return {
-            **_page_metadata(
-                page=page,
-                per_page=per_page,
-                total=total,
-            ),
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
@@ -570,9 +563,9 @@ class SqlAlchemyAppKeyService:
         resource: str | None = None,
         active: bool | None = None,
     ) -> Iterator[dict[str, object]]:
-        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_ACCESS_SORT_FIELDS)
+        _validate_list(page_size=100, sort=sort, order=order, fields=_ACCESS_SORT_FIELDS)
         now = format_utc_timestamp(utc_now())
-        *_, statement = _access_list_statement(
+        *_, statement, key_columns = _access_list_statement(
             q=q,
             sort=sort,
             order=order,
@@ -583,6 +576,8 @@ class SqlAlchemyAppKeyService:
             active=active,
             now=now,
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             for key, grant in session.execute(statement.execution_options(yield_per=100)):
                 yield {
@@ -602,9 +597,13 @@ class SqlAlchemyAppKeyService:
         order: str,
         active: bool | None = None,
     ) -> Iterator[dict[str, object]]:
-        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_APP_SORT_FIELDS)
+        _validate_list(page_size=100, sort=sort, order=order, fields=_APP_SORT_FIELDS)
         now = format_utc_timestamp(utc_now())
-        _, _, statement = _app_list_statement(q=q, sort=sort, order=order, active=active, now=now)
+        _, statement, key_columns = _app_list_statement(
+            q=q, sort=sort, order=order, active=active, now=now
+        )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100)).mappings()
             for row in rows:
@@ -619,11 +618,13 @@ class SqlAlchemyAppKeyService:
         order: str,
         active: bool | None = None,
     ) -> Iterator[dict[str, object]]:
-        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_KEY_SORT_FIELDS)
+        _validate_list(page_size=100, sort=sort, order=order, fields=_KEY_SORT_FIELDS)
         now = format_utc_timestamp(utc_now())
-        _, _, _, statement = _key_list_statement(
+        _, _, _, statement, key_columns = _key_list_statement(
             app=app, q=q, sort=sort, order=order, active=active, now=now
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             records = session.scalars(statement.execution_options(yield_per=100))
             for partition in records.partitions():
@@ -666,7 +667,16 @@ def _access_list_statement(
     resource: str | None,
     active: bool | None,
     now: str,
-) -> tuple[str | None, str | None, str | None, str | None, str | None, list[Any], Any]:
+) -> tuple[
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    list[Any],
+    Any,
+    tuple[Any, ...],
+]:
     normalized_app = normalize_app_name(app) if app is not None else None
     normalized_key_id = normalize_key_id(key_id) if key_id is not None else None
     normalized_permission = (
@@ -721,7 +731,6 @@ def _access_list_statement(
                 )
             )
         )
-    direction = desc if order == "desc" else asc
     sort_columns = {
         "app": (
             AppKeyRecord.app,
@@ -755,7 +764,6 @@ def _access_list_statement(
         select(AppKeyRecord, AppKeyAccessGrantRecord)
         .join(AppKeyAccessGrantRecord, AppKeyAccessGrantRecord.key_id == AppKeyRecord.id)
         .where(*filters)
-        .order_by(*(direction(column) for column in sort_columns))
     )
     return (
         query,
@@ -765,6 +773,7 @@ def _access_list_statement(
         normalized_resource,
         filters,
         statement,
+        sort_columns,
     )
 
 
@@ -775,7 +784,7 @@ def _app_list_statement(
     order: str,
     active: bool | None,
     now: str,
-) -> tuple[str | None, Any, Any]:
+) -> tuple[str | None, Any, tuple[Any, ...]]:
     active_count = func.sum(case((active_key_filter(now), 1), else_=0))
     query = q.strip() if q is not None else None
     summary = select(
@@ -790,9 +799,11 @@ def _app_list_statement(
     if active is not None:
         summary = summary.having(active_count > 0 if active else active_count == 0)
     grouped = summary.subquery()
-    direction = desc if order == "desc" else asc
-    statement = select(grouped).order_by(direction(grouped.c[sort]), direction(grouped.c.name))
-    return query, grouped, statement
+    sort_column = (
+        func.coalesce(grouped.c.last_used_at, "") if sort == "last_used_at" else grouped.c[sort]
+    )
+    key_columns = (grouped.c.name,) if sort == "name" else (sort_column, grouped.c.name)
+    return query, select(grouped), key_columns
 
 
 def _key_list_statement(
@@ -803,7 +814,7 @@ def _key_list_statement(
     order: str,
     active: bool | None,
     now: str,
-) -> tuple[str, str | None, list[ColumnElement[bool]], Any]:
+) -> tuple[str, str | None, list[ColumnElement[bool]], Any, tuple[Any, ...]]:
     normalized_app = normalize_app_name(app)
     query = q.strip() if q is not None else None
     filters: list[ColumnElement[bool]] = [AppKeyRecord.app == normalized_app]
@@ -811,14 +822,39 @@ def _key_list_statement(
         filters.append(AppKeyRecord.id.like(_like_pattern(query.casefold()), escape="\\"))
     if active is not None:
         filters.append(active_key_filter(now) if active else ~active_key_filter(now))
-    direction = desc if order == "desc" else asc
     sort_column = getattr(AppKeyRecord, sort)
-    statement = (
-        select(AppKeyRecord)
-        .where(*filters)
-        .order_by(direction(sort_column), direction(AppKeyRecord.id))
-    )
-    return normalized_app, query, filters, statement
+    key_columns = (AppKeyRecord.id,) if sort == "id" else (sort_column, AppKeyRecord.id)
+    return normalized_app, query, filters, select(AppKeyRecord).where(*filters), key_columns
+
+
+def _access_list_position(
+    key: AppKeyRecord,
+    grant: AppKeyAccessGrantRecord,
+    *,
+    sort: str,
+) -> tuple[str, ...]:
+    return {
+        "app": (key.app, key.id, grant.permission, grant.resource),
+        "key_id": (key.id, grant.permission, grant.resource),
+        "permission": (grant.permission, grant.resource, key.id),
+        "resource": (grant.resource, grant.permission, key.id),
+        "created_at": (grant.created_at, key.id, grant.permission, grant.resource),
+    }[sort]
+
+
+def _app_list_position(row: Any, *, sort: str) -> tuple[str | int, ...]:
+    value: str | int = {
+        "name": row["name"],
+        "keys": row["keys"],
+        "active_keys": row["active_keys"],
+        "last_used_at": row["last_used_at"] or "",
+    }[sort]
+    return (value,) if sort == "name" else (value, row["name"])
+
+
+def _key_list_position(record: AppKeyRecord, *, sort: str) -> tuple[BrowseScalar, ...]:
+    value = getattr(record, sort)
+    return (value,) if sort == "id" else (value, record.id)
 
 
 def _record_access(session: Session, key_id: str) -> tuple[ApplicationAccess, ...]:

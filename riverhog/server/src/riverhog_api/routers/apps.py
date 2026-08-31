@@ -4,7 +4,7 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from http_api_contracts import bounded_list_operation
+from http_api_contracts import mutable_browse_operation
 from riverhog_application_access import (
     ApplicationKeyId,
     ApplicationName,
@@ -19,6 +19,7 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import KeyManager
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.apps import (
     AppAccessListOut,
@@ -38,26 +39,40 @@ router = APIRouter(tags=["apps"])
 @router.get(
     "/apps",
     response_model=AppListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_apps(
     container: ContainerDep,
-    _principal: KeyManager,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    principal: KeyManager,
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     sort: Annotated[ApplicationSort, Query()] = "name",
     order: Annotated[SortOrder, Query()] = "asc",
     q: str | None = Query(None),
     active: bool | None = Query(None),
 ) -> AppListOut:
+    selectors = canonical_selectors(q=q, sort=sort, order=order, active=active)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_apps",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return AppListOut.model_validate(
-        container.app_keys.list_apps(
-            page=page,
-            per_page=per_page,
-            q=q,
-            sort=sort,
-            order=order,
-            active=active,
+        page_payload(
+            container.app_keys.list_apps(
+                page_size=page_size,
+                position=position,
+                q=q,
+                sort=sort,
+                order=order,
+                active=active,
+            ),
+            container=container,
+            principal=principal,
+            operation="list_apps",
+            selectors=selectors,
         )
     )
 
@@ -98,13 +113,13 @@ def rotate_app_key(
 @router.get(
     "/app-key-access",
     response_model=AppAccessListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_app_key_access(
     container: ContainerDep,
-    _principal: KeyManager,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    principal: KeyManager,
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     sort: Annotated[ApplicationAccessSort, Query()] = "permission",
     order: Annotated[SortOrder, Query()] = "asc",
     q: str | None = Query(None),
@@ -114,18 +129,41 @@ def list_app_key_access(
     resource: Annotated[ApplicationResource | None, Query()] = None,
     active: bool | None = Query(None),
 ) -> AppAccessListOut:
+    selectors = canonical_selectors(
+        q=q,
+        sort=sort,
+        order=order,
+        app=app,
+        key_id=key_id,
+        permission=permission,
+        resource=resource,
+        active=active,
+    )
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_app_key_access",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return AppAccessListOut.model_validate(
-        container.app_keys.list_access(
-            page=page,
-            per_page=per_page,
-            q=q,
-            sort=sort,
-            order=order,
-            app=app,
-            key_id=key_id,
-            permission=permission,
-            resource=resource,
-            active=active,
+        page_payload(
+            container.app_keys.list_access(
+                page_size=page_size,
+                position=position,
+                q=q,
+                sort=sort,
+                order=order,
+                app=app,
+                key_id=key_id,
+                permission=permission,
+                resource=resource,
+                active=active,
+            ),
+            container=container,
+            principal=principal,
+            operation="list_app_key_access",
+            selectors=selectors,
         )
     )
 
@@ -195,28 +233,42 @@ def remove_app_key_access(
 @router.get(
     "/apps/{app}/keys",
     response_model=AppKeyListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_app_keys(
     app: ApplicationName,
     container: ContainerDep,
-    _principal: KeyManager,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    principal: KeyManager,
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     sort: Annotated[ApplicationKeySort, Query()] = "created_at",
     order: Annotated[SortOrder, Query()] = "desc",
     q: str | None = Query(None),
     active: bool | None = Query(None),
 ) -> AppKeyListOut:
+    selectors = canonical_selectors(app=app, q=q, sort=sort, order=order, active=active)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_app_keys",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return AppKeyListOut.model_validate(
-        container.app_keys.list_keys(
-            app=app,
-            page=page,
-            per_page=per_page,
-            q=q,
-            sort=sort,
-            order=order,
-            active=active,
+        page_payload(
+            container.app_keys.list_keys(
+                app=app,
+                page_size=page_size,
+                position=position,
+                q=q,
+                sort=sort,
+                order=order,
+                active=active,
+            ),
+            container=container,
+            principal=principal,
+            operation="list_app_keys",
+            selectors=selectors,
         )
     )
 

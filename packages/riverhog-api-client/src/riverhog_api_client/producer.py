@@ -860,30 +860,23 @@ class IncrementalCollectionProducer:
         self._needs_upload_scan = False
 
     def _refresh_registered(self) -> None:
-        page = 1
-        expected_total: int | None = None
-        observed = 0
+        page_token: str | None = None
         while True:
             payload = self.api.list_collection_upload_session_files(
                 self.collection_id,
-                page=page,
-                per_page=100,
+                page_size=100,
+                page_token=page_token,
             )
-            total = int(payload.get("total") or 0)
-            if expected_total is None:
-                expected_total = total
-            elif expected_total != total:
-                raise RuntimeError("registered files changed during bounded reconciliation")
             rows = payload.get("files")
             if not isinstance(rows, list):
                 raise RuntimeError("Riverhog returned invalid registered files")
             self._accept_registered_rows(iter(rows))
-            observed += len(rows)
-            if page >= int(payload.get("pages") or 0):
+            next_page_token = payload.get("next_page_token")
+            if next_page_token is None:
                 break
-            page += 1
-        if observed != expected_total:
-            raise RuntimeError("registered file reconciliation is incomplete")
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise RuntimeError("Riverhog returned an invalid registration page token")
+            page_token = next_page_token
 
     def _accept_registered_rows(self, rows: Iterator[dict[str, Any]]) -> None:
         for row in rows:

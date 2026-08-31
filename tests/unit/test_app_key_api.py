@@ -7,6 +7,7 @@ import anyio
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from http_api_contracts import BrowseTokenCodec
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import get_container
 from riverhog_api.routers.apps import router as apps_router
@@ -64,7 +65,14 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
         )
     service = SqlAlchemyAppKeyService(config)
     download_quotas = SqlAlchemyDownloadAllowance(config)
-    container = SimpleNamespace(app_keys=service, download_quotas=download_quotas)
+    container = SimpleNamespace(
+        app_keys=service,
+        download_quotas=download_quotas,
+        browse_tokens=BrowseTokenCodec(
+            b"app-key-api-browse-test-signing-key-v1",
+            lifetime_seconds=3600,
+        ),
+    )
     api = FastAPI()
     api.dependency_overrides[get_container] = lambda: container
 
@@ -201,11 +209,11 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             quotas = (
                 await client.get(
                     "/v1/download-quotas",
-                    params={"app": "reader", "page": 1, "per_page": 100},
+                    params={"app": "reader", "page_size": 100},
                     headers=quota_headers,
                 )
             ).json()
-            assert quotas["total"] == 1
+            assert len(quotas["quotas"]) == 1
             assert quotas["quotas"][0]["key_id"] == delegated_key["id"]
 
             access = (
@@ -214,19 +222,18 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
                     params={
                         "app": "reader",
                         "key": delegated_key["id"],
-                        "page": 1,
-                        "per_page": 100,
+                        "page_size": 100,
                     },
                     headers=manager_headers,
                 )
             ).json()
-            assert access["total"] == 2
+            assert len(access["access"]) == 2
             assert access["access"][0]["permission"] == CATALOG_READ
 
             listed = (
                 await client.get(
                     "/v1/apps/manager/keys",
-                    params={"page": 1, "per_page": 100},
+                    params={"page_size": 100},
                     headers=manager_headers,
                 )
             ).json()
@@ -235,6 +242,21 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
                 key: created[key] for key in created if key != "last_used_at"
             }
             assert listed_key["last_used_at"] is not None
+            first_apps = await client.get(
+                "/v1/apps",
+                params={"page_size": 1},
+                headers=manager_headers,
+            )
+            assert first_apps.status_code == 200
+            continuation = first_apps.json()["next_page_token"]
+            assert isinstance(continuation, str) and continuation
+            changed_page_size = await client.get(
+                "/v1/apps",
+                params={"page_size": 100, "page_token": continuation},
+                headers=manager_headers,
+            )
+            assert changed_page_size.status_code == 200
+            assert changed_page_size.json()["apps"]
             revoked = await client.post(
                 f"/v1/apps/manager/keys/{created['id']}/revoke",
                 headers=bootstrap_headers,
@@ -242,5 +264,11 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             assert revoked.status_code == 200
             assert revoked.json()["status"] == "revoked"
             assert (await client.get("/catalog", headers=manager_headers)).status_code == 401
+            revoked_continuation = await client.get(
+                "/v1/apps",
+                params={"page_size": 100, "page_token": continuation},
+                headers=manager_headers,
+            )
+            assert revoked_continuation.status_code == 401
 
     anyio.run(exercise)

@@ -17,8 +17,8 @@ def test_stove0_state_upgrade_establishes_exact_current_v1_schema(tmp_path: Path
     try:
         assert upgraded.condition == "current"
         assert verified == upgraded
-        assert store.list_work()["total"] == 0
-        assert store.list_evaluations()["total"] == 0
+        assert store.list_work()["work"] == []
+        assert store.list_evaluations()["evaluations"] == []
     finally:
         store.engine.dispose()
 

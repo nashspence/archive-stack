@@ -533,10 +533,8 @@ class WorkView(OperatorModel):
 
 
 class WorkPage(OperatorModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None = None
     sort: WorkSort
     order: SortOrder
     filters: dict[str, JsonValue]
@@ -604,10 +602,8 @@ class EvaluationView(OperatorModel):
 
 
 class EvaluationPage(OperatorModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None = None
     sort: EvaluationSort
     order: SortOrder
     filters: dict[str, JsonValue]

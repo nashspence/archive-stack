@@ -156,6 +156,15 @@ def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
     return value
 
 
+def _page_params(*, page_size: int, page_token: str | None) -> dict[str, object]:
+    if page_size < 1 or page_size > 100:
+        raise ValueError("page_size must be between 1 and 100")
+    params: dict[str, object] = {"page_size": page_size}
+    if page_token is not None:
+        params["page_token"] = page_token
+    return params
+
+
 def _canonical_tag(value: str) -> str:
     try:
         return validate_canonical_tag(value)
@@ -878,8 +887,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_retrieval_cache_objects(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         tag: str | None = None,
         collection_id: CollectionId | None = None,
@@ -893,8 +902,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "desc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            "page_size": page_size,
             "sort": _one_of(
                 sort,
                 _RETRIEVAL_CACHE_SORTS,
@@ -902,6 +910,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
+        if page_token is not None:
+            params["page_token"] = page_token
         if q:
             params["q"] = q
         if tag is not None:
@@ -1110,11 +1120,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if opened.get("state") == "finalized":
             return opened
         collection_id = _collection_id(int(opened["collection_id"]))
-        current = set(self._collection_upload_session_tags(collection_id))
-        for tag in sorted(set(normalized_tags) - current):
+        for tag in normalized_tags:
             self.add_collection_upload_session_tag(collection_id, tag)
-        for tag in sorted(current - set(normalized_tags)):
-            self.remove_collection_upload_session_tag(collection_id, tag)
         opened["tag_count"] = len(normalized_tags)
         return opened
 
@@ -1122,41 +1129,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags",
-            params={"page": page, "per_page": per_page},
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
-
-    def _collection_upload_session_tags(self, collection_id: CollectionId) -> tuple[str, ...]:
-        page = 1
-        expected_total: int | None = None
-        tags: list[str] = []
-        while True:
-            payload = self.list_collection_upload_session_tags(
-                collection_id,
-                page=page,
-                per_page=100,
-            )
-            total = int(payload.get("total") or 0)
-            pages = int(payload.get("pages") or 0)
-            if expected_total is None:
-                expected_total = total
-            elif expected_total != total:
-                raise InvalidState("upload-session tags changed during bounded traversal")
-            raw_tags = payload.get("tags")
-            if not isinstance(raw_tags, list):
-                raise InvalidState("API returned invalid upload-session tags")
-            tags.extend(str(item.get("tag") or "") for item in raw_tags if isinstance(item, dict))
-            if page >= pages:
-                break
-            page += 1
-        if len(tags) != expected_total or tags != sorted(set(tags)):
-            raise InvalidState("upload-session tag traversal is incomplete")
-        return tuple(tags)
 
     def add_collection_upload_session_tag(
         self,
@@ -1232,8 +1212,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         normalized_collection_id = _collection_id(collection_id)
         return _validated_collection_upload_file_response(
@@ -1241,10 +1221,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             self._json(
                 "GET",
                 f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/files",
-                params={
-                    "page": page,
-                    "per_page": per_page,
-                },
+                params=_page_params(page_size=page_size, page_token=page_token),
             ),
         )
 
@@ -1407,8 +1384,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_collection_upload_sessions(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         state: CollectionUploadState | None = None,
         tag: str | None = None,
@@ -1416,8 +1393,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "desc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            "page_size": page_size,
             "sort": _one_of(
                 sort,
                 _COLLECTION_UPLOAD_SORTS,
@@ -1425,6 +1401,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
+        if page_token is not None:
+            params["page_token"] = page_token
         if q:
             params["q"] = q
         if state:
@@ -1553,15 +1531,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         query: str | None = None,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         sort: SearchSort = "file_ref",
         order: SortOrder = "asc",
         collection: CollectionId | None = None,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
-            "page": page,
-            "per_page": per_page,
+            "page_size": page_size,
             "sort": _one_of(
                 sort,
                 _SEARCH_SORTS,
@@ -1569,6 +1546,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
+        if page_token is not None:
+            params["page_token"] = page_token
         if query:
             params["q"] = query
         if collection is not None:
@@ -1585,29 +1564,28 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/archive-copies",
-            params={"page": page, "per_page": per_page},
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
 
     def list_collection_provenance(
         self,
         collection_id: CollectionId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         status: ProvenanceStatus | None = None,
         sort: ProvenanceSort = "path",
         order: SortOrder = "asc",
     ) -> dict[str, Any]:
         params: dict[str, object] = {
-            "page": page,
-            "per_page": per_page,
+            "page_size": page_size,
             "sort": _one_of(
                 sort,
                 _PROVENANCE_SORTS,
@@ -1615,6 +1593,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
+        if page_token is not None:
+            params["page_token"] = page_token
         if q:
             params["q"] = q
         if status:
@@ -1645,14 +1625,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         collection_id: CollectionId,
         path: str,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/provenance/trace/"
             f"{quote(_canonical_relpath(path), safe='/')}",
-            params={"page": page, "per_page": per_page},
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
 
     @contextmanager
@@ -1884,8 +1864,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         try:
             canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
@@ -1898,7 +1878,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/provenance/journals/"
             f"{quote(canonical_journal_id, safe='')}/agents",
-            params={"page": page, "per_page": per_page},
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
 
     def request_collection_provenance_verification(
@@ -1962,8 +1942,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_collections(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         tag: str | None = None,
         encryption_format: str | None = None,
@@ -1971,10 +1951,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: CollectionSort = "id",
         order: SortOrder = "asc",
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
-        }
+        params: dict[str, Any] = _page_params(page_size=page_size, page_token=page_token)
         if sort != "id":
             params["sort"] = _one_of(
                 sort,
@@ -2000,15 +1977,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_archive_stores(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: ArchiveStoreSort = "store",
         order: SortOrder = "asc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _ARCHIVE_STORE_SORTS,
@@ -2026,16 +2002,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_apps(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: ApplicationSort = "name",
         order: SortOrder = "asc",
         active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _APPLICATION_SORTS,
@@ -2069,16 +2044,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         app: ApplicationName,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: ApplicationKeySort = "created_at",
         order: SortOrder = "desc",
         active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _APPLICATION_KEY_SORTS,
@@ -2113,8 +2087,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_app_key_access(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: ApplicationAccessSort = "permission",
         order: SortOrder = "asc",
@@ -2125,8 +2099,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _APPLICATION_ACCESS_SORTS,
@@ -2201,15 +2174,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_tags(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: TagSort = "id",
         order: SortOrder = "asc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _TAG_SORTS,
@@ -2238,13 +2210,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/tags",
-            params={"page": page, "per_page": per_page},
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
 
     def replace_collection_tags(
@@ -2255,59 +2227,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_id = _collection_id(collection_id)
-        desired = set(_canonical_tags(tags))
-        current = set(self._collection_tags_snapshot(normalized_id))
-        result: dict[str, Any] | None = None
-        for tag in sorted(current - desired):
-            result = self.remove_collection_tag(
-                normalized_id,
-                tag,
-                event_context=event_context,
-            )
-        for tag in sorted(desired - current):
-            result = self.add_collection_tag(
-                normalized_id,
-                tag,
-                event_context=event_context,
-            )
-        if result is not None:
-            return result
-        current_page = self.get_collection_tags(normalized_id, page=1, per_page=1)
-        return {
-            key: current_page[key]
-            for key in (
-                "collection_id",
-                "metadata_revision",
-                "inventory_identity",
-                "tag_count",
-            )
-        }
-
-    def _collection_tags_snapshot(self, collection_id: CollectionId) -> tuple[str, ...]:
-        page = 1
-        authority: tuple[int, str, int] | None = None
-        tags: list[str] = []
-        while True:
-            payload = self.get_collection_tags(collection_id, page=page, per_page=100)
-            current_authority = (
-                int(payload.get("metadata_revision") or 0),
-                str(payload.get("inventory_identity") or ""),
-                int(payload.get("tag_count") or 0),
-            )
-            if authority is None:
-                authority = current_authority
-            elif authority != current_authority:
-                raise InvalidState("collection tags changed during bounded traversal")
-            raw_tags = payload.get("tags")
-            if not isinstance(raw_tags, list):
-                raise InvalidState("API returned invalid collection tags")
-            tags.extend(str(tag) for tag in raw_tags)
-            if page >= int(payload.get("pages") or 0):
-                break
-            page += 1
-        if authority is None or len(tags) != authority[2] or tags != sorted(set(tags)):
-            raise InvalidState("collection tag traversal is incomplete")
-        return tuple(tags)
+        payload: dict[str, Any] = {"tags": _canonical_tags(tags)}
+        if event_context is not None:
+            payload["event_context"] = dict(event_context)
+        return self._json("PUT", f"/v1/collections/{normalized_id}/tags", json=payload)
 
     def add_collection_tag(
         self,
@@ -2370,8 +2293,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_download_quotas(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         sort: DownloadQuotaSort = "app",
         order: SortOrder = "asc",
@@ -2379,8 +2302,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _DOWNLOAD_QUOTA_SORTS,
@@ -2424,16 +2346,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_archive_copy_jobs(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         q: str | None = None,
         state: ArchiveCopyState | None = None,
         sort: ArchiveCopySort = "requested_at",
         order: SortOrder = "desc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "page": page,
-            "per_page": per_page,
+            **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
                 _ARCHIVE_COPY_SORTS,

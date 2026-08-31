@@ -180,18 +180,17 @@ class FakeApi:
         )
 
     def get_collection_tags(
-        self, collection_id: int, *, page: int, per_page: int
+        self, collection_id: int, *, page_size: int, page_token: str | None
     ) -> dict[str, object]:
         assert collection_id == COLLECTION_ID
-        assert (page, per_page) == (1, 100)
+        assert (page_size, page_token) == (100, None)
         return {
             "collection_id": collection_id,
             "metadata_revision": 1,
             "inventory_identity": _inventory()[2],
             "tag_count": len(self.tags),
-            "page": 1,
-            "pages": 1 if self.tags else 0,
-            "total": len(self.tags),
+            "page_size": page_size,
+            "next_page_token": None,
             "tags": list(self.tags),
         }
 
@@ -501,7 +500,7 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     assert api.canceled == ["job-1"]
     assert (
         runner.invoke(local_materialization.local_app, ["list"]).stdout
-        == "local collections: 0 (page 1/0)\n"
+        == "local collections: 0 in this page; next page token: -\n"
     )
 
 
@@ -655,7 +654,7 @@ def test_local_list_uses_standard_human_json_and_id_views(
     )
 
     assert human.exit_code == 0
-    assert "local collections: 1 (page 1/1)" in human.stdout
+    assert "local collections: 1 in this page; next page token: -" in human.stdout
     assert "status=desired" in human.stdout
     assert "tags=1" in human.stdout
     assert machine.exit_code == 0
@@ -671,12 +670,10 @@ def test_local_list_uses_standard_human_json_and_id_views(
             }
         ],
         "order": "asc",
-        "page": 1,
-        "pages": 1,
-        "per_page": 25,
+        "page_size": 25,
+        "next_page_token": None,
         "query": "docs",
         "sort": "collection_id",
-        "total": 1,
     }
     assert identifiers.exit_code == 0
     assert identifiers.stdout == "1\n"
@@ -720,6 +717,21 @@ def test_local_list_pages_and_sorts_database_aggregates(
         db.close()
 
     runner = CliRunner()
+    first = runner.invoke(
+        local_materialization.local_app,
+        [
+            "list",
+            "--sort",
+            "bytes",
+            "--order",
+            "desc",
+            "--page-size",
+            "1",
+            "--json",
+        ],
+    )
+    assert first.exit_code == 0
+    first_payload = json.loads(first.stdout)
     page = runner.invoke(
         local_materialization.local_app,
         [
@@ -728,26 +740,22 @@ def test_local_list_pages_and_sorts_database_aggregates(
             "bytes",
             "--order",
             "desc",
-            "--per-page",
+            "--page-size",
             "1",
-            "--page",
-            "2",
+            "--page-token",
+            str(first_payload["next_page_token"]),
             "--json",
         ],
     )
     all_ids = runner.invoke(
         local_materialization.local_app,
-        ["list", "--sort", "bytes", "--order", "desc", "--per-page", "3", "--ids"],
+        ["list", "--sort", "bytes", "--order", "desc", "--page-size", "3", "--ids"],
     )
 
     assert page.exit_code == 0
     payload = json.loads(page.stdout)
-    assert (payload["page"], payload["per_page"], payload["total"], payload["pages"]) == (
-        2,
-        1,
-        3,
-        3,
-    )
+    assert payload["page_size"] == 1
+    assert payload["next_page_token"] is not None
     assert payload["collections"][0]["collection_id"] == 3
     assert payload["collections"][0]["bytes"] == 200
     assert all_ids.exit_code == 0

@@ -272,8 +272,8 @@ def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
         "lease_categories",
     } <= set(schema["required"])
     assert {
-        "page",
-        "per_page",
+        "page_size",
+        "page_token",
         "q",
         "tag",
         "collection_id",

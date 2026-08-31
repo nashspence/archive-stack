@@ -769,10 +769,8 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
         "provenance": {"status": "omitted", "omission_reason": "device did not provide it"},
     }
     page_base = {
-        "page": 1,
-        "per_page": 2,
-        "total": 2,
-        "pages": 1,
+        "page_size": 2,
+        "next_page_token": None,
         "sort": "path",
         "order": "asc",
         "query": None,
@@ -829,10 +827,8 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
             {
                 **captured,
                 "journal": journal,
-                "page": 1,
-                "per_page": 25,
-                "total": 1,
-                "pages": 1,
+                "page_size": 25,
+                "next_page_token": None,
                 "items": [{"kind": "journal", "journal": journal}],
             }
         ).root.provenance.status
@@ -844,10 +840,8 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
         CollectionFileProvenanceTraceOut.model_validate(
             {
                 **omitted_detail,
-                "page": 1,
-                "per_page": 25,
-                "total": 0,
-                "pages": 0,
+                "page_size": 25,
+                "next_page_token": None,
                 "items": [],
             }
         ).root.provenance.status

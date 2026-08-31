@@ -81,10 +81,10 @@ def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None
         def list_archive_copy_jobs(self, **_kwargs: object) -> dict[str, object]:
             calls.append("list")
             return {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "total": 1,
-                "pages": 1,
+                "next_page_token": None,
                 "sort": "requested_at",
                 "order": "desc",
                 "query": None,
@@ -139,10 +139,10 @@ def test_archive_copy_list_selectors_cancel_and_watch_are_actionable(monkeypatch
         def list_archive_copy_jobs(self, **kwargs: object) -> dict[str, object]:
             calls.append(("list", kwargs))
             return {
-                "page": 1,
-                "per_page": 1,
+                "page_size": 1,
+                "page_token": None,
                 "total": 1,
-                "pages": 1,
+                "next_page_token": None,
                 "sort": "requested_at",
                 "order": "desc",
                 "query": None,

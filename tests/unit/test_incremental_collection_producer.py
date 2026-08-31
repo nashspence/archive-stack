@@ -74,9 +74,8 @@ class _CustodyApi:
         **_kwargs: object,
     ) -> dict[str, object]:
         return {
-            "page": 1,
-            "pages": 1 if self.rows else 0,
-            "total": len(self.rows),
+            "page_size": 100,
+            "next_page_token": None,
             "files": list(self.rows.values()),
         }
 
@@ -325,7 +324,7 @@ class _ServiceApi:
         collection_id: int,
         **_kwargs: object,
     ) -> dict[str, object]:
-        payload = self.service.list_files(collection_id, page=1, per_page=100)
+        payload = self.service.list_files(collection_id, page_size=100, position=None)
         raw_files = payload["files"]
         assert isinstance(raw_files, list)
         files = []

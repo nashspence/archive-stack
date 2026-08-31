@@ -29,10 +29,8 @@ class FakeClient:
             }
         if name == "list_work":
             return lambda **_kwargs: {
-                "page": 1,
-                "pages": 1,
-                "per_page": 1,
-                "total": 1,
+                "page_size": 1,
+                "next_page_token": "next-work",
                 "work": [
                     {
                         "work_id": "work-1",
@@ -49,20 +47,14 @@ class FakeClient:
             }
         if name == "list_evaluations":
             return lambda **_kwargs: {
-                "page": 1,
-                "pages": 1,
-                "per_page": 1,
-                "total": 1,
+                "page_size": 1,
+                "next_page_token": "next-evaluation",
                 "evaluations": [
                     {"evaluation_id": "evaluation-1", "phase": "complete", "revision": 3}
                 ],
             }
         if name == "get_artifact_selection":
             return lambda *_args, **_kwargs: {
-                "page": 1,
-                "pages": 1,
-                "per_page": 1,
-                "total": 1,
                 "artifacts": [
                     {
                         "id": "source",
@@ -237,8 +229,9 @@ def test_stove0_bounded_pages_keep_rich_and_json_cli_parity(
 
     assert human.exit_code == 0, (human.output, human.exception)
     assert machine.exit_code == 0, (machine.output, machine.exception)
-    assert json.loads(machine.stdout)["total"] == 1
     assert len(json.loads(machine.stdout)[key]) == 1
+    if key != "artifacts":
+        assert json.loads(machine.stdout)["next_page_token"]
 
 
 def test_work_list_rich_projection_identifies_coordination_settlement() -> None:

@@ -36,7 +36,7 @@ from riverhog_protocol.paths import (
     relpath_sort_key,
     validate_canonical_relpath,
 )
-from sqlalchemy import asc, case, delete, desc, exists, func, or_, select, update
+from sqlalchemy import case, delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
@@ -44,6 +44,7 @@ from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.artifact_access import require_artifact_scope
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
@@ -522,8 +523,8 @@ class SqlAlchemyRetrievalService:
     def list_cache_objects(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         tag: str | None,
         collection_id: int | None = None,
@@ -537,10 +538,9 @@ class SqlAlchemyRetrievalService:
         order: str,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("retrieval cache page and page size are invalid")
+        validate_page_size(page_size)
         now = format_utc_timestamp(utc_now())
-        statement, normalized_filters, needle = _cache_list_statement(
+        statement, key_columns, normalized_filters, needle = _cache_list_statement(
             q=q,
             tag=tag,
             collection_id=collection_id,
@@ -556,14 +556,24 @@ class SqlAlchemyRetrievalService:
             now=now,
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = list(session.execute(statement))
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda row: _cache_list_position(row, sort=sort),
+            )
         return {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": ((total + per_page - 1) // per_page),
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": needle,
@@ -603,7 +613,7 @@ class SqlAlchemyRetrievalService:
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[dict[str, object]]:
         now = format_utc_timestamp(utc_now())
-        statement, _, _ = _cache_list_statement(
+        statement, _, _, _ = _cache_list_statement(
             q=q,
             tag=tag,
             collection_id=collection_id,
@@ -2062,7 +2072,7 @@ def _cache_list_statement(
     order: str,
     principal: ApplicationPrincipal | None,
     now: str,
-) -> tuple[Any, dict[str, object], str | None]:
+) -> tuple[Any, tuple[Any, ...], dict[str, object], str | None]:
     if sort not in _CACHE_SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_CACHE_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
@@ -2160,12 +2170,17 @@ def _cache_list_statement(
         "protected_until": protected_until,
     }
     expression = sort_expressions[sort]
-    ordering = desc if order == "desc" else asc
-    statement = statement.order_by(
-        ordering(expression),
-        ordering(RetrievalCacheObjectRecord.collection_id),
-        ordering(RetrievalCacheObjectRecord.source_store),
-        ordering(RetrievalCacheObjectRecord.object_id),
+    if sort == "protected_until":
+        expression = func.coalesce(expression, "")
+    key_columns = tuple(
+        dict.fromkeys(
+            (
+                expression,
+                RetrievalCacheObjectRecord.collection_id,
+                RetrievalCacheObjectRecord.source_store,
+                RetrievalCacheObjectRecord.object_id,
+            )
+        )
     )
     normalized_filters: dict[str, object] = {
         "tag": normalized_tag,
@@ -2177,7 +2192,26 @@ def _cache_list_statement(
         "expires_before": normalized_expires_before,
         "expires_after": normalized_expires_after,
     }
-    return statement, normalized_filters, needle
+    return statement, key_columns, normalized_filters, needle
+
+
+def _cache_list_position(row: Any, *, sort: str) -> tuple[str | int, ...]:
+    record = row[0]
+    protected_until = row[1]
+    values: dict[str, str | int] = {
+        "collection_id": record.collection_id,
+        "source_store": record.source_store,
+        "object_id": record.object_id,
+        "stored_bytes": record.stored_bytes,
+        "cached_at": record.cached_at,
+        "verified_at": record.verified_at or "",
+        "protected_until": protected_until or "",
+    }
+    keys = [sort]
+    for key in ("collection_id", "source_store", "object_id"):
+        if key != sort:
+            keys.append(key)
+    return tuple(values[key] for key in keys)
 
 
 def _cache_lease_projections(now: str) -> tuple[Any, Any, Any]:

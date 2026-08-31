@@ -785,8 +785,8 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
 
     status = service.cache_status(principal=permitted)
     listed = service.list_cache_objects(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         tag="docs",
         sort="cached_at",
@@ -794,8 +794,8 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
         principal=permitted,
     )
     filtered = service.list_cache_objects(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         tag="docs",
         collection_id=collection_id,
@@ -817,7 +817,7 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
     )
 
     assert status["objects"] == 1
-    assert listed["total"] == 1
+    assert listed["_next_position"] is None
     assert filtered["objects"] == listed["objects"]
     assert filtered["filters"] == {
         "tag": "docs",
@@ -835,8 +835,8 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
     assert service.cache_status(principal=denied)["objects"] == 0
     assert (
         service.list_cache_objects(
-            page=1,
-            per_page=25,
+            page_size=25,
+            position=None,
             q=None,
             tag=None,
             sort="cached_at",

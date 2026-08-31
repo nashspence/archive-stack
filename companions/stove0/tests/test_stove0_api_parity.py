@@ -112,10 +112,8 @@ class _LifecycleState:
     def list_work(self, **_kwargs: object) -> dict[str, object]:
         records = () if self.work_record is None else (self.work_record,)
         return {
-            "page": 1,
-            "per_page": 25,
-            "total": len(records),
-            "pages": 1 if records else 0,
+            "page_size": 25,
+            "_next_position": None,
             "sort": "updated_at",
             "order": "desc",
             "filters": {},
@@ -132,10 +130,8 @@ class _LifecycleState:
 
     def list_evaluations(self, **_kwargs: object) -> dict[str, object]:
         return {
-            "page": 1,
-            "per_page": 25,
-            "total": 1,
-            "pages": 1,
+            "page_size": 25,
+            "_next_position": None,
             "sort": "updated_at",
             "order": "desc",
             "filters": {},
@@ -696,7 +692,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert recipe_page.catalog_sha256
         assert recipe_page.recipes[0].sha256
         assert client.get_recipe("stove0.conformance-media/v1").sha256
-        assert client.list_work().total == 0
+        assert client.list_work().work == ()
         preview = client.preview_workflow("stove0.conformance-media/v1", [1])
         created = client.create_work(
             "stove0.conformance-media/v1",
@@ -716,7 +712,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.retry_work(created.work_id).phase == "eligible"
         assert client.cancel_work(created.work_id).phase == "canceled"
         assert preview.state == "ready"
-        assert client.list_evaluations().total == 1
+        assert len(client.list_evaluations().evaluations) == 1
         assert (
             client.create_evaluation(definition.model_dump(mode="json")).evaluation_id
             == evaluation_id
@@ -929,8 +925,8 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
     for path in ("/v1/work", "/v1/evaluations"):
         operation = schema["paths"][path]["get"]
         assert {item["name"] for item in operation["parameters"]} >= {
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "sort",
             "order",
         }

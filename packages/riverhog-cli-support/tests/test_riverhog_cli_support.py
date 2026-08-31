@@ -10,16 +10,15 @@ from riverhog_cli_support.output import (
 
 def test_shared_cli_output_projects_common_values() -> None:
     payload = {
-        "page": 2,
-        "pages": 3,
-        "total": 2,
+        "page_size": 2,
+        "next_page_token": "next-token",
         "items": [{"id": "b"}, {"id": "a"}],
     }
 
     assert json_text({"b": 1, "a": 2}) == '{"a":2,"b":1}'
     assert mapping_items(payload, "items") == [{"id": "b"}, {"id": "a"}]
     assert format_list_ids(payload, "items") == "b\na"
-    assert page_line(payload, "items") == "items: 2 (page 2/3)"
+    assert page_line(payload, "items") == "items: 2 in this page; next page token: next-token"
     assert human_bytes(1500) == "1.5 KB"
 
 

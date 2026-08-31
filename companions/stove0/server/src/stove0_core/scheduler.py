@@ -276,14 +276,13 @@ class Stove0Scheduler:
         derivation: CollectionDerivation,
     ) -> set[int]:
         collection_ids: set[int] = set()
-        page = 1
+        ordinal = 0
         seen = 0
         while seen < derivation.disposition_set.disposition_count:
             current = self.riverhog.list_processing_claim_dispositions(
                 derivation.claim_id,
                 authority_sha256=derivation.disposition_set.sha256,
-                page=page,
-                per_page=100,
+                start_ordinal=ordinal,
             )
             if current.authority.model_dump(mode="json") != derivation.disposition_set.as_dict():
                 raise RuntimeError("Riverhog derivation input authority changed")
@@ -291,7 +290,9 @@ class Stove0Scheduler:
                 raise RuntimeError("Riverhog derivation input traversal ended early")
             collection_ids.update(item.input.collection_id for item in current.dispositions)
             seen += len(current.dispositions)
-            page += 1
+            if current.next_ordinal is None:
+                break
+            ordinal = current.next_ordinal
         if seen != derivation.disposition_set.disposition_count:
             raise RuntimeError("Riverhog derivation input traversal is incomplete")
         return collection_ids

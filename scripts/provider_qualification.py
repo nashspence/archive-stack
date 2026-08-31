@@ -2664,19 +2664,22 @@ def _upload_collection_with_observation(
     def observe() -> None:
         nonlocal collection_id
         upload = None
-        page = 1
+        page_token: str | None = None
         while True:
             payload = api.list_collection_upload_sessions(
-                page=page,
-                per_page=100,
+                page_size=100,
+                page_token=page_token,
                 q=resolved_root,
             )
             for item in payload.get("uploads", []):
                 if item.get("ingest_source") == resolved_root:
                     upload = item
-            if page >= int(payload.get("pages", 0)):
+            next_page_token = payload.get("next_page_token")
+            if next_page_token is None:
                 break
-            page += 1
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise QualificationError("upload list returned an invalid page token")
+            page_token = next_page_token
         if upload is None:
             return
         collection_id = int(upload["collection_id"])
@@ -2684,18 +2687,21 @@ def _upload_collection_with_observation(
         if session.get("state") in {"open", "uploading", "finalizing"}:
             observed.add("session-show")
         has_files = False
-        page = 1
+        page_token = None
         while True:
             payload = api.list_collection_upload_session_files(
                 collection_id,
-                page=page,
-                per_page=100,
+                page_size=100,
+                page_token=page_token,
             )
             for _item in payload.get("files", []):
                 has_files = True
-            if page >= int(payload.get("pages", 0)):
+            next_page_token = payload.get("next_page_token")
+            if next_page_token is None:
                 break
-            page += 1
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise QualificationError("upload file list returned an invalid page token")
+            page_token = next_page_token
         if has_files:
             observed.add("registered-file-list")
         work_batch = api.acquire_collection_upload_session_work(collection_id, limit=16)
@@ -2809,11 +2815,11 @@ def _wait_archive_copy(
         state = str(payload.get("state", ""))
         if state == "completed":
             found = False
-            page = 1
+            page_token: str | None = None
             while True:
                 result = api.list_archive_copy_jobs(
-                    page=page,
-                    per_page=100,
+                    page_size=100,
+                    page_token=page_token,
                     q=destination,
                 )
                 for item in result.get("copies", []):
@@ -2822,9 +2828,12 @@ def _wait_archive_copy(
                         and item.get("destination_store") == destination
                     ):
                         found = True
-                if page >= int(result.get("pages", 0)):
+                next_page_token = result.get("next_page_token")
+                if next_page_token is None:
                     break
-                page += 1
+                if not isinstance(next_page_token, str) or not next_page_token:
+                    raise QualificationError("archive-copy list returned an invalid page token")
+                page_token = next_page_token
             if not found:
                 raise QualificationError("archive-copy list omitted the completed job")
             return cast(dict[str, Any], payload)
@@ -2958,11 +2967,11 @@ def _assert_retrieval_cache_surface(
     if policy != expected_policy:
         raise QualificationError("retrieval-cache status omitted effective qualification policy")
     selected: list[dict[str, Any]] = []
-    page = 1
+    page_token: str | None = None
     while True:
         result = api.list_retrieval_cache_objects(
-            page=page,
-            per_page=100,
+            page_size=100,
+            page_token=page_token,
             collection_id=collection_id,
             source_store=source_store,
             cache_store="b2-cache",
@@ -2976,9 +2985,12 @@ def _assert_retrieval_cache_surface(
             and item.get("source_store") == source_store
             and item.get("cache_store") == "b2-cache"
         )
-        if page >= int(result.get("pages", 0)):
+        next_page_token = result.get("next_page_token")
+        if next_page_token is None:
             break
-        page += 1
+        if not isinstance(next_page_token, str) or not next_page_token:
+            raise QualificationError("retrieval-cache list returned an invalid page token")
+        page_token = next_page_token
     if not selected:
         raise QualificationError(f"retrieval-cache list omitted {source_store} objects")
     object_ids: list[str] = []

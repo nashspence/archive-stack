@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import secrets
 import threading
 import time
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyRecord,
@@ -195,41 +195,49 @@ class SqlAlchemyDownloadAllowance:
     def list_key_quotas(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         app: str | None = None,
         active: bool | None = None,
     ) -> dict[str, object]:
-        if page < 1:
-            raise BadRequest("page must be greater than or equal to 1")
-        if per_page < 1 or per_page > 100:
-            raise BadRequest("per_page must be between 1 and 100")
+        validate_page_size(page_size)
         now = self._current_time()
-        now_text, current_month, query, normalized_app, base, statement = _key_quota_statements(
-            now=now, q=q, sort=sort, order=order, app=app, active=active
+        now_text, current_month, query, normalized_app, statement, key_columns = (
+            _key_quota_statements(now=now, q=q, sort=sort, order=order, app=app, active=active)
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = [dict(row) for row in session.execute(statement).mappings().all()]
-        rows = [
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    ).mappings()
+                ),
+                page_size=page_size,
+                position_of=lambda row: _key_quota_position(row, sort=sort),
+            )
+            row_payloads = [dict(row) for row in rows]
+        quotas = [
             _key_quota_row(row, now=now, now_text=now_text, current_month=current_month)
-            for row in rows
+            for row in row_payloads
         ]
         return {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": math.ceil(total / per_page) if total else 0,
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
             "app": normalized_app,
             "active": active,
-            "quotas": rows,
+            "quotas": quotas,
         }
 
     def iter_key_quotas(
@@ -242,9 +250,11 @@ class SqlAlchemyDownloadAllowance:
         active: bool | None = None,
     ) -> Iterator[dict[str, object]]:
         now = self._current_time()
-        now_text, current_month, _, _, _, statement = _key_quota_statements(
+        now_text, current_month, _, _, statement, key_columns = _key_quota_statements(
             now=now, q=q, sort=sort, order=order, app=app, active=active
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100)).mappings()
             for row in rows:
@@ -783,7 +793,7 @@ def _key_quota_statements(
     order: str,
     app: str | None,
     active: bool | None,
-) -> tuple[str, str, str | None, str | None, Any, Any]:
+) -> tuple[str, str, str | None, str | None, Any, tuple[Any, ...]]:
     if sort not in _KEY_QUOTA_SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_KEY_QUOTA_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
@@ -859,9 +869,23 @@ def _key_quota_statements(
         AppKeyRecord.expires_at.label("expires_at"),
         AppKeyRecord.revoked_at.label("revoked_at"),
     ).where(*filters)
-    direction = desc if order == "desc" else asc
-    statement = base.order_by(direction(columns[sort]), direction(AppKeyRecord.id))
-    return now_text, current_month, query, normalized_app, base, statement
+    sort_column = columns[sort]
+    if sort in {"monthly_bytes", "remaining_bytes"}:
+        sort_column = func.coalesce(sort_column, -1)
+    key_columns = (AppKeyRecord.id,) if sort == "key_id" else (sort_column, AppKeyRecord.id)
+    return now_text, current_month, query, normalized_app, base, key_columns
+
+
+def _key_quota_position(row: Any, *, sort: str) -> tuple[str | int, ...]:
+    value = row[sort]
+    if value is None:
+        value = -1
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise RuntimeError("download-quota browse position has an invalid value")
+    key_id = row["key_id"]
+    if not isinstance(key_id, str):
+        raise RuntimeError("download-quota browse key has an invalid identifier")
+    return (value,) if sort == "key_id" else (value, key_id)
 
 
 def _key_quota_row(
