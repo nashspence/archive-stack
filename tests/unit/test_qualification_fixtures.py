@@ -18,6 +18,7 @@ QUALIFICATION_INPUTS = {
     REPO_ROOT / "qualification/fixtures/riverhog-ftp-adapter/config.json",
     REPO_ROOT / "qualification/fixtures/stove0/recipes.yaml",
     REPO_ROOT / "qualification/contracts/riverhog-v1.json",
+    REPO_ROOT / "qualification/contracts/riverhog-v1-trace.json",
     REPO_ROOT / "qualification/provider/config.toml",
 }
 
@@ -98,3 +99,7 @@ def test_every_checked_qualification_input_runs_through_its_real_consumer(
     assert (REPO_ROOT / "qualification/contracts/riverhog-v1.json").read_text(
         encoding="utf-8"
     ) == contract_module._render()
+    projection = contract_module.contract_projection()
+    assert (REPO_ROOT / "qualification/contracts/riverhog-v1-trace.json").read_text(
+        encoding="utf-8"
+    ) == contract_module._render_trace(projection)

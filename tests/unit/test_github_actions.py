@@ -301,6 +301,10 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert "riverhog-operation-qualification/v1" in verify_operations["run"]
     assert ".source_sha == $sha" in verify_operations["run"]
     assert "positive_local_lifecycles.status" in verify_operations["run"]
+    assert "extent_contract.status" in verify_operations["run"]
+    assert "riverhog-extent-contract/v1" in verify_operations["run"]
+    assert "extent_contract.projection_sha256 == $contract" in verify_operations["run"]
+    assert "extent_contract.extent_sha256 == $extent" in verify_operations["run"]
     assert "cli_human_json_projection.status" in verify_operations["run"]
     assert "bounded_state_access.status" in verify_operations["run"]
     assert "event_cursor_restart_resume.status" in verify_operations["run"]
@@ -374,6 +378,12 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
         step for step in audit["steps"] if step["name"] == "Record the completed qualification"
     )
     assert '> "$QUALIFICATION_DIR/qualification.json"' in record["run"]
+    assert "contract_projection_sha256" in record["run"]
+    assert "contract_trace_sha256" in record["run"]
+    assert "extent_contract_sha256" in record["run"]
+    assert "operation_evidence_sha256" in record["run"]
+    assert "database_evidence_sha256" in record["run"]
+    assert "release_evidence_sha256" in record["run"]
     assert upload["uses"].startswith("actions/upload-artifact@")
     assert upload["with"]["path"] == "${{ runner.temp }}/release-qualification/*.json"
     assert "published == false" in text

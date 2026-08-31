@@ -183,10 +183,19 @@ jobs:
           --output $OPERATIONS_SUMMARY"
       - name: Verify exact-SHA operation evidence
         run: |
-          jq --exit-status --arg sha "$SOURCE_SHA" '
+          jq --exit-status \
+            --arg sha "$SOURCE_SHA" \
+            --arg contract "$(sha256sum qualification/contracts/riverhog-v1.json | cut -d ' ' -f 1)" \
+            --arg extent "$(jq -r '.external_contract.extents.sha256' qualification/contracts/riverhog-v1.json)" '
             .schema == "riverhog-operation-qualification/v1"
             and .source_sha == $sha
             and .summary.operations == (.operations | length)
+            and .qualification.extent_contract.status == "passed"
+            and .qualification.extent_contract.schema == "riverhog-contract-freeze/v1"
+            and .qualification.extent_contract.extent_schema == "riverhog-extent-contract/v1"
+            and .qualification.extent_contract.extent_decisions > 0
+            and .qualification.extent_contract.projection_sha256 == $contract
+            and .qualification.extent_contract.extent_sha256 == $extent
             and .qualification.positive_local_lifecycles.status == "passed"
             and .qualification.cli_human_json_projection.status == "passed"
             and .qualification.bounded_state_access.status == "passed"
@@ -272,11 +281,23 @@ jobs:
             --arg ref "$SOURCE_REF" \
             --arg sha "$SOURCE_SHA" \
             --arg version "$RELEASE_VERSION" \
+            --arg contract_projection_sha256 "$(sha256sum qualification/contracts/riverhog-v1.json | cut -d ' ' -f 1)" \
+            --arg contract_trace_sha256 "$(sha256sum qualification/contracts/riverhog-v1-trace.json | cut -d ' ' -f 1)" \
+            --arg extent_contract_sha256 "$(jq -r '.external_contract.extents.sha256' qualification/contracts/riverhog-v1.json)" \
+            --arg operation_evidence_sha256 "$(sha256sum "$OPERATIONS_SUMMARY" | cut -d ' ' -f 1)" \
+            --arg database_evidence_sha256 "$(sha256sum "$DATABASE_SUMMARY" | cut -d ' ' -f 1)" \
+            --arg release_evidence_sha256 "$(sha256sum "$RELEASE_SUMMARY" | cut -d ' ' -f 1)" \
             '{
               schema: "riverhog-release-qualification/v1",
               ref: $ref,
               source_sha: $sha,
               version: $version,
+              contract_projection_sha256: $contract_projection_sha256,
+              contract_trace_sha256: $contract_trace_sha256,
+              extent_contract_sha256: $extent_contract_sha256,
+              operation_evidence_sha256: $operation_evidence_sha256,
+              database_evidence_sha256: $database_evidence_sha256,
+              release_evidence_sha256: $release_evidence_sha256,
               required_checks: "passed",
               operation_matrix: "passed",
               database_contract: "passed",

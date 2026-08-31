@@ -28,8 +28,8 @@ Contracts define packages; architecture records ownership.
   Non-reference release units do not depend on references; reference images, qualification, and
   tests compose them explicitly.
 - **Public contracts.** Runtime integration uses published HTTP and CloudEvents contracts.
-  Shared models own identity-bearing documents. Exact HTTP/OpenAPI contracts own ordinary CRUD;
-  official clients may expose their JSON.
+  Shared models own identities. Exact HTTP/OpenAPI contracts own CRUD and official client JSON.
+  The generated contract freeze inventories external extents from executable authorities.
 - **Riverhog platform.** Server owns archive construction, publication, copies, retrieval, and
   verified delivery; the client owns local materializations.
 - **Ingress adapters.** Ingress adapters are content-opaque, bounded-custody Riverhog clients; they
