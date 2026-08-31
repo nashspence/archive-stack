@@ -8,6 +8,8 @@ INSERT INTO settings VALUES('catalog_cursor', '19');
 CREATE TABLE desired_collections (
     collection_id INTEGER NOT NULL PRIMARY KEY,
     inventory_identity TEXT NOT NULL,
+    inventory_cursor TEXT,
+    inventory_complete INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     remote_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT ck_desired_collections_id CHECK (collection_id > 0),
@@ -15,11 +17,16 @@ CREATE TABLE desired_collections (
         length(inventory_identity) = 64 AND inventory_identity = lower(inventory_identity)
         AND inventory_identity NOT GLOB '*[^0-9a-f]*'
     ),
+    CONSTRAINT ck_desired_collections_inventory_complete CHECK (
+        inventory_complete IN (0, 1)
+    ),
     CONSTRAINT ck_desired_collections_remote_deleted CHECK (remote_deleted IN (0, 1))
 );
 INSERT INTO desired_collections VALUES(
     1,
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    NULL,
+    1,
     '2026-01-01T00:00:00.000000Z',
     0
 );

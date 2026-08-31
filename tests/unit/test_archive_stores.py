@@ -17,6 +17,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -47,6 +48,7 @@ def _seed(path: Path) -> None:
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
+                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
@@ -74,7 +76,7 @@ def _seed(path: Path) -> None:
         )
         session.add(copy)
         for order, (object_id, kind, size) in enumerate(
-            (("data-000000", "pack", 20), ("manifest", "manifest", 10), ("proof", "proof", 5))
+            (("data-000000", "pack", 20), ("manifest", "manifest", 10))
         ):
             copy.objects.append(
                 CollectionArchiveObjectRecord(
@@ -130,8 +132,8 @@ def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema
 
     assert response.store == "deep"
     assert response.collections == 1
-    assert response.objects == 4
-    assert response.stored_bytes == 42
+    assert response.objects == 3
+    assert response.stored_bytes == 37
     assert response.read_priority == 1
     assert response.write_target is True
 

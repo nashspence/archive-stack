@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from riverhog_api_client.source_hashing import hash_raw_source_chunks
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     RETRIEVAL_MANAGE,
@@ -24,12 +25,11 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_protocol import CollectionUploadRawDigestBatchDocument
 from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import tag_set_identity
-from riverhog_protocol.raw_ingress import hash_raw_source
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
 from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
@@ -240,7 +240,6 @@ def _seed_collection(
     uploads = SqlAlchemyCollectionUploadService(
         config,
         archive_registry,
-        proof_stamper=FixtureProofStamper(),
         policy=_policy(raw=raw),
     )
     opened = uploads.create_or_resume(
@@ -263,18 +262,40 @@ def _seed_collection(
             "sha256": hashlib.sha256(content).hexdigest(),
         }
         if raw:
-            digests = hash_raw_source(
+            digests = hash_raw_source_chunks(
                 path=path,
                 chunks=(content,),
                 expected_bytes=len(content),
                 part_plaintext_bytes=_policy(raw=True).raw_part_plaintext_bytes,
             )
             entry["raw_parts"] = {
-                "part_plaintext_bytes": digests.part_plaintext_bytes,
-                "sha256s": list(digests.part_sha256s),
+                "part_plaintext_bytes": digests.summary.part_plaintext_bytes,
+                "part_count": digests.summary.part_count,
+                "ordered_sha256": digests.summary.ordered_part_sha256,
             }
+            entry["raw_digest_spool"] = digests
         manifest.append(entry)
-    uploads.register_files(collection_id, manifest)
+    uploads.register_files(
+        collection_id,
+        [
+            {key: value for key, value in entry.items() if key != "raw_digest_spool"}
+            for entry in manifest
+        ],
+    )
+    for entry in manifest:
+        digest_spool = entry.pop("raw_digest_spool", None)
+        if digest_spool is None:
+            continue
+        for first_part, sha256s in digest_spool.iter_batches():
+            uploads.register_raw_part_digests(
+                collection_id,
+                CollectionUploadRawDigestBatchDocument(
+                    path=str(entry["path"]),
+                    first_part=first_part,
+                    sha256s=list(sha256s),
+                ),
+            )
+        digest_spool.close()
     uploads.complete(
         collection_id,
         files_total=len(manifest),
@@ -297,7 +318,12 @@ def _seed_collection(
                 plan_sha256=str(volume["plan_sha256"]),
                 content=payload,
             )
-    assert uploads.process_due_finalizations(limit=1) == 1
+    for _ in range(256):
+        if uploads.get(collection_id)["state"] == "finalized":
+            break
+        assert uploads.process_due_finalizations(limit=1) == 1
+    else:
+        raise AssertionError("bounded collection finalization did not terminate")
 
     retrieval = SqlAlchemyRetrievalService(
         config,
@@ -445,7 +471,7 @@ def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     assert service.process_due() == 1
     ready = service.get(app="reader", job_id=str(job["id"]))
     assert ready["state"] == "ready"
-    assert store.prepared == [("pack-000000000000",)]
+    assert store.prepared == [("pack-" + "0" * 64,)]
 
     cached_plan = service.plan(((collection_id, "target.bin"),))
     assert [current["read_mode"] for current in cached_plan["objects"]] == ["cache"]
@@ -605,7 +631,7 @@ def test_ready_retrieval_renewal_extends_its_cache_lease(tmp_path: Path) -> None
                 f"job:{ready['id']}",
                 "archive",
                 collection_id,
-                "pack-000000000000",
+                "pack-" + "0" * 64,
             ),
         )
         assert lease is not None

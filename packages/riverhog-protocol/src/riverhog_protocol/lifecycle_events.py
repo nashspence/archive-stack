@@ -97,9 +97,7 @@ class CollectionEventData(RiverhogEventData):
 class CollectionFinalizedData(CollectionEventData):
     files_total: int = Field(ge=0)
     bytes_total: int = Field(ge=0)
-    archive_store: ArchiveStoreName
-    archive_storage_prefix: str = Field(min_length=1, max_length=2000)
-    archive_objects: int = Field(ge=1)
+    archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionDeletedData(CollectionEventData):

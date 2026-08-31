@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from riverhog_protocol import Conflict, NotFound
+from riverhog_protocol import (
+    Conflict,
+    ImmutableFileIdentityDocument,
+    NotFound,
+    PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ArtifactDispositionSetDocument,
+    ArtifactDispositionSetIdentityDocument,
+    ProcessingOutcomeIdentityDocument,
+)
 from riverhog_protocol.collection_workflows import (
-    ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
@@ -14,9 +26,11 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from riverhog_protocol.paths import tag_set_identity
 from stove0_core import ClaimBinding, Stove0RiverhogClient, WorkRecord
 from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ArtifactSelection,
     ArtifactSubject,
     BranchPlan,
@@ -27,6 +41,7 @@ from stove0_protocol import (
     ControllerEvidencePayload,
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
+    JsonSchemaDocument,
     OperationRef,
     RecipeRef,
     TargetPlanBinding,
@@ -39,11 +54,20 @@ from stove0_protocol import (
     WorkPayload,
     evaluate_branch_set,
 )
+from stove0_target_protocol import (
+    OutputArtifactSetIdentity,
+    TargetInputAuthority,
+    TargetProductionAuthority,
+    TargetProductionAuthorityPayload,
+)
 from stove0_target_support import (
     EffectPlan,
     EffectPlanPayload,
-    InputArtifact,
+    InputArtifactContract,
+    OperationContract,
+    OperationContractPayload,
     OutputArtifact,
+    OutputArtifactContract,
     OutputCollectionRef,
     TargetExecutionEvidence,
     TargetJobStatus,
@@ -55,6 +79,75 @@ from stove0_target_support import (
 
 def _sha(character: str) -> str:
     return character * 64
+
+
+def _claim_id() -> str:
+    return _sha("c")
+
+
+class _AttrDict(dict[str, Any]):
+    def __getattr__(self, name: str) -> Any:
+        return self[name]
+
+
+def _input_selection(work: WorkIdentity) -> ArtifactSelection:
+    return ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=work.inputs[0],
+                path="source/input.bin",
+                bytes=12,
+                sha256=_sha("e"),
+            ),
+        )
+    )
+
+
+def _operation() -> OperationContract:
+    schema = JsonSchemaDocument.from_schema(
+        "fixture.empty/v1",
+        {"type": "object", "additionalProperties": False},
+    )
+    return OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.copy/v1",
+            intent_schema=schema,
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+        )
+    )
+
+
+def _output_artifact() -> OutputArtifact:
+    return OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256=_sha("9"),
+    )
+
+
+def _disposition_set() -> ArtifactDispositionSetIdentity:
+    return ArtifactDispositionSetIdentity(
+        disposition_count=1,
+        output_edge_count=1,
+        output_artifact_count=1,
+        sha256=_sha("6"),
+    )
 
 
 def _authorities(
@@ -82,22 +175,14 @@ def _authorities(
             retirement_policy=retirement_policy,
         )
     )
+    selection = _input_selection(work)
     target_plan = TransformPlan.seal(
         TransformPlanPayload(
             target_implementation_id="fixture.target/v1",
             target_contract_sha256=_sha("5"),
             operation_id="fixture.copy/v1",
             operation_contract_sha256=_sha("4"),
-            inputs=(
-                InputArtifact(
-                    id="source",
-                    role="fixture.source/v1",
-                    collection=work.inputs[0],
-                    path="source/input.bin",
-                    bytes=12,
-                    sha256=_sha("e"),
-                ),
-            ),
+            inputs=TargetInputAuthority.from_selection(selection),
             intent={},
         )
     )
@@ -111,7 +196,7 @@ def _authorities(
     )
     envelope = ExecutionEnvelope.seal(
         ExecutionEnvelopePayload(
-            claim_id="claim-1",
+            claim_id=_claim_id(),
             fence=1,
             workflow_plan=workflow,
             target_plan=binding,
@@ -139,16 +224,7 @@ def _effect_authorities() -> tuple[WorkIdentity, WorkflowPlan, EffectPlan, Contr
             target_contract_sha256=_sha("5"),
             operation_id="fixture.effect/v1",
             operation_contract_sha256=_sha("4"),
-            inputs=(
-                InputArtifact(
-                    id="source",
-                    role="fixture.source/v1",
-                    collection=work.inputs[0],
-                    path="source/input.bin",
-                    bytes=12,
-                    sha256=_sha("e"),
-                ),
-            ),
+            inputs=TargetInputAuthority.from_selection(_input_selection(work)),
             intent={},
         )
     )
@@ -162,7 +238,7 @@ def _effect_authorities() -> tuple[WorkIdentity, WorkflowPlan, EffectPlan, Contr
     )
     envelope = ExecutionEnvelope.seal(
         ExecutionEnvelopePayload(
-            claim_id="claim-1",
+            claim_id=_claim_id(),
             fence=1,
             workflow_plan=workflow,
             target_plan=binding,
@@ -187,6 +263,7 @@ class FixtureApi:
         self.expire_renewal = False
         self.deleted: set[int] = set()
         self.processing_outcomes: list[dict[str, object]] = []
+        self.output_tags: tuple[str, ...] = ()
 
     def create_or_resume_processing_claim(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("claim", kwargs))
@@ -195,7 +272,7 @@ class FixtureApi:
             self.expire_renewal = False
         self.deleted: set[int] = set()
         return {
-            "id": "claim-1",
+            "id": _claim_id(),
             "fence": self.fence,
             "work_id": kwargs["work_id"],
             "state": self.claim_state,
@@ -235,6 +312,7 @@ class FixtureApi:
     def seal_processing_claim_plan(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("seal", {"claim_id": claim_id, **kwargs}))
         self.execution_id = kwargs["execution_id"]
+        self.output_tags = tuple(kwargs["output_tags"])
         return {
             "id": claim_id,
             "fence": kwargs["fence"],
@@ -263,13 +341,32 @@ class FixtureApi:
         self,
         claim_id: str,
         **kwargs: Any,
-    ) -> dict[str, Any]:
+    ) -> _AttrDict:
         self.calls.append(("settle-outcomes", {"claim_id": claim_id, **kwargs}))
-        return {
-            "id": claim_id,
-            "fence": kwargs["fence"],
-            "state": "settled",
-        }
+        return _AttrDict(
+            id=claim_id,
+            fence=kwargs["fence"],
+            state="settled",
+            outcomes=_AttrDict(authority=_AttrDict(sha256=_sha("a"))),
+        )
+
+    def list_processing_claim_outcomes(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int,
+    ) -> SimpleNamespace:
+        assert claim_id == _claim_id()
+        assert authority_sha256 == _sha("a")
+        assert start_ordinal == 0
+        return SimpleNamespace(
+            outcomes=[
+                ProcessingOutcomeIdentityDocument.model_validate(item)
+                for item in self.processing_outcomes
+            ],
+            next_ordinal=None,
+        )
 
     def abandon_processing_claim(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("abandon", {"claim_id": claim_id, **kwargs}))
@@ -285,15 +382,70 @@ class FixtureApi:
             "id": collection_id,
             "archive_root_sha256": _sha("7"),
             "content_identity": _sha("8"),
+            "tag_set_identity": tag_set_identity(self.output_tags),
         }
 
-    @contextmanager
-    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
-        assert self.derivation is not None
-        self.calls.append(("stream-tags", {"collection_id": collection_id}))
-        yield iter(
-            {"collection_id": collection_id, "tag": tag} for tag in self.derivation.output_tags
+    def get_processing_claim_dispositions(self, claim_id: str) -> ArtifactDispositionSetDocument:
+        identity = _disposition_set()
+        return ArtifactDispositionSetDocument(
+            claim_id=claim_id,
+            state="sealed",
+            disposition_count=identity.disposition_count,
+            output_edge_count=identity.output_edge_count,
+            output_artifact_count=identity.output_artifact_count,
+            identity=ArtifactDispositionSetIdentityDocument.model_validate(identity.as_dict()),
         )
+
+    def get_portable_collection_inventory(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None,
+        limit: int,
+        inventory_identity: str | None,
+    ) -> PortableCollectionInventoryPage:
+        assert cursor is None
+        assert limit == 1000
+        assert inventory_identity is None
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=PortableCollectionHeader(
+                    collection=collection_id,
+                    content_identity=_sha("8"),
+                    encryption_format="age/v1",
+                    passphrase_id="fixture-passphrase",
+                    provenance_mode="omitted",
+                ),
+                inventory_identity=_sha("5"),
+                file_count=1,
+                file_bytes=12,
+            ),
+            files=[
+                ImmutableFileIdentityDocument(
+                    path="output/result.bin",
+                    bytes=12,
+                    sha256=_sha("9"),
+                )
+            ],
+            complete=True,
+        )
+
+    def get_collection_tags(
+        self, collection_id: int, *, page: int, per_page: int
+    ) -> dict[str, Any]:
+        assert self.derivation is not None
+        assert (page, per_page) == (1, 100)
+        self.calls.append(("get-tags", {"collection_id": collection_id}))
+        return {
+            "collection_id": collection_id,
+            "metadata_revision": 1,
+            "inventory_identity": _sha("6"),
+            "tag_count": len(self.derivation.output_tags),
+            "page": 1,
+            "pages": 1,
+            "total": len(self.derivation.output_tags),
+            "tags": list(self.derivation.output_tags),
+        }
 
     def get_collection_derivation(self, collection_id: int) -> dict[str, Any]:
         assert self.derivation is not None
@@ -334,41 +486,40 @@ def _verifying_record(
 ) -> WorkRecord:
     execution_id = evidence.execution_envelope.execution_envelope_sha256
     controller_document = evidence.model_dump(mode="json", by_alias=True, exclude_none=True)
-    output = OutputArtifact(
-        id="output",
-        role="fixture.output/v1",
-        path="output/result.bin",
-        bytes=12,
-        sha256=_sha("9"),
-        derived_from=("source",),
-    )
+    output = _output_artifact()
+    disposition_set = _disposition_set()
     derivation = CollectionDerivation(
         execution_id=execution_id,
-        claim_id="claim-1",
+        claim_id=_claim_id(),
         fence=1,
         recipe=work.recipe.to_identity(),
         operation=workflow.operation.to_identity(),
-        inputs=work.root_identities(),
-        output_tags=workflow.output_tags,
+        input_set_sha256=_sha("d"),
+        artifact_set_sha256=_sha("e"),
+        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=execution_id,
         execution_sha256=_sha("a"),
         controller_evidence=controller_document,
         controller_evidence_sha256=riverhog_canonical_json_sha256(controller_document),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=1,
-                input_archive_root_sha256=_sha("2"),
-                input_path="source/input.bin",
-                status="transformed",
-                outputs=(output.path,),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     output_ref = OutputCollectionRef(
         collection_id=7,
         archive_root_sha256=_sha("7"),
         content_identity=_sha("8"),
         derivation_sha256=derivation.sha256,
+    )
+    production = TargetProductionAuthority.seal(
+        TargetProductionAuthorityPayload(
+            job_id=execution_id,
+            plan_sha256=evidence.execution_envelope.target_plan.plan_sha256,
+            outputs=OutputArtifactSetIdentity.seal((output,)),
+            disposition_count=1,
+            disposition_sha256=_sha("f"),
+            source_edge_count=1,
+            source_edge_sha256=_sha("0"),
+            riverhog_disposition_set=disposition_set,
+        )
     )
     status = TargetJobStatus(
         job_id=execution_id,
@@ -377,7 +528,7 @@ def _verifying_record(
         request_sha256=_sha("b"),
         plan_sha256=evidence.execution_envelope.target_plan.plan_sha256,
         progress=TargetProgress(phase="done", completed=1, total=1),
-        outputs=(output,),
+        production=production,
         output_collection=output_ref,
         execution_evidence=TargetExecutionEvidence(
             target_contract_sha256=_sha("5"),
@@ -390,7 +541,7 @@ def _verifying_record(
     return WorkRecord(
         work=work,
         phase="verifying",
-        claim=ClaimBinding(claim_id="claim-1", fence=1),
+        claim=ClaimBinding(claim_id=_claim_id(), fence=1),
         workflow_plan=workflow,
         controller_evidence=evidence,
         target_status=status,
@@ -404,18 +555,19 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
     client = Stove0RiverhogClient(api, workspace_assurance="ephemeral")
 
     claim = client.acquire_claim(work)
-    assert claim == ClaimBinding(claim_id="claim-1", fence=1)
+    assert claim == ClaimBinding(claim_id=_claim_id(), fence=1)
     assert client.renew_claim(work, claim) == claim
-    client.seal_execution(claim, evidence, workflow, target_plan)
-    authority = client.target_authority(claim, evidence, target_plan)
+    inputs = _input_selection(work).artifacts
+    client.seal_execution(claim, evidence, workflow, target_plan, inputs)
+    authority = client.target_authority(claim, evidence, target_plan, inputs)
     assert authority.workspace_assurance == "ephemeral"
     assert authority.runtime.capability_token.startswith("secret-")
 
     record = _verifying_record(work, workflow, evidence)
-    output = client.verify_and_settle(record)
+    output, settlement = client.verify_and_settle(record, _operation(), (_output_artifact(),))
     assert output == record.output
+    assert settlement.production_sha256 == record.target_status.production.production_sha256
     assert any(name == "settle" for name, _payload in api.calls)
-    assert ("stream-tags", {"collection_id": output.collection_id}) in api.calls
 
 
 def test_effect_target_uses_only_generic_read_custody_and_releases_without_settlement() -> None:
@@ -424,8 +576,9 @@ def test_effect_target_uses_only_generic_read_custody_and_releases_without_settl
     client = Stove0RiverhogClient(api, workspace_assurance="ephemeral")
     claim = client.acquire_claim(work)
 
-    client.seal_execution(claim, evidence, workflow, target_plan)
-    authority = client.target_authority(claim, evidence, target_plan)
+    inputs = _input_selection(work).artifacts
+    client.seal_execution(claim, evidence, workflow, target_plan, inputs)
+    authority = client.target_authority(claim, evidence, target_plan, inputs)
     assert authority.runtime.capability_token.startswith("secret-")
     record = WorkRecord(
         work=work,
@@ -492,6 +645,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
     )
     settlement = BranchSettlement.seal(
         branch=branch,
+        producer_settlement_sha256=_sha("a"),
         derivation_sha256=_sha("d"),
         output_collection=output_root,
         output_selection=output_selection,
@@ -521,7 +675,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
     parent = WorkRecord(
         work=work,
         phase="coordinating",
-        claim=ClaimBinding(claim_id="claim-1", fence=1),
+        claim=ClaimBinding(claim_id=_claim_id(), fence=1),
         branch_set_plan=plan,
     )
 
@@ -529,9 +683,8 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
 
     payload = next(payload for name, payload in api.calls if name == "settle-outcomes")
     assert payload == {
-        "claim_id": "claim-1",
+        "claim_id": _claim_id(),
         "fence": 1,
-        "outcomes": [outcome.as_dict()],
         "retirement_policy": "retain",
         "retirement_grace_seconds": 0,
     }
@@ -546,7 +699,7 @@ def test_riverhog_adapter_recovers_an_expired_claim_with_a_new_fence() -> None:
 
     recovered = client.renew_claim(work, claim)
 
-    assert recovered == ClaimBinding(claim_id="claim-1", fence=2)
+    assert recovered == ClaimBinding(claim_id=_claim_id(), fence=2)
     assert [name for name, _payload in api.calls][-2:] == ["renew", "claim"]
 
 
@@ -568,10 +721,10 @@ def test_riverhog_adapter_restarts_retryable_work_with_a_new_fence() -> None:
 
     restarted = client.restart_claim(work, claim)
 
-    assert restarted == ClaimBinding(claim_id="claim-1", fence=2)
+    assert restarted == ClaimBinding(claim_id=_claim_id(), fence=2)
     assert api.calls[-1] == (
         "restart",
-        {"claim_id": "claim-1", "fence": 1, "lease_seconds": 1800},
+        {"claim_id": _claim_id(), "fence": 1, "lease_seconds": 1800},
     )
 
 
@@ -587,7 +740,7 @@ def test_riverhog_adapter_retirement_is_fenced_and_challenge_bound() -> None:
     client.release_claim(record)
 
     delete_call = next(payload for name, payload in api.calls if name == "delete")
-    assert delete_call["retirement_claim_id"] == "claim-1"
+    assert delete_call["retirement_claim_id"] == _claim_id()
     assert delete_call["challenge"] == "delete-me"
 
 
@@ -614,7 +767,7 @@ def test_riverhog_adapter_abandons_the_exact_claim_generation() -> None:
     record = WorkRecord(
         work=work,
         phase="abandon_pending",
-        claim=ClaimBinding(claim_id="claim-1", fence=1),
+        claim=ClaimBinding(claim_id=_claim_id(), fence=1),
         abandon_outcome="canceled",
     )
 
@@ -623,7 +776,7 @@ def test_riverhog_adapter_abandons_the_exact_claim_generation() -> None:
     assert api.calls[-1] == (
         "abandon",
         {
-            "claim_id": "claim-1",
+            "claim_id": _claim_id(),
             "fence": 1,
             "reason": "canceled: stove0 work was canceled before Riverhog settlement",
         },
@@ -660,7 +813,7 @@ def test_synchronous_observation_must_fit_claim_and_capability_lifetime() -> Non
     )
     with pytest.raises(ValueError, match="timeout exceeds"):
         client.observation_authority(
-            ClaimBinding(claim_id="claim-1", fence=1),
+            ClaimBinding(claim_id=_claim_id(), fence=1),
             request,
         )
 

@@ -45,7 +45,7 @@ class SlowRangeStore:
 
 def _source(content: bytes):
     plan = RawVolumePlan(
-        volume_id="segment-000000000000",
+        volume_id="segment-" + "0" * 64,
         sequence=0,
         source_path="large.bin",
         file_offset=0,
@@ -85,7 +85,7 @@ def _source(content: bytes):
     state = session.export_state(plaintext_size=len(content)).to_json_bytes().decode("utf-8")
     source = RawVolumeRetrievalSource(
         volume_id=plan.volume_id,
-        object_path="archives/x/volumes/segment-000000000000.bin.age",
+        object_path="archives/x/volumes/segment-" + "0" * 64 + ".bin.age",
         revision="v1",
         source_path=plan.source_path,
         file_offset=0,

@@ -38,7 +38,7 @@ def archive_recovery_readme() -> str:
 {ARCHIVE_DATA_LOSS_WARNING}
 
 Riverhog archives are independently recoverable with standard object-provider
-export or download tools, `age`, `ots`, `sha256sum`, `minisign`, and `tar`.
+export or download tools, `age`, `sha256sum`, and `tar`.
 The matching `riverhog-recover` release artifact is the maintained reference
 implementation. Preserve every relative object path exactly during export.
 
@@ -49,12 +49,10 @@ Prepare cold objects for reading through the provider before exporting them.
 Treat every object as read-only unless an exact mutation is explicitly authorized.
 
 Use `archives/ARCHIVE_ID/metadata.json.age` to identify an opaque archive, then
-recover from its `manifest.json.age` and required proof. If present, verify
-`SHA256SUMS` with `SHA256SUMS.minisig` and an independently obtained public key,
-then verify `SHA256SUMS.minisig.ots`. The root `minisign.pub` is a convenience
-copy, not an independent trust anchor. The signed checksums cover the immutable
-root artifacts, including `recovery.json`; the encrypted manifest binds every
-volume's ordered stored-part lengths and SHA-256 values.
+recover from `recovery.json` and `manifest.json.age`. The canonical plaintext
+archive root binds the exact ordered sequence of bounded, self-validating volume
+documents and its authenticated terminator. Verify that complete recovery closure
+before accepting the archive.
 """
 
 

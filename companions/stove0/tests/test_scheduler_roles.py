@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import cast
 
 from lifecycle_events import EventPage, cloud_event
+from riverhog_protocol.collection_workflow_transport import (
+    ArtifactDispositionPageDocument,
+)
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
-    CollectionRootIdentity,
     OperationIdentity,
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import NotFound
 from riverhog_protocol.lifecycle_events import validate_riverhog_event
+from riverhog_protocol.paths import tag_set_identity
 from stove0_core import ClaimBinding, RecipeDefinition, Stove0Scheduler, WorkRecord
 from stove0_core.recipes import RecipeRoute
 from stove0_core.scheduler import _phases_for_role
@@ -270,9 +273,7 @@ def test_lifecycle_cursor_advances_past_deleted_and_unrelated_events() -> None:
                         {
                             "files_total": 1,
                             "bytes_total": 1,
-                            "archive_store": "fixture",
-                            "archive_storage_prefix": "archives/fixture",
-                            "archive_objects": 1,
+                            "archive_root_sha256": "a" * 64,
                         }
                         if event_type.endswith("collection.finalized")
                         else {}
@@ -379,6 +380,10 @@ class _LineageRiverhog:
     def __init__(self, derivations: dict[int, dict[str, object]]) -> None:
         self.derivations = derivations
         self.tag_stream_reads: list[int] = []
+        self.disposition_inputs = {
+            str(derivation["claim"]["id"]): collection_id - 1
+            for collection_id, derivation in derivations.items()
+        }
 
     def get_collection(self, collection_id: int) -> dict[str, object]:
         character = f"{collection_id % 16:x}"
@@ -388,10 +393,21 @@ class _LineageRiverhog:
             "content_identity": f"{(collection_id + 1) % 16:x}" * 64,
         }
 
-    @contextmanager
-    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+    def get_collection_tags(
+        self, collection_id: int, *, page: int, per_page: int
+    ) -> dict[str, object]:
+        assert (page, per_page) == (1, 100)
         self.tag_stream_reads.append(collection_id)
-        yield iter(({"collection_id": collection_id, "tag": "fixture"},))
+        return {
+            "collection_id": collection_id,
+            "metadata_revision": 1,
+            "inventory_identity": f"{collection_id % 16:x}" * 64,
+            "tag_count": 1,
+            "page": 1,
+            "pages": 1,
+            "total": 1,
+            "tags": ["fixture"],
+        }
 
     def get_collection_derivation(self, collection_id: int) -> dict[str, object]:
         try:
@@ -400,38 +416,70 @@ class _LineageRiverhog:
             raise NotFound("raw collection") from exc
         return {"collection_id": collection_id, "derivation": derivation}
 
+    def list_processing_claim_dispositions(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        page: int,
+        per_page: int,
+    ) -> ArtifactDispositionPageDocument:
+        assert (page, per_page) == (1, 100)
+        input_collection_id = self.disposition_inputs[claim_id]
+        character = f"{input_collection_id % 16:x}"
+        identity = ArtifactDispositionSetIdentity(
+            disposition_count=1,
+            output_edge_count=1,
+            output_artifact_count=1,
+            sha256=canonical_json_sha256({"input_collection_id": input_collection_id}),
+        )
+        assert authority_sha256 == identity.sha256
+        return ArtifactDispositionPageDocument.model_validate(
+            {
+                "authority": identity.as_dict(),
+                "page": 1,
+                "per_page": 100,
+                "total": 1,
+                "pages": 1,
+                "dispositions": [
+                    ArtifactDisposition(
+                        input_collection_id=input_collection_id,
+                        input_archive_root_sha256=character * 64,
+                        input_path="source/input.bin",
+                        status="transformed",
+                    ).as_dict()
+                ],
+            }
+        )
+
 
 def _lineage(
     recipe: RecipeRef,
     input_collection_id: int,
 ) -> dict[str, object]:
-    character = f"{input_collection_id % 16:x}"
-    root = CollectionRootIdentity(
-        collection_id=input_collection_id,
-        archive_root_sha256=character * 64,
-        content_identity=f"{(input_collection_id + 1) % 16:x}" * 64,
-    )
     controller_evidence = {"format": "fixture-controller-evidence/v1"}
+    disposition_set = ArtifactDispositionSetIdentity(
+        disposition_count=1,
+        output_edge_count=1,
+        output_artifact_count=1,
+        sha256=canonical_json_sha256({"input_collection_id": input_collection_id}),
+    )
     return CollectionDerivation(
         execution_id="d" * 64,
-        claim_id=f"claim-{input_collection_id}",
+        claim_id=canonical_json_sha256({"claim_input": input_collection_id}),
         fence=1,
         recipe=recipe.to_identity(),
         operation=OperationIdentity("fixture.copy/v1", "c" * 64),
-        inputs=(root,),
-        output_tags=("fixture-output",),
+        input_set_sha256=canonical_json_sha256({"input_collection_id": input_collection_id}),
+        artifact_set_sha256=canonical_json_sha256(
+            {"input_collection_id": input_collection_id, "path": "source/input.bin"}
+        ),
+        output_tag_set_sha256=tag_set_identity(("fixture-output",)),
         execution_envelope_sha256="d" * 64,
         execution_sha256="e" * 64,
         controller_evidence=controller_evidence,
         controller_evidence_sha256=canonical_json_sha256(controller_evidence),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=input_collection_id,
-                input_archive_root_sha256=root.archive_root_sha256,
-                input_path="source/input.bin",
-                status="preserved",
-            ),
-        ),
+        disposition_set=disposition_set,
     ).as_dict()
 
 

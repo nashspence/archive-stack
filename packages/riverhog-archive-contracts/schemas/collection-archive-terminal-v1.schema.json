@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/collection-archive-terminal-v1.schema.json",
+  "$comment": "This schema is the structural projection. riverhog_archive_contracts.CollectionArchiveTerminalDocument is the canonical semantic, identity, and canonical-JSON authority.",
+  "title": "Riverhog v1 authenticated archive-volume terminator",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "archive_generation", "archive_tree_sha256", "sequence", "kind"],
+  "properties": {
+    "schema": {"const": "collection-archive-terminal/v1"},
+    "archive_generation": {"$ref": "#/$defs/sha256"},
+    "archive_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "sequence": {"type": "string", "pattern": "^[0-9a-f]{64}$", "not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+    "kind": {"const": "terminal"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

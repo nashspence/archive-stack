@@ -48,6 +48,7 @@ from stove0_core import (
     Stove0WorkService,
     WorkflowPreviewService,
 )
+from stove0_target_client import TargetCallbackClient
 
 SCHEMA = "riverhog-operation-qualification/v1"
 TIMING_SCHEMA = "riverhog-operation-timings/v1"
@@ -95,6 +96,8 @@ def create_stove0_contract_app() -> FastAPI:
                 recipes_path=Path("recipes.yaml"),
                 observers={},
                 targets={},
+                target_callback_base_url="https://stove0.invalid",
+                target_callback_allow_insecure_http=False,
                 workspace_assurance="ephemeral",
                 claim_lease_seconds=1800,
                 capability_ttl_seconds=900,
@@ -319,7 +322,7 @@ def application_surfaces() -> tuple[ApplicationSurface, ...]:
         ApplicationSurface(
             "stove0",
             create_stove0_contract_app(),
-            (Stove0ApiClient,),
+            (Stove0ApiClient, TargetCallbackClient),
             tuple(_typer_commands(stove0_cli.app)),
         ),
         ApplicationSurface(

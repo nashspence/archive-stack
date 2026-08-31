@@ -22,7 +22,7 @@ def _sealed_segment(
     content: bytes,
 ) -> SealedRawVolume:
     digest = hashlib.sha256(content).hexdigest()
-    volume_id = f"segment-{sequence:012d}"
+    volume_id = f"segment-{sequence:064x}"
     return SealedRawVolume(
         volume_id=volume_id,
         sequence=sequence,
@@ -70,7 +70,7 @@ def test_raw_file_is_reassembled_and_verified_before_root_publication(
             bytes=len(whole),
             sha256=hashlib.sha256(whole).hexdigest(),
         ),
-        volumes=(second, first),
+        volumes=(first, second),
         passphrase="archive passphrase",
         read_ciphertext_chunks=lambda path: (stored[path],),
         verified_at="2026-08-03T00:00:01Z",
@@ -78,13 +78,13 @@ def test_raw_file_is_reassembled_and_verified_before_root_publication(
 
     assert verified.path == "large.bin"
     assert verified.sha256 == hashlib.sha256(whole).hexdigest()
-    assert verified.volume_set_sha256 == raw_verification.raw_file_volume_set_sha256(
+    assert verified.ordered_volume_sha256 == raw_verification.raw_file_ordered_volume_commitment(
         file=ArchiveFile(
             path="large.bin",
             bytes=len(whole),
             sha256=hashlib.sha256(whole).hexdigest(),
         ),
-        volumes=(second, first),
+        volumes=(first, second),
     )
     payload = raw_verification.raw_file_verification_payload(verified)
     assert payload["schema"] == "raw-file-verification/v1"
@@ -146,13 +146,13 @@ def test_raw_volume_set_digest_changes_with_immutable_object_identity() -> None:
         completed_at="2026-08-03T00:00:02Z",
     )
 
-    assert raw_verification.raw_file_volume_set_sha256(
+    assert raw_verification.raw_file_ordered_volume_commitment(
         file=file, volumes=(first,)
-    ) != raw_verification.raw_file_volume_set_sha256(file=file, volumes=(changed,))
+    ) != raw_verification.raw_file_ordered_volume_commitment(file=file, volumes=(changed,))
 
 
 def test_part_manifest_verification_avoids_remote_read_after_write() -> None:
-    from riverhog_protocol.raw_ingress import hash_raw_source
+    from riverhog_api_client.source_hashing import hash_raw_source_chunks
 
     whole = b"abcdefghij"
     file = ArchiveFile(
@@ -167,19 +167,22 @@ def test_part_manifest_verification_avoids_remote_read_after_write() -> None:
         offset=0,
         content=whole,
     )
-    manifest = hash_raw_source(
+    source_hash = hash_raw_source_chunks(
         path=file.path,
         chunks=(whole,),
         expected_bytes=len(whole),
         part_plaintext_bytes=65536,
     )
 
-    verified = raw_verification.verify_raw_file_from_part_manifest(
-        file=file,
-        volumes=(volume,),
-        manifest=manifest,
-        verified_at="2026-08-03T00:00:01Z",
-    )
+    try:
+        verified = raw_verification.verify_raw_file_from_digest_summary(
+            file=file,
+            volumes=(volume,),
+            summary=source_hash.summary,
+            verified_at="2026-08-03T00:00:01Z",
+        )
+    finally:
+        source_hash.close()
 
     assert verified.sha256 == file.sha256
-    assert verified.volume_set_sha256
+    assert verified.ordered_volume_sha256

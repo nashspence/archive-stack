@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import re
+import hashlib
+from collections.abc import Iterable
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -15,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 from riverhog_protocol.collection_workflows import (
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
 )
 from riverhog_protocol.collection_workflows import (
@@ -24,6 +26,9 @@ from riverhog_protocol.paths import CollectionId
 from stove0_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     RIVERHOG_CAPABILITY_TRANSPORT,
+    ArtifactSelection,
+    ArtifactSelectionRef,
+    BranchWorkBinding,
     CollectionRootRef,
     ControllerEvidence,
     JsonSchemaDocument,
@@ -39,6 +44,7 @@ EFFECT_RECEIPT_FORMAT: Literal["stove0-external-effect-receipt/v1"] = (
     "stove0-external-effect-receipt/v1"
 )
 MAXIMUM_EFFECT_RECEIPT_RESULT_BYTES = 64 * 1024
+TARGET_INPUT_PAGE_MAX = 256
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 SEMANTIC_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"
 ARTIFACT_ID_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$"
@@ -264,6 +270,69 @@ class InputArtifact(TargetProtocolModel):
         return value
 
 
+class TargetInputRoleCount(TargetProtocolModel):
+    role: SemanticId
+    count: int = Field(ge=1)
+
+
+class TargetInputAuthority(TargetProtocolModel):
+    """Small exact input authority retained by Stove0 and traversed in bounded pages."""
+
+    selection: ArtifactSelectionRef
+    roles: tuple[TargetInputRoleCount, ...] = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_summary(self) -> Self:
+        roles = [item.role for item in self.roles]
+        if roles != sorted(roles) or len(roles) != len(set(roles)):
+            raise ValueError("target input role summaries must be unique and ordered")
+        if sum(item.count for item in self.roles) != self.selection.artifact_count:
+            raise ValueError("target input role summaries differ from the selection")
+        return self
+
+    @classmethod
+    def from_selection(cls, selection: ArtifactSelection) -> TargetInputAuthority:
+        """Project one Stove0-owned exact selection into the target contract."""
+
+        counts: dict[str, int] = {}
+        for artifact in selection.artifacts:
+            counts[artifact.role] = counts.get(artifact.role, 0) + 1
+        return cls(
+            selection=selection.ref(),
+            roles=tuple(
+                TargetInputRoleCount(role=role, count=count)
+                for role, count in sorted(counts.items())
+            ),
+        )
+
+
+class TargetCallbackAccess(TargetProtocolModel):
+    """Secret-bearing execution callback authority excluded from plan identity."""
+
+    stove0_base_url: str = Field(min_length=1, max_length=2048)
+    token: str = Field(min_length=1, max_length=4096, repr=False)
+    allow_insecure_http: bool = False
+
+
+class TargetInputPage(TargetProtocolModel):
+    """One bounded continuation step through the exact target input authority."""
+
+    authority: TargetInputAuthority
+    continuation: Sha256 | None = None
+    next_continuation: Sha256 | None = None
+    complete: bool
+    artifacts: tuple[InputArtifact, ...] = Field(max_length=TARGET_INPUT_PAGE_MAX)
+
+    @model_validator(mode="after")
+    def bind_page(self) -> Self:
+        if self.complete:
+            if self.next_continuation is not None:
+                raise ValueError("complete target-input page cannot continue")
+        elif not self.artifacts or self.next_continuation is None:
+            raise ValueError("incomplete target-input page requires continuation")
+        return self
+
+
 class OutputArtifact(TargetProtocolModel):
     id: str = Field(pattern=ARTIFACT_ID_PATTERN)
     role: SemanticId
@@ -271,7 +340,6 @@ class OutputArtifact(TargetProtocolModel):
     bytes: int = Field(ge=0)
     sha256: Sha256
     media_type: str | None = Field(default=None, min_length=1, max_length=255)
-    derived_from: tuple[str, ...] = Field(min_length=1)
 
     @field_validator("path")
     @classmethod
@@ -283,33 +351,179 @@ class OutputArtifact(TargetProtocolModel):
             raise ValueError("artifact path must be canonical")
         return value
 
-    @field_validator("derived_from")
+
+class OutputSourceEdge(TargetProtocolModel):
+    output_id: str = Field(pattern=ARTIFACT_ID_PATTERN)
+    input_id: str = Field(pattern=ARTIFACT_ID_PATTERN)
+
+
+class InputDispositionDeclaration(TargetProtocolModel):
+    input_id: str = Field(pattern=ARTIFACT_ID_PATTERN)
+    status: InputDisposition
+
+
+class OutputArtifactRoleCount(TargetProtocolModel):
+    role: SemanticId
+    count: int = Field(ge=1)
+
+
+class OutputArtifactSetIdentity(TargetProtocolModel):
+    """Small identity for target outputs already registered with Riverhog."""
+
+    artifact_count: int = Field(ge=1)
+    total_bytes: int = Field(ge=0)
+    roles: tuple[OutputArtifactRoleCount, ...] = Field(min_length=1, max_length=256)
+    sha256: Sha256
+
+    @model_validator(mode="after")
+    def validate_summary(self) -> Self:
+        roles = [item.role for item in self.roles]
+        if roles != sorted(roles) or len(roles) != len(set(roles)):
+            raise ValueError("target output role summaries must be unique and ordered")
+        if sum(item.count for item in self.roles) != self.artifact_count:
+            raise ValueError("target output role summaries differ from the artifact count")
+        return self
+
     @classmethod
-    def canonical_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value != tuple(sorted(value)) or len(value) != len(set(value)):
-            raise ValueError("derived_from artifact IDs must be unique and ordered")
-        if any(re.fullmatch(ARTIFACT_ID_PATTERN, item) is None for item in value):
-            raise ValueError("derived_from contains an invalid artifact ID")
-        return value
+    def seal(cls, artifacts: tuple[OutputArtifact, ...]) -> OutputArtifactSetIdentity:
+        ordered = tuple(sorted(artifacts, key=lambda item: item.id))
+        return cls.seal_iterable(ordered)
+
+    @classmethod
+    def seal_iterable(cls, artifacts: Iterable[OutputArtifact]) -> OutputArtifactSetIdentity:
+        digest = hashlib.sha256()
+        counts: dict[str, int] = {}
+        previous_id: str | None = None
+        artifact_count = 0
+        total_bytes = 0
+        for ordinal, artifact in enumerate(artifacts):
+            if previous_id is not None and artifact.id <= previous_id:
+                raise ValueError("target output artifacts must be unique and ordered")
+            update_output_artifact_commitment(digest, ordinal=ordinal, artifact=artifact)
+            counts[artifact.role] = counts.get(artifact.role, 0) + 1
+            previous_id = artifact.id
+            artifact_count += 1
+            total_bytes += artifact.bytes
+        if artifact_count == 0:
+            raise ValueError("target output artifacts must be nonempty")
+        return cls(
+            artifact_count=artifact_count,
+            total_bytes=total_bytes,
+            roles=tuple(
+                OutputArtifactRoleCount(role=role, count=count)
+                for role, count in sorted(counts.items())
+            ),
+            sha256=digest.hexdigest(),
+        )
+
+
+class TargetProductionAuthorityPayload(TargetProtocolModel):
+    format: Literal["stove0-target-production/v1"] = "stove0-target-production/v1"
+    job_id: Sha256
+    plan_sha256: Sha256
+    outputs: OutputArtifactSetIdentity
+    disposition_count: int = Field(ge=1)
+    disposition_sha256: Sha256
+    source_edge_count: int = Field(ge=1)
+    source_edge_sha256: Sha256
+    riverhog_disposition_set: ArtifactDispositionSetIdentity
+
+
+class TargetProductionAuthority(TargetProductionAuthorityPayload):
+    production_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if (
+            canonical_json_sha256(_without_digest(self, "production_sha256"))
+            != self.production_sha256
+        ):
+            raise ValueError("target production identity differs from its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: TargetProductionAuthorityPayload) -> TargetProductionAuthority:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, production_sha256=canonical_json_sha256(document))
+
+
+class TargetProductionSealResponse(TargetProtocolModel):
+    production: TargetProductionAuthority
+
+
+class TargetCallbackAcknowledgement(TargetProtocolModel):
+    """Idempotent acceptance of one execution-scoped declaration."""
+
+    accepted: Literal[True] = True
+
+
+def update_output_artifact_commitment(
+    digest: Any,
+    *,
+    ordinal: int,
+    artifact: OutputArtifact,
+) -> None:
+    if isinstance(ordinal, bool) or ordinal < 0:
+        raise ValueError("output-artifact ordinal must be nonnegative")
+    encoded = canonical_json_bytes(artifact.model_dump(mode="json", exclude_none=True))
+    digest.update(b"stove0-target-output-artifacts/v1\x00")
+    digest.update(str(ordinal).encode("ascii"))
+    digest.update(b"\x00")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
+def update_input_disposition_commitment(
+    digest: Any,
+    *,
+    ordinal: int,
+    disposition: InputDispositionDeclaration,
+) -> None:
+    _update_record_commitment(
+        digest,
+        domain=b"stove0-target-input-dispositions/v1\x00",
+        ordinal=ordinal,
+        document=disposition,
+    )
+
+
+def update_output_source_edge_commitment(
+    digest: Any,
+    *,
+    ordinal: int,
+    edge: OutputSourceEdge,
+) -> None:
+    _update_record_commitment(
+        digest,
+        domain=b"stove0-target-output-source-edges/v1\x00",
+        ordinal=ordinal,
+        document=edge,
+    )
+
+
+def _update_record_commitment(
+    digest: Any,
+    *,
+    domain: bytes,
+    ordinal: int,
+    document: TargetProtocolModel,
+) -> None:
+    if isinstance(ordinal, bool) or ordinal < 0:
+        raise ValueError("target authority ordinal must be nonnegative")
+    encoded = canonical_json_bytes(document.model_dump(mode="json", exclude_none=True))
+    digest.update(domain)
+    digest.update(str(ordinal).encode("ascii"))
+    digest.update(b"\x00")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
 
 
 class TargetDeclaration(TargetProtocolModel):
     operation_id: SemanticId
     operation_contract_sha256: Sha256
-    inputs: tuple[InputArtifact, ...] = Field(min_length=1)
+    inputs: TargetInputAuthority
     intent: dict[str, JsonValue]
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
-
-    @field_validator("inputs")
-    @classmethod
-    def canonical_inputs(cls, value: tuple[InputArtifact, ...]) -> tuple[InputArtifact, ...]:
-        ids = [item.id for item in value]
-        if ids != sorted(ids) or len(ids) != len(set(ids)):
-            raise ValueError("target inputs must be unique and ordered by artifact ID")
-        identities = [(item.collection.collection_id, item.path) for item in value]
-        if len(identities) != len(set(identities)):
-            raise ValueError("target inputs must not repeat a collection artifact")
-        return value
 
 
 class TargetPreflightRequest(TargetDeclaration):
@@ -458,20 +672,12 @@ class TargetJobDeclaration(TargetProtocolModel):
             != tuple(sorted(item.result.result_sha256 for item in workflow.observations))
         ):
             raise ValueError("target job plan differs from the stove0 workflow plan")
-        work_roots = {
-            (item.collection_id, item.archive_root_sha256, item.content_identity)
-            for item in workflow.work.inputs
-        }
-        if any(
-            (
-                item.collection.collection_id,
-                item.collection.archive_root_sha256,
-                item.collection.content_identity,
-            )
-            not in work_roots
-            for item in self.plan.inputs
+        binding = workflow.work.fork_join
+        if (
+            isinstance(binding, BranchWorkBinding)
+            and self.plan.inputs.selection.selection_sha256 != binding.artifact_selection_sha256
         ):
-            raise ValueError("target plan references an input outside the stove0 work")
+            raise ValueError("target plan references another branch input authority")
         return self
 
 
@@ -494,6 +700,7 @@ class TargetJobRequest(TargetProtocolModel):
 
     declaration: TargetJobDeclaration
     runtime: TargetRuntimeAuthority
+    callback_access: TargetCallbackAccess
     request_sha256: Sha256
 
     @model_validator(mode="after")
@@ -508,11 +715,13 @@ class TargetJobRequest(TargetProtocolModel):
         cls,
         declaration: TargetJobDeclaration,
         runtime: TargetRuntimeAuthority,
+        callback_access: TargetCallbackAccess,
     ) -> TargetJobRequest:
         document = declaration.model_dump(mode="json", by_alias=True, exclude_none=True)
         return cls(
             declaration=declaration,
             runtime=runtime,
+            callback_access=callback_access,
             request_sha256=canonical_json_sha256(document),
         )
 
@@ -560,6 +769,66 @@ class OutputCollectionRef(TargetProtocolModel):
     archive_root_sha256: Sha256
     content_identity: Sha256
     derivation_sha256: Sha256
+
+
+class TargetOutputBinding(TargetProtocolModel):
+    """One post-root binding of a declared semantic output to Riverhog custody."""
+
+    output_id: str = Field(pattern=ARTIFACT_ID_PATTERN)
+    role: SemanticId
+    collection: OutputCollectionRef
+    path: str = Field(min_length=1, max_length=4096)
+    bytes: int = Field(ge=0)
+    sha256: Sha256
+    media_type: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class TargetOutputBindingSetIdentity(TargetProtocolModel):
+    artifact_count: int = Field(ge=1)
+    total_bytes: int = Field(ge=0)
+    sha256: Sha256
+
+
+class TargetSettlementAuthorityPayload(TargetProtocolModel):
+    """Stove0-owned post-root settlement over one immutable production authority."""
+
+    format: Literal["stove0-target-settlement/v1"] = "stove0-target-settlement/v1"
+    job_id: Sha256
+    production_sha256: Sha256
+    output_collection: OutputCollectionRef
+    output_bindings: TargetOutputBindingSetIdentity
+
+
+class TargetSettlementAuthority(TargetSettlementAuthorityPayload):
+    settlement_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if (
+            canonical_json_sha256(_without_digest(self, "settlement_sha256"))
+            != self.settlement_sha256
+        ):
+            raise ValueError("target settlement identity differs from its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: TargetSettlementAuthorityPayload) -> TargetSettlementAuthority:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, settlement_sha256=canonical_json_sha256(document))
+
+
+def update_target_output_binding_commitment(
+    digest: Any,
+    *,
+    ordinal: int,
+    binding: TargetOutputBinding,
+) -> None:
+    _update_record_commitment(
+        digest,
+        domain=b"stove0-target-output-bindings/v1\x00",
+        ordinal=ordinal,
+        document=binding,
+    )
 
 
 class ExternalEffectReceiptPayload(TargetProtocolModel):
@@ -617,22 +886,13 @@ class TargetJobStatus(TargetProtocolModel):
     request_sha256: Sha256
     plan_sha256: Sha256
     progress: TargetProgress
-    outputs: tuple[OutputArtifact, ...] = ()
+    production: TargetProductionAuthority | None = None
     output_collection: OutputCollectionRef | None = None
     execution_evidence: TargetExecutionEvidence | None = None
     derivation: dict[str, Any] | None = None
     effect_receipt: ExternalEffectReceipt | None = None
     failure: TargetFailure | None = None
     inapplicable: TargetInapplicable | None = None
-
-    @field_validator("outputs")
-    @classmethod
-    def canonical_outputs(cls, value: tuple[OutputArtifact, ...]) -> tuple[OutputArtifact, ...]:
-        ids = [item.id for item in value]
-        paths = [item.path for item in value]
-        if ids != sorted(ids) or len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
-            raise ValueError("target outputs must have unique IDs/paths and be ordered by ID")
-        return value
 
     @field_validator("derivation")
     @classmethod
@@ -646,7 +906,7 @@ class TargetJobStatus(TargetProtocolModel):
         if self.state == "succeeded":
             if self.protocol == TRANSFORM_TARGET_PROTOCOL:
                 if (
-                    not self.outputs
+                    self.production is None
                     or self.output_collection is None
                     or self.execution_evidence is None
                     or self.derivation is None
@@ -657,7 +917,7 @@ class TargetJobStatus(TargetProtocolModel):
                 if self.effect_receipt is not None:
                     raise ValueError("succeeded transform status cannot include an effect receipt")
             elif (
-                self.outputs
+                self.production is not None
                 or self.output_collection is not None
                 or self.derivation is not None
                 or self.execution_evidence is None
@@ -674,7 +934,7 @@ class TargetJobStatus(TargetProtocolModel):
             if self.failure is None:
                 raise ValueError("failed target status requires failure details")
             if (
-                self.outputs
+                self.production is not None
                 or self.output_collection is not None
                 or self.derivation is not None
                 or self.effect_receipt is not None
@@ -686,7 +946,7 @@ class TargetJobStatus(TargetProtocolModel):
             if self.inapplicable is None:
                 raise ValueError("inapplicable target status requires an outcome")
             if (
-                self.outputs
+                self.production is not None
                 or self.output_collection is not None
                 or self.derivation is not None
                 or self.effect_receipt is not None
@@ -696,7 +956,7 @@ class TargetJobStatus(TargetProtocolModel):
                 raise ValueError("inapplicable target status cannot include failure details")
         elif self.state == "canceled":
             if (
-                self.outputs
+                self.production is not None
                 or self.output_collection is not None
                 or self.derivation is not None
                 or self.effect_receipt is not None
@@ -705,7 +965,7 @@ class TargetJobStatus(TargetProtocolModel):
             if self.failure is not None:
                 raise ValueError("canceled target status cannot include failure details")
         elif (
-            self.outputs
+            self.production is not None
             or self.output_collection is not None
             or self.execution_evidence is not None
             or self.derivation is not None
@@ -757,9 +1017,7 @@ def validate_declaration_against_operation(
         or declaration.operation_contract_sha256 != operation.contract_sha256
     ):
         raise ValueError("target declaration does not bind the operation contract")
-    counts: dict[str, int] = {}
-    for artifact in declaration.inputs:
-        counts[artifact.role] = counts.get(artifact.role, 0) + 1
+    counts = {item.role: item.count for item in declaration.inputs.roles}
     expected_roles = {item.role for item in operation.inputs}
     if set(counts) - expected_roles:
         raise ValueError("target declaration includes an unsupported input role")
@@ -815,19 +1073,19 @@ def validate_status_against_request(
 
         Draft202012Validator(operation.effect_receipt_schema.document).validate(receipt.result)
         return
-    input_by_id = {item.id: item for item in declaration.plan.inputs}
-    counts: dict[str, int] = {}
+    production = status.production
+    if production is None:
+        raise ValueError("target success is missing its output authority")
+    if (
+        production.job_id != declaration.job_id
+        or production.plan_sha256 != declaration.plan.plan_sha256
+    ):
+        raise ValueError("target production authority differs from the accepted plan")
+    outputs = production.outputs
+    counts = {item.role: item.count for item in outputs.roles}
     contract_by_role = {item.role: item for item in operation.outputs}
-    for output in status.outputs:
-        contract = contract_by_role.get(output.role)
-        if contract is None:
-            raise ValueError("target produced an unsupported output role")
-        counts[output.role] = counts.get(output.role, 0) + 1
-        if any(source not in input_by_id for source in output.derived_from):
-            raise ValueError("target output derives from an unknown input artifact")
-        source_roles = {input_by_id[source].role for source in output.derived_from}
-        if not source_roles.issubset(set(contract.derived_from_roles)):
-            raise ValueError("target output derivation violates the operation contract")
+    if set(counts) - set(contract_by_role):
+        raise ValueError("target produced an unsupported output role")
     for contract in operation.outputs:
         count = counts.get(contract.role, 0)
         if count < contract.minimum or (contract.maximum is not None and count > contract.maximum):
@@ -846,15 +1104,12 @@ def validate_status_against_request(
         by_alias=True,
         exclude_none=True,
     )
-    expected_inputs = tuple(item.to_identity() for item in workflow.work.inputs)
     if (
         derivation.execution_id != declaration.job_id
         or derivation.claim_id != declaration.claim_id
         or derivation.fence != declaration.fence
         or derivation.recipe != workflow.work.recipe.to_identity()
         or derivation.operation != workflow.operation.to_identity()
-        or derivation.inputs != expected_inputs
-        or derivation.output_tags != workflow.output_tags
         or derivation.execution_envelope_sha256 != declaration.job_id
         or derivation.execution_sha256 != evidence.execution_sha256
         or derivation.controller_evidence != controller_document
@@ -863,42 +1118,17 @@ def validate_status_against_request(
         or output_collection.derivation_sha256 != derivation.sha256
     ):
         raise ValueError("target derivation differs from the accepted execution envelope")
-    planned_inputs = {
-        (item.collection.collection_id, item.collection.archive_root_sha256, item.path)
-        for item in declaration.plan.inputs
-    }
-    disposition_inputs = {
-        (
-            item.input_collection_id,
-            item.input_archive_root_sha256,
-            item.input_path,
-        )
-        for item in derivation.dispositions
-    }
-    if disposition_inputs != planned_inputs:
+    if (
+        derivation.disposition_set.disposition_count
+        != declaration.plan.inputs.selection.artifact_count
+    ):
         raise ValueError("target derivation does not account for every planned input artifact")
-    input_contracts = {item.role: item for item in operation.inputs}
-    planned_by_identity = {
-        (item.collection.collection_id, item.collection.archive_root_sha256, item.path): item
-        for item in declaration.plan.inputs
-    }
-    for disposition in derivation.dispositions:
-        identity = (
-            disposition.input_collection_id,
-            disposition.input_archive_root_sha256,
-            disposition.input_path,
-        )
-        planned = planned_by_identity[identity]
-        allowed_dispositions = input_contracts[planned.role].allowed_dispositions
-        if allowed_dispositions is None or disposition.status not in allowed_dispositions:
-            raise ValueError(
-                "target disposition is not permitted for input role: "
-                f"{planned.role}: {disposition.status}"
-            )
-    output_paths = {item.path for item in status.outputs}
-    disposition_outputs = {path for item in derivation.dispositions for path in item.outputs}
-    if disposition_outputs != output_paths:
-        raise ValueError("target derivation output paths differ from terminal target outputs")
+    if derivation.disposition_set.output_artifact_count != outputs.artifact_count:
+        raise ValueError("target derivation output authority differs from terminal outputs")
+    if derivation.disposition_set != production.riverhog_disposition_set:
+        raise ValueError("target derivation differs from its sealed production authority")
+    if derivation.disposition_set.output_edge_count < outputs.artifact_count:
+        raise ValueError("target derivation has incomplete output source relationships")
 
 
 __all__ = [
@@ -911,22 +1141,31 @@ __all__ = [
     "ExternalEffectReceipt",
     "ExternalEffectReceiptPayload",
     "InputArtifact",
+    "InputDispositionDeclaration",
     "InputDisposition",
     "InputArtifactContract",
     "OperationContract",
     "OperationContractPayload",
     "OutputArtifact",
+    "OutputSourceEdge",
     "OutputArtifactContract",
+    "OutputArtifactRoleCount",
+    "OutputArtifactSetIdentity",
     "OutputCollectionRef",
     "SHA256_PATTERN",
     "SemanticId",
     "Sha256",
     "TRANSFORM_TARGET_PROTOCOL",
+    "TARGET_INPUT_PAGE_MAX",
     "TargetContract",
     "TargetContractPayload",
     "TargetExecutionEvidence",
     "TargetFailure",
     "TargetInapplicable",
+    "TargetCallbackAccess",
+    "TargetInputAuthority",
+    "TargetInputPage",
+    "TargetInputRoleCount",
     "TargetJobDeclaration",
     "TargetJobRequest",
     "TargetJobState",
@@ -936,6 +1175,9 @@ __all__ = [
     "TargetPreflightRequest",
     "TargetPreflightResponse",
     "TargetProgress",
+    "TargetProductionAuthority",
+    "TargetProductionAuthorityPayload",
+    "TargetProductionSealResponse",
     "TargetProtocolModel",
     "TargetProtocol",
     "TargetResultKind",
@@ -947,4 +1189,7 @@ __all__ = [
     "validate_declaration_against_operation",
     "validate_preflight_response_against_request",
     "validate_status_against_request",
+    "update_output_artifact_commitment",
+    "update_input_disposition_commitment",
+    "update_output_source_edge_commitment",
 ]

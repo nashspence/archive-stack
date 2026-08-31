@@ -25,7 +25,6 @@ dependencies = [
   "httpx[http2]>=0.27,<1.0",
   "pydantic>=2.7,<3.0",
   "riverhog-protocol>=0.1,<0.2",
-  "riverhog-provenance>=0.1,<0.2",
   "riverhog-provenance-contracts>=0.1,<0.2",
 ]
 
@@ -34,7 +33,6 @@ riverhog-application-access = { workspace = true }
 file-download = { workspace = true }
 http-api-contracts = { workspace = true }
 riverhog-protocol = { workspace = true }
-riverhog-provenance = { workspace = true }
 riverhog-provenance-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

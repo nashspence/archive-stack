@@ -16,8 +16,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from riverhog_protocol import (
     CollectionUploadUnitWorkDocument,
-    CollectionUploadVolumeSetDocument,
-    CollectionUploadVolumeWorkDocument,
+    CollectionUploadWorkBatchDocument,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1112,66 +1111,70 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
     resolved_root = str(root.resolve())
 
     class _Api:
-        @contextmanager
-        def stream_collection_upload_sessions(self):  # type: ignore[no-untyped-def]
-            yield iter(({"collection_id": 42, "ingest_source": resolved_root},))
+        def list_collection_upload_sessions(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return {
+                "uploads": [{"collection_id": 42, "ingest_source": resolved_root}],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
         def get_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
             return {"state": "uploading"}
 
-        @contextmanager
-        def stream_collection_upload_session_files(self, _collection_id: int):  # type: ignore[no-untyped-def]
-            yield iter(({"path": "file.txt"},))
+        def list_collection_upload_session_files(
+            self, _collection_id: int, **_kwargs: object
+        ) -> dict[str, object]:
+            return {
+                "files": [{"path": "file.txt"}],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
-        def list_collection_upload_session_volumes(
+        def acquire_collection_upload_session_work(
             self,
             collection_id: int,
-        ) -> CollectionUploadVolumeSetDocument:
-            return CollectionUploadVolumeSetDocument.model_validate(
+            *,
+            limit: int = 16,
+        ) -> CollectionUploadWorkBatchDocument:
+            return CollectionUploadWorkBatchDocument.model_validate(
                 {
                     "collection_id": collection_id,
-                    "volumes": [
+                    "planning_complete": True,
+                    "complete": False,
+                    "committed_payload_bytes": 1,
+                    "work": [
                         {
-                            "volume_id": "pack-000000000000",
-                            "sequence": 0,
-                            "kind": "pack",
-                            "state": "sealed",
+                            "volume": {
+                                "volume_id": "pack-" + "0" * 64,
+                                "sequence": 0,
+                                "kind": "pack",
+                            },
                             "plan_sha256": "a" * 64,
-                            "plaintext_bytes": 1,
-                            "source_bytes": 1,
-                            "units": [
-                                {
-                                    "unit": 0,
-                                    "payload_bytes": 1,
-                                    "plaintext_bytes": 1,
-                                    "sources": [
-                                        {
-                                            "path": "file.txt",
-                                            "offset": 0,
-                                            "bytes": 1,
-                                            "artifact_sha256": "b" * 64,
-                                        }
-                                    ],
-                                    "state": "committed",
-                                }
-                            ],
+                            "unit": {
+                                "unit": 0,
+                                "payload_bytes": 1,
+                                "plaintext_bytes": 1,
+                                "sources": [
+                                    {
+                                        "path": "file.txt",
+                                        "offset": 0,
+                                        "bytes": 1,
+                                        "artifact_sha256": "b" * 64,
+                                    }
+                                ],
+                                "state": "committed",
+                            },
                         }
-                    ],
+                    ][:limit],
                 }
             )
-
-        def get_collection_upload_session_volume(
-            self, _collection_id: int, _volume_id: str
-        ) -> CollectionUploadVolumeWorkDocument:
-            return self.list_collection_upload_session_volumes(_collection_id).volumes[0]
 
         def get_collection_upload_session_unit(
             self, _collection_id: int, _volume_id: str, unit: int
         ) -> CollectionUploadUnitWorkDocument:
-            return self.get_collection_upload_session_volume(
-                _collection_id,
-                _volume_id,
-            ).units[unit]
+            return self.acquire_collection_upload_session_work(_collection_id).work[0].unit
 
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/riverhog")
     monkeypatch.setattr(module.subprocess, "Popen", popen)
@@ -1200,13 +1203,12 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
         assert command[idempotency_index + 1] == ("provider-qualification:qualification-run")
     assert collection_id == 42
     assert set(observations) == {
-        "committed-unit-readback",
+        "committed-payload-progress",
         *resumable_observations,
         "registered-file-list",
         "session-show",
         "unit-readback",
-        "volume-list",
-        "volume-show",
+        "upload-work-acquisition",
     }
 
 
@@ -1328,12 +1330,11 @@ def test_operator_advances_across_short_restore_invocations(
         lambda *_args, **_kwargs: (
             42,
             (
-                "committed-unit-readback",
+                "committed-payload-progress",
                 "registered-file-list",
                 "session-show",
                 "unit-readback",
-                "volume-list",
-                "volume-show",
+                "upload-work-acquisition",
             ),
         ),
     )

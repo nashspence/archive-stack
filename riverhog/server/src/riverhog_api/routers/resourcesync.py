@@ -3,17 +3,20 @@ from __future__ import annotations
 from typing import Annotated, Any, cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from fastapi import APIRouter, Path, Query, Request, Response
-from fastapi.responses import StreamingResponse
-from http_api_contracts import JSON_SEQUENCE_MEDIA_TYPE, cursor_feed_operation, operation_interface
-from pydantic import TypeAdapter
+from fastapi import APIRouter, Header, Path, Query, Request, Response
+from http_api_contracts import (
+    QuotedSha256Identity,
+    cursor_feed_operation,
+    exact_set_page_operation,
+    operation_interface,
+    parse_quoted_sha256_identity,
+    quote_sha256_identity,
+)
 from riverhog_protocol import (
     CollectionIdParameter,
-    PortableCollectionInventoryBegin,
-    PortableCollectionInventoryEnd,
-    PortableCollectionInventoryFile,
-    iter_portable_collection_inventory,
+    PortableCollectionInventoryPage,
 )
+from riverhog_protocol.errors import PreconditionRequired
 
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
@@ -194,47 +197,46 @@ def resourcesync_change_list(
 
 @router.get(
     "/v1/catalog/collections/{collection_id}/inventory",
-    response_model=None,
-    response_class=StreamingResponse,
+    response_model=PortableCollectionInventoryPage,
     responses={
         200: {
-            "description": "OK",
-            "content": {
-                JSON_SEQUENCE_MEDIA_TYPE: {
-                    "schema": TypeAdapter(
-                        PortableCollectionInventoryBegin
-                        | PortableCollectionInventoryFile
-                        | PortableCollectionInventoryEnd
-                    ).json_schema()
-                }
-            },
             "headers": {
                 "ETag": {
-                    "description": "Quoted SHA-256 identity of the immutable file inventory.",
+                    "description": "Strong identity of the immutable inventory authority.",
                     "schema": {"type": "string", "pattern": '^"[0-9a-f]{64}"$'},
                 }
-            },
+            }
         }
     },
-    openapi_extra=operation_interface("standard-tool/protocol"),
+    openapi_extra={
+        **operation_interface("standard-tool/protocol"),
+        **exact_set_page_operation(
+            authority="portable-collection-inventory",
+            cursor_parameter="cursor",
+            limit_parameter="limit",
+            validator_header="If-Match",
+        ),
+    },
 )
-def stream_portable_collection_inventory(
+def get_portable_collection_inventory(
     collection_id: CollectionIdParameter,
     principal: CatalogReader,
     container: ContainerDep,
-) -> StreamingResponse:
-    header, files, identity, file_count, file_bytes = container.retrieval.collection_inventory(
+    response: Response,
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    limit: int = Query(default=100, ge=1, le=1000),
+    if_match: Annotated[QuotedSha256Identity | None, Header(alias="If-Match")] = None,
+) -> PortableCollectionInventoryPage:
+    if cursor is not None and if_match is None:
+        raise PreconditionRequired("inventory continuation requires If-Match")
+    page = container.retrieval.collection_inventory_page(
         collection_id,
+        cursor=cursor,
+        limit=limit,
+        expected_identity=(
+            parse_quoted_sha256_identity(if_match) if if_match is not None else None
+        ),
         principal=principal,
     )
-    return StreamingResponse(
-        iter_portable_collection_inventory(
-            header,
-            files,
-            inventory_identity=identity,
-            file_count=file_count,
-            file_bytes=file_bytes,
-        ),
-        media_type=JSON_SEQUENCE_MEDIA_TYPE,
-        headers={"ETag": f'"{identity}"'},
-    )
+    response.headers["ETag"] = quote_sha256_identity(page.authority.inventory_identity)
+    return page

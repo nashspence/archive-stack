@@ -348,7 +348,7 @@ def encrypt_age_scrypt(
     log_n: int = DEFAULT_SCRYPT_LOG_N,
     scrypt_maxmem: int | None = None,
 ) -> bytes:
-    """Convenience API for small files like manifest.json and proof.ots."""
+    """Convenience API for small authenticated archive metadata."""
 
     return ResumableAgeScryptSession.create(
         passphrase, log_n=log_n, scrypt_maxmem=scrypt_maxmem

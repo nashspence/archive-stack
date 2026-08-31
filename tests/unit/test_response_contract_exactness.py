@@ -31,6 +31,7 @@ from riverhog_api.schemas.provenance import (
 from riverhog_api.schemas.retrieval import RetrievalJobOut, RetrievalPlanFileOut
 from riverhog_api.schemas.search import SearchFileOut
 from riverhog_api.schemas.tags import TagDeletionPlanOut
+from riverhog_protocol.paths import tag_set_identity
 
 
 def _collection_deletion(status: str, challenge: str | None, blockers: list[str]) -> dict[str, Any]:
@@ -401,6 +402,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
                 "id": 1,
                 "created_at": "2026-08-25T00:00:00.000000Z",
                 "tag_count": 0,
+                "tag_set_identity": tag_set_identity(()),
                 "content_identity": "a" * 64,
                 "archive_root_sha256": "b" * 64,
                 "encryption_format": "age-x25519/v1",
@@ -696,9 +698,7 @@ def test_archive_copy_projection_accepts_each_reachable_evidence_state() -> None
     root = {
         "object_path": "collections/1/archive-root.json",
         "sha256": "a" * 64,
-        "proof_object_path": None,
-        "proof_sha256": None,
-        "proof_state": "pending",
+        "state": "pending",
     }
     copies = (
         {
@@ -723,9 +723,7 @@ def test_archive_copy_projection_accepts_each_reachable_evidence_state() -> None
             "failure": None,
             "archive_root": {
                 **root,
-                "proof_object_path": "collections/1/archive-root.proof.json",
-                "proof_sha256": "b" * 64,
-                "proof_state": "uploaded",
+                "state": "uploaded",
             },
         },
         {
@@ -736,8 +734,8 @@ def test_archive_copy_projection_accepts_each_reachable_evidence_state() -> None
             "stored_bytes": 42,
             "last_uploaded_at": "2026-08-25T00:00:00.000000Z",
             "last_verified_at": None,
-            "failure": "proof publication failed",
-            "archive_root": {**root, "proof_state": "failed"},
+            "failure": "archive-root publication failed",
+            "archive_root": {**root, "state": "failed"},
         },
     )
     validator = Draft202012Validator(ArchiveCopyOut.model_json_schema())

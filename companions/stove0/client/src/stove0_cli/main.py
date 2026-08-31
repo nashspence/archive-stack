@@ -123,29 +123,8 @@ def list_work(
     query: str | None = typer.Option(None, "--query", "-q"),
     sort: str = typer.Option("updated_at"),
     order: str = typer.Option("desc"),
-    all_items: bool = typer.Option(False, "--all"),
 ) -> None:
     state = _context(context)
-    if all_items:
-        _call_stream(
-            state,
-            lambda: state.client.stream_work(
-                phase=cast(Any, phase),
-                query=query,
-                sort=cast(Any, sort),
-                order=cast(Any, order),
-            ),
-            key="work",
-            columns=(
-                "work_id",
-                "phase",
-                "result_kind",
-                "target_state",
-                "result_identity",
-                "revision",
-            ),
-        )
-        return
     _call(
         state,
         lambda: state.client.list_work(
@@ -201,25 +180,14 @@ def inspect_work_coordination(context: typer.Context, work_id: str) -> None:
 def get_artifact_selection(
     context: typer.Context,
     selection_sha256: str,
-    page: int = typer.Option(1, min=1),
-    per_page: int = typer.Option(100, min=1, max=1000),
-    all_items: bool = typer.Option(False, "--all"),
+    continuation: str | None = typer.Option(None),
 ) -> None:
     state = _context(context)
-    if all_items:
-        _call_stream(
-            state,
-            lambda: state.client.stream_artifact_selection(selection_sha256),
-            key="artifacts",
-            columns=("id", "role", "path", "bytes"),
-        )
-        return
     _call(
         state,
         lambda: state.client.get_artifact_selection(
             selection_sha256,
-            page=page,
-            per_page=per_page,
+            continuation=continuation,
         ),
         table=("artifacts", ("id", "role", "path", "bytes")),
     )
@@ -275,22 +243,8 @@ def list_evaluations(
     query: str | None = typer.Option(None, "--query", "-q"),
     sort: str = typer.Option("updated_at"),
     order: str = typer.Option("desc"),
-    all_items: bool = typer.Option(False, "--all"),
 ) -> None:
     state = _context(context)
-    if all_items:
-        _call_stream(
-            state,
-            lambda: state.client.stream_evaluations(
-                phase=cast(Any, phase),
-                query=query,
-                sort=cast(Any, sort),
-                order=cast(Any, order),
-            ),
-            key="evaluations",
-            columns=("evaluation_id", "phase", "revision"),
-        )
-        return
     _call(
         state,
         lambda: state.client.list_evaluations(
@@ -428,57 +382,6 @@ def _call(
     if isinstance(payload, BaseModel):
         payload = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
     _render(payload, json_output=state.json_output, table=table)
-
-
-def _call_stream(
-    state: Context,
-    operation: Any,
-    *,
-    key: str,
-    columns: tuple[str, ...],
-) -> None:
-    try:
-        with operation() as items:
-            if state.json_output:
-                typer.echo("{" + json.dumps(key) + ":[", nl=False)
-                count = 0
-                for item in items:
-                    payload = item.model_dump(mode="json", by_alias=True, exclude_none=True)
-                    if count:
-                        typer.echo(",", nl=False)
-                    typer.echo(
-                        json.dumps(
-                            payload,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                        nl=False,
-                    )
-                    count += 1
-                typer.echo(f'],"total":{count}}}')
-                return
-            chunk: list[dict[str, Any]] = []
-            emitted = False
-            for item in items:
-                chunk.append(item.model_dump(mode="json", by_alias=True, exclude_none=True))
-                if len(chunk) == 100:
-                    _render_stream_table(chunk, columns)
-                    chunk = []
-                    emitted = True
-            if chunk or not emitted:
-                _render_stream_table(chunk, columns)
-    except (Stove0ApiError, ValueError) as exc:
-        _fail(str(exc))
-
-
-def _render_stream_table(items: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
-    rendered = Table(show_header=True)
-    for column in columns:
-        rendered.add_column(column.replace("_", " ").title())
-    for item in items:
-        rendered.add_row(*(_table_value(item, column) for column in columns))
-    console.print(rendered)
 
 
 def _render(

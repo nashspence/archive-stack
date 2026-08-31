@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-terminal-v1.schema.json",
+  "title": "Riverhog v1 authenticated provenance-volume terminator",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "archive_generation", "archive_tree_sha256", "sequence", "kind"],
+  "properties": {
+    "schema": {"const": "riverhog-provenance-terminal/v1"},
+    "archive_generation": {"$ref": "#/$defs/sha256"},
+    "archive_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "sequence": {"type": "string", "pattern": "^[0-9a-f]{64}$", "not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}},
+    "kind": {"const": "terminal"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1647,38 +1647,6 @@ def _run_gogurt_listener_lifecycle(
         raise
 
 
-def _write_ots_fixture(path: Path) -> Path:
-    program = path / "ots_fixture.py"
-    program.write_text(
-        """import hashlib
-import sys
-from pathlib import Path
-
-if len(sys.argv) != 5 or sys.argv[1] != "verify" or sys.argv[3] != "-f":
-    raise SystemExit(2)
-proof = Path(sys.argv[2]).read_text(encoding="utf-8")
-manifest = Path(sys.argv[4]).read_bytes()
-if proof != f"sha256:{hashlib.sha256(manifest).hexdigest()}\\n":
-    raise SystemExit(1)
-""",
-        encoding="utf-8",
-    )
-    if os.name == "nt":
-        wrapper = path / "ots-fixture.cmd"
-        wrapper.write_text(
-            f'@"{sys.executable}" "{program}" %*\r\n',
-            encoding="utf-8",
-        )
-    else:
-        wrapper = path / "ots-fixture"
-        wrapper.write_text(
-            f'#!/bin/sh\nexec "{sys.executable}" "{program}" "$@"\n',
-            encoding="utf-8",
-        )
-        wrapper.chmod(0o700)
-    return wrapper
-
-
 def _run_recovery(
     executable: Path,
     *,
@@ -1717,7 +1685,6 @@ def _run_recovery(
     )
     passphrases.chmod(0o600)
     output = scratch / "recovered"
-    ots = _write_ots_fixture(scratch)
     try:
         _run(
             [
@@ -1726,8 +1693,6 @@ def _run_recovery(
                 str(output),
                 "--passphrases-file",
                 str(passphrases),
-                "--ots-command",
-                str(ots),
             ],
             cwd=scratch,
             env=environment,

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Protocol, cast
@@ -11,11 +10,11 @@ from typing import Protocol, cast
 import httpx
 from riverhog_protocol import (
     CollectionId,
+    CollectionUploadUnitAssignmentDocument,
     CollectionUploadUnitNumber,
     CollectionUploadUnitWorkDocument,
     CollectionUploadVolumeId,
-    CollectionUploadVolumeSetDocument,
-    CollectionUploadVolumeWorkDocument,
+    CollectionUploadWorkBatchDocument,
 )
 from riverhog_protocol.errors import Conflict, ServiceUnavailable
 
@@ -31,9 +30,9 @@ RetryNotice = Callable[[str], None]
 
 
 class CollectionUnitApi(Protocol):
-    def list_collection_upload_session_volumes(
-        self, collection_id: CollectionId
-    ) -> CollectionUploadVolumeSetDocument: ...
+    def acquire_collection_upload_session_work(
+        self, collection_id: CollectionId, *, limit: int = 16
+    ) -> CollectionUploadWorkBatchDocument: ...
 
     def get_collection_upload_session_unit(
         self,
@@ -98,16 +97,16 @@ def configured_upload_window(
 def put_collection_upload_unit(
     api: CollectionUnitApi,
     collection_id: CollectionId,
-    volume: CollectionUploadVolumeWorkDocument,
-    unit: CollectionUploadUnitWorkDocument,
+    assignment: CollectionUploadUnitAssignmentDocument,
     *,
     content_for_unit: UnitContent,
     retry_notice: RetryNotice | None = None,
     retry_initial_delay_seconds: float = 1.0,
     retry_max_delay_seconds: float = 10.0,
 ) -> int:
-    volume_id = volume.volume_id
-    plan_sha256 = volume.plan_sha256
+    volume_id = assignment.volume.volume_id
+    plan_sha256 = assignment.plan_sha256
+    unit = assignment.unit
     unit_number = unit.unit
     payload_bytes = unit.payload_bytes
     if unit.state == "committed":
@@ -172,63 +171,44 @@ def upload_collection_units(
             f"upload window must be between upload concurrency ({concurrency}) "
             f"and {MAX_UPLOAD_WINDOW}"
         )
-    payload = api.list_collection_upload_session_volumes(collection_id)
-    volumes = list(payload.volumes)
-    if on_resumed is not None:
-        on_resumed(
-            sum(
-                _unit_payload_bytes(unit)
-                for volume in volumes
-                for unit in volume.units
-                if unit.state == "committed"
-            )
+    uploaded = 0
+    resumed_reported = False
+    while True:
+        batch = api.acquire_collection_upload_session_work(
+            collection_id,
+            limit=min(window, MAX_UPLOAD_CONCURRENCY),
         )
-
-    initial: list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]] = []
-    deferred: dict[
-        str,
-        list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
-    ] = {}
-    for volume in volumes:
-        units = [unit for unit in volume.units if unit.state != "committed"]
-        if not units:
-            continue
-        initial.append((volume, units[0]))
-        deferred[volume.volume_id] = [(volume, unit) for unit in units[1:]]
-
-    return _upload_work(
-        api,
-        collection_id,
-        initial=initial,
-        deferred=deferred,
-        content_for_unit=content_for_unit,
-        concurrency=concurrency,
-        window=window,
-        client_factory=client_factory,
-        on_committed=on_committed,
-        retry_notice=retry_notice,
-        cancel_check=cancel_check,
-    )
+        if on_resumed is not None and not resumed_reported:
+            on_resumed(batch.committed_payload_bytes)
+            resumed_reported = True
+        if not batch.work:
+            return uploaded
+        uploaded += _upload_work(
+            api,
+            collection_id,
+            assignments=batch.work,
+            content_for_unit=content_for_unit,
+            concurrency=concurrency,
+            client_factory=client_factory,
+            on_committed=on_committed,
+            retry_notice=retry_notice,
+            cancel_check=cancel_check,
+        )
 
 
 def _upload_work(
     api: CollectionUnitApi,
     collection_id: CollectionId,
     *,
-    initial: Sequence[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
-    deferred: dict[
-        str,
-        list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
-    ],
+    assignments: Sequence[CollectionUploadUnitAssignmentDocument],
     content_for_unit: UnitContent,
     concurrency: int,
-    window: int,
     client_factory: Callable[[], CollectionUnitApi] | None,
     on_committed: UploadProgress | None,
     retry_notice: RetryNotice | None,
     cancel_check: Callable[[], None] | None,
 ) -> int:
-    total_units = len(initial) + sum(len(items) for items in deferred.values())
+    total_units = len(assignments)
     if total_units == 0:
         return 0
     worker_count = min(concurrency, total_units)
@@ -248,26 +228,20 @@ def _upload_work(
                 clients.append(worker_api)
 
     def upload_one(
-        item: tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument],
+        item: CollectionUploadUnitAssignmentDocument,
     ) -> int:
         if cancel_check is not None:
             cancel_check()
         worker_api = cast(CollectionUnitApi, local.api)
-        volume, unit = item
         return put_collection_upload_unit(
             worker_api,
             collection_id,
-            volume,
-            unit,
+            item,
             content_for_unit=content_for_unit,
             retry_notice=retry_notice,
         )
 
-    ready = deque(initial)
-    pending: dict[
-        Future[int],
-        tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument],
-    ] = {}
+    pending: dict[Future[int], CollectionUploadUnitAssignmentDocument] = {}
     uploaded = 0
     try:
         with ThreadPoolExecutor(
@@ -275,24 +249,17 @@ def _upload_work(
             thread_name_prefix="riverhog-upload-unit",
             initializer=initialize_worker,
         ) as executor:
-
-            def fill() -> None:
-                while ready and len(pending) < window:
-                    item = ready.popleft()
-                    pending[executor.submit(upload_one, item)] = item
-
-            fill()
+            for item in assignments:
+                pending[executor.submit(upload_one, item)] = item
             try:
                 while pending:
                     done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
                     for future in done:
-                        volume, _unit = pending.pop(future)
+                        pending.pop(future)
                         accepted = future.result()
                         uploaded += accepted
-                        ready.extend(deferred.pop(volume.volume_id, ()))
                         if on_committed is not None:
                             on_committed(accepted)
-                    fill()
             except BaseException:
                 for future in pending:
                     future.cancel()
@@ -310,10 +277,6 @@ def _client_factory(api: CollectionUnitApi) -> Callable[[], CollectionUnitApi]:
     if not callable(spawn):
         raise ValueError("parallel uploads require an API client factory")
     return cast(Callable[[], CollectionUnitApi], spawn)
-
-
-def _unit_payload_bytes(unit: CollectionUploadUnitWorkDocument) -> int:
-    return unit.payload_bytes
 
 
 def _is_transient(exc: BaseException) -> bool:

@@ -9,17 +9,16 @@ from typing import Any, Literal, Self
 
 from riverhog_api_client import ApiClient
 from riverhog_api_client.producer import ProducerArtifactIdentity, ProducerInput
-from riverhog_protocol.collection_workflows import ArtifactDisposition, CollectionRootIdentity
+from riverhog_protocol.collection_workflows import (
+    ArtifactDispositionSetIdentity,
+    CollectionRootIdentity,
+)
 
 from riverhog_transform_sdk.capability import CapabilityApiClient
 from riverhog_transform_sdk.models import (
     ClaimedArtifact,
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
-)
-from riverhog_transform_sdk.provenance import (
-    prepare_incremental_transform_provenance,
-    prepare_transform_provenance,
 )
 from riverhog_transform_sdk.reader import ClaimedCollectionReader, ClaimedRetrieval
 from riverhog_transform_sdk.workspace import TransformWorkspace, WorkspaceAssurance
@@ -150,6 +149,10 @@ class ClaimedCollectionRuntime:
     def inventory(self) -> tuple[ClaimedArtifact, ...]:
         self.heartbeat()
         return self.reader.inventory()
+
+    def iter_inventory(self):  # type: ignore[no-untyped-def]
+        self.heartbeat()
+        return self.reader.iter_inventory()
 
     def prepare_inputs(
         self,
@@ -327,6 +330,10 @@ class CollectionTransformRuntime:
         self.heartbeat()
         return self.reader.inventory()
 
+    def iter_inventory(self):  # type: ignore[no-untyped-def]
+        self.heartbeat()
+        return self.reader.iter_inventory()
+
     def prepare_inputs(
         self,
         artifacts: Sequence[ClaimedArtifact] | None = None,
@@ -357,46 +364,16 @@ class CollectionTransformRuntime:
         *,
         execution_envelope_sha256: str,
         execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
+        disposition_set: ArtifactDispositionSetIdentity,
         source_context: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> DerivedCollectionReceipt:
         self.heartbeat()
-        normalized_dispositions = tuple(dispositions)
-        inventory = self.inventory()
-        expected = {
-            (current.root.collection_id, current.root.archive_root_sha256, current.path)
-            for current in inventory
-        }
-        actual = {
-            (
-                current.input_collection_id,
-                current.input_archive_root_sha256,
-                current.input_path,
-            )
-            for current in normalized_dispositions
-        }
-        if actual != expected or len(actual) != len(normalized_dispositions):
-            raise ValueError(
-                "artifact dispositions must account for every claimed input exactly once"
-            )
-        provenance_builder = prepare_transform_provenance(
-            self.api,
-            inventory=inventory,
-            dispositions=normalized_dispositions,
-            execution_id=self.execution_id,
-            operation_id=self.spec.operation.id,
-            producer_app=self.producer_app,
-            producer_version=self.producer_version,
-            started_at=self.started_at,
-            heartbeat=self.heartbeat,
-        )
         receipt = self.writer.publish(
             outputs,
             execution_envelope_sha256=execution_envelope_sha256,
             execution_sha256=execution_sha256,
-            dispositions=normalized_dispositions,
-            provenance_builder=provenance_builder,
+            disposition_set=disposition_set,
             source_context=source_context,
             **kwargs,
         )
@@ -415,17 +392,6 @@ class CollectionTransformRuntime:
             raise RuntimeError("transform output collection is already finalized")
         if self._incremental_writer is not None:
             return self._incremental_writer
-        inventory = self.inventory()
-        provenance = prepare_incremental_transform_provenance(
-            self.api,
-            inventory=inventory,
-            execution_id=self.execution_id,
-            operation_id=self.spec.operation.id,
-            producer_app=self.producer_app,
-            producer_version=self.producer_version,
-            started_at=self.started_at,
-            heartbeat=self.heartbeat,
-        )
         writer = IncrementalDerivedCollectionWriter(
             self.api,
             spec=self.spec,
@@ -436,7 +402,6 @@ class CollectionTransformRuntime:
             controller_evidence=self.controller_evidence,
             producer_app=self.producer_app,
             producer_version=self.producer_version,
-            provenance=provenance,
             execution_envelope_sha256=execution_envelope_sha256,
             source_context=source_context,
         )
@@ -449,43 +414,24 @@ class CollectionTransformRuntime:
         source: ProducerInput,
         *,
         identity: ProducerArtifactIdentity,
-        sources: Sequence[ClaimedArtifact],
     ) -> tuple[object, ...]:
         if writer is not self._incremental_writer:
             raise ValueError("incremental writer does not belong to this transform runtime")
-        return writer.append(source, identity=identity, sources=sources)
+        return writer.append(source, identity=identity)
 
     def finish_incremental_publication(
         self,
         writer: IncrementalDerivedCollectionWriter,
         *,
         execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
+        disposition_set: ArtifactDispositionSetIdentity,
         **kwargs: Any,
     ) -> DerivedCollectionReceipt:
         if writer is not self._incremental_writer:
             raise ValueError("incremental writer does not belong to this transform runtime")
-        normalized_dispositions = tuple(dispositions)
-        inventory = self.inventory()
-        expected = {
-            (current.root.collection_id, current.root.archive_root_sha256, current.path)
-            for current in inventory
-        }
-        actual = {
-            (
-                current.input_collection_id,
-                current.input_archive_root_sha256,
-                current.input_path,
-            )
-            for current in normalized_dispositions
-        }
-        if actual != expected or len(actual) != len(normalized_dispositions):
-            raise ValueError(
-                "artifact dispositions must account for every claimed input exactly once"
-            )
         receipt = writer.finish(
             execution_sha256=execution_sha256,
-            dispositions=normalized_dispositions,
+            disposition_set=disposition_set,
             **kwargs,
         )
         self._published_receipt = receipt

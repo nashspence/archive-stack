@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from typing import Any, cast
 
 from riverhog_api_client.producer import (
@@ -12,23 +11,20 @@ from riverhog_api_client.producer import (
     ProducerArtifactCustody,
     ProducerArtifactIdentity,
     ProducerInput,
-    ProvenanceBuilder,
 )
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     PRODUCER_EVIDENCE_PATH,
-    ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
     JsonValue,
     canonical_json_sha256,
 )
 
 from riverhog_transform_sdk.models import (
-    ClaimedArtifact,
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
 )
-from riverhog_transform_sdk.provenance import IncrementalTransformProvenance
 
 
 def _sha256(value: str, label: str) -> str:
@@ -78,6 +74,13 @@ class DerivedCollectionWriter:
         self.controller_evidence_sha256 = canonical_json_sha256(evidence)
         self.producer_app = producer_app
         self.producer_version = producer_version
+        claim = api.get_processing_claim(claim_id)
+        plan = claim.plan
+        if plan is None or plan.execution_id != self.execution_id:
+            raise ValueError("derived collection writer requires the sealed claim plan")
+        self.input_set_sha256 = plan.inputs.sha256
+        self.artifact_set_sha256 = plan.artifacts.sha256
+        self.output_tag_set_sha256 = plan.output_tags.sha256
 
     def replace_api(self, api: Any) -> None:
         self.api = api
@@ -88,8 +91,7 @@ class DerivedCollectionWriter:
         *,
         execution_envelope_sha256: str,
         execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
-        provenance_builder: ProvenanceBuilder | None = None,
+        disposition_set: ArtifactDispositionSetIdentity,
         source_context: Mapping[str, object] | None = None,
         poll_seconds: float = 2.0,
         timeout_seconds: float = 24 * 60 * 60,
@@ -106,22 +108,17 @@ class DerivedCollectionWriter:
             for path in output_paths
         ):
             raise ValueError("transform targets may not write Riverhog control paths")
-        normalized_dispositions = tuple(sorted(dispositions))
-        referenced_outputs = {
-            path for disposition in normalized_dispositions for path in disposition.outputs
-        }
-        if referenced_outputs != output_paths:
-            raise ValueError(
-                "derived collection outputs must be referenced exactly by artifact dispositions"
-            )
+        if disposition_set.output_artifact_count != len(normalized_outputs):
+            raise ValueError("sealed disposition authority differs from derived outputs")
         derivation = CollectionDerivation(
             execution_id=self.execution_id,
             claim_id=self.claim_id,
             fence=self.fence,
             recipe=self.spec.recipe,
             operation=self.spec.operation,
-            inputs=self.spec.inputs,
-            output_tags=self.spec.output_tags,
+            input_set_sha256=self.input_set_sha256,
+            artifact_set_sha256=self.artifact_set_sha256,
+            output_tag_set_sha256=self.output_tag_set_sha256,
             execution_envelope_sha256=_sha256(
                 execution_envelope_sha256,
                 "execution envelope identity",
@@ -129,7 +126,7 @@ class DerivedCollectionWriter:
             execution_sha256=_sha256(execution_sha256, "execution evidence identity"),
             controller_evidence=cast(dict[str, JsonValue], self.controller_evidence),
             controller_evidence_sha256=self.controller_evidence_sha256,
-            dispositions=normalized_dispositions,
+            disposition_set=disposition_set,
         )
         producer = CollectionProducer(
             self.api,
@@ -142,6 +139,7 @@ class DerivedCollectionWriter:
                 "Transform output has no captured host journal for this artifact; "
                 "the immutable derivation document records exact execution evidence."
             ),
+            server_generated_provenance=True,
         )
         receipt = producer.publish_inputs(
             normalized_outputs,
@@ -156,7 +154,6 @@ class DerivedCollectionWriter:
                 "execution_sha256": derivation.execution_sha256,
             },
             inline_evidence={DERIVATION_EVIDENCE_PATH: derivation.to_json_bytes()},
-            provenance_builder=provenance_builder,
             idempotency_key=self.execution_id,
             event_context={
                 "initiator": {
@@ -193,7 +190,6 @@ class IncrementalDerivedCollectionWriter:
         controller_evidence: Mapping[str, object],
         producer_app: str,
         producer_version: str,
-        provenance: IncrementalTransformProvenance,
         execution_envelope_sha256: str,
         source_context: Mapping[str, object] | None = None,
     ) -> None:
@@ -208,9 +204,14 @@ class IncrementalDerivedCollectionWriter:
             execution_envelope_sha256,
             "execution envelope identity",
         )
-        self.provenance = provenance
+        claim = api.get_processing_claim(claim_id)
+        plan = claim.plan
+        if plan is None or plan.execution_id != self.execution_id:
+            raise ValueError("incremental writer requires the sealed claim plan")
+        self.input_set_sha256 = plan.inputs.sha256
+        self.artifact_set_sha256 = plan.artifacts.sha256
+        self.output_tag_set_sha256 = plan.output_tags.sha256
         self._artifacts: dict[str, ProducerArtifactIdentity] = {}
-        self._source_keys: dict[str, tuple[tuple[int, str], ...]] = {}
         self.producer = IncrementalCollectionProducer(
             api,
             producer_app=producer_app,
@@ -237,7 +238,8 @@ class IncrementalDerivedCollectionWriter:
                     "execution_id": self.execution_id,
                 }
             },
-            provenance_mode="captured" if provenance.captured else "omitted",
+            provenance_mode="captured",
+            server_generated_provenance=True,
             provenance_omission_reason=(
                 "Transform output has no captured host journal for this artifact; "
                 "the immutable derivation document records exact execution evidence."
@@ -259,31 +261,15 @@ class IncrementalDerivedCollectionWriter:
         source: ProducerInput,
         *,
         identity: ProducerArtifactIdentity,
-        sources: Sequence[ClaimedArtifact],
     ) -> tuple[ProducerArtifactCustody, ...]:
         if source.path != identity.path:
             raise ValueError("incremental transform source path differs from its identity")
-        provenance = self.provenance.artifact(
-            self.producer.collection_id,
-            identity,
-            sources=sources,
-            resumed=self.producer.resumed or self.producer.is_registered(identity.path),
-        )
-        bound = replace(
-            source,
-            provenance=provenance.binding if provenance is not None else None,
-        )
         existing = self._artifacts.get(identity.path)
         if existing is not None and existing != identity:
             raise ValueError(f"incremental transform artifact identity changed: {identity.path}")
-        source_keys = tuple(sorted(item.key for item in sources))
-        if identity.path in self._source_keys and self._source_keys[identity.path] != source_keys:
-            raise ValueError(f"incremental transform derivation changed: {identity.path}")
         self._artifacts[identity.path] = identity
-        self._source_keys[identity.path] = source_keys
         return self.producer.append_inputs(
-            [bound],
-            provenance_journals=provenance.journals if provenance is not None else None,
+            [source],
             expected_identities={identity.path: identity},
         )
 
@@ -291,34 +277,28 @@ class IncrementalDerivedCollectionWriter:
         self,
         *,
         execution_sha256: str,
-        dispositions: Sequence[ArtifactDisposition],
+        disposition_set: ArtifactDispositionSetIdentity,
         poll_seconds: float = 2.0,
         timeout_seconds: float = 24 * 60 * 60,
     ) -> DerivedCollectionReceipt:
         if not self._artifacts:
             raise ValueError("successful collection transform must produce output artifacts")
-        normalized_dispositions = tuple(sorted(dispositions))
-        output_paths = set(self._artifacts)
-        referenced = {
-            path for disposition in normalized_dispositions for path in disposition.outputs
-        }
-        if referenced != output_paths:
-            raise ValueError(
-                "derived collection outputs must be referenced exactly by artifact dispositions"
-            )
+        if disposition_set.output_artifact_count != len(self._artifacts):
+            raise ValueError("sealed disposition authority differs from derived outputs")
         derivation = CollectionDerivation(
             execution_id=self.execution_id,
             claim_id=self.claim_id,
             fence=self.fence,
             recipe=self.spec.recipe,
             operation=self.spec.operation,
-            inputs=self.spec.inputs,
-            output_tags=self.spec.output_tags,
+            input_set_sha256=self.input_set_sha256,
+            artifact_set_sha256=self.artifact_set_sha256,
+            output_tag_set_sha256=self.output_tag_set_sha256,
             execution_envelope_sha256=self.execution_envelope_sha256,
             execution_sha256=_sha256(execution_sha256, "execution evidence identity"),
             controller_evidence=cast(dict[str, JsonValue], self.controller_evidence),
             controller_evidence_sha256=self.controller_evidence_sha256,
-            dispositions=normalized_dispositions,
+            disposition_set=disposition_set,
         )
         produced = self.producer.finish(
             terminal_evidence={DERIVATION_EVIDENCE_PATH: derivation.to_json_bytes()},

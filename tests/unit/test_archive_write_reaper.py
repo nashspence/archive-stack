@@ -57,6 +57,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads = SimpleNamespace(
         requeue_interrupted_finalizations_for_startup=Mock(return_value=2),
         requeue_interrupted_orphan_discards_for_startup=Mock(return_value=1),
+        process_due_provenance_journal_validations=Mock(return_value=0),
         process_due_finalizations=Mock(return_value=1),
         reap_expired_custody_transfers=Mock(return_value=1),
     )
@@ -69,7 +70,10 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         process_due_metadata_publications=Mock(return_value=0),
     )
     collection_workflows = SimpleNamespace(
+        requeue_interrupted_disposition_sets_for_startup=Mock(return_value=0),
         reap_expired_claims=Mock(return_value=0),
+        process_due_disposition_sets=Mock(return_value=0),
+        process_due_outcome_sets=Mock(return_value=0),
     )
     provenance = SimpleNamespace(
         requeue_interrupted_verifications_for_startup=Mock(return_value=0),
@@ -97,6 +101,8 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
     collection_uploads.reap_expired_custody_transfers.assert_called_once_with(limit=100)
     collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
+    collection_workflows.process_due_disposition_sets.assert_called_once_with(limit=1)
+    collection_workflows.process_due_outcome_sets.assert_called_once_with(limit=1)
     provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
     provenance.process_due_verifications.assert_called_once_with(limit=1)
 

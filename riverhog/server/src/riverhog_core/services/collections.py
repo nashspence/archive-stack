@@ -102,12 +102,6 @@ def _collection_archive_copy_statement(collection_id: int) -> Any:
             _archive_object_field("manifest", CollectionArchiveObjectRecord.sha256).label(
                 "manifest_sha256"
             ),
-            _archive_object_field("proof", CollectionArchiveObjectRecord.object_path).label(
-                "proof_path"
-            ),
-            _archive_object_field("proof", CollectionArchiveObjectRecord.sha256).label(
-                "proof_sha256"
-            ),
         )
         .where(CollectionArchiveCopyRecord.collection_id == collection_id)
         .order_by(CollectionArchiveCopyRecord.store)
@@ -116,8 +110,8 @@ def _collection_archive_copy_statement(collection_id: int) -> Any:
 
 def _collection_archive_copy_payload(row: Any) -> dict[str, object]:
     copy = row[0]
-    proof_state = (
-        "failed" if copy.state == "failed" else "uploaded" if row.proof_path else "pending"
+    publication_state = (
+        "failed" if copy.state == "failed" else "uploaded" if row.manifest_path else "pending"
     )
     return {
         "store": copy.store,
@@ -131,9 +125,7 @@ def _collection_archive_copy_payload(row: Any) -> dict[str, object]:
         "archive_root": {
             "object_path": row.manifest_path,
             "sha256": row.manifest_sha256,
-            "proof_object_path": row.proof_path,
-            "proof_state": proof_state,
-            "proof_sha256": row.proof_sha256,
+            "state": publication_state,
         },
     }
 
@@ -166,6 +158,7 @@ class SqlAlchemyCollectionService:
             row = session.execute(
                 statement.where(
                     CollectionRecord.id == normalized,
+                    CollectionRecord.is_published.is_(True),
                     collection_access_filter(CollectionRecord.id, principal, CATALOG_READ),
                 )
             ).one_or_none()
@@ -260,12 +253,17 @@ class SqlAlchemyCollectionService:
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("invalid collection archive-copy pagination")
         with read_snapshot(self._session_factory) as session:
-            if session.get(CollectionRecord, normalized) is None:
+            collection = session.get(CollectionRecord, normalized)
+            if collection is None or not collection.is_published:
                 raise NotFound(f"collection not found: {normalized}")
             visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
             if (
                 session.scalar(
-                    select(CollectionRecord.id).where(CollectionRecord.id == normalized, visible)
+                    select(CollectionRecord.id).where(
+                        CollectionRecord.id == normalized,
+                        CollectionRecord.is_published.is_(True),
+                        visible,
+                    )
                 )
                 is None
             ):
@@ -304,6 +302,7 @@ class SqlAlchemyCollectionService:
                 session.scalar(
                     select(CollectionRecord.id).where(
                         CollectionRecord.id == normalized,
+                        CollectionRecord.is_published.is_(True),
                         collection_access_filter(CollectionRecord.id, principal, CATALOG_READ),
                     )
                 )
@@ -373,7 +372,10 @@ def _collection_list_filters(
             normalized_passphrase_id = normalize_passphrase_id(passphrase_id)
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
-    filters = [collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)]
+    filters = [
+        CollectionRecord.is_published.is_(True),
+        collection_access_filter(CollectionRecord.id, principal, CATALOG_READ),
+    ]
     if q is not None:
         pattern = _like_pattern(q.casefold())
         matching_ids = (
@@ -472,6 +474,7 @@ def _collection_summary(
         created_at=collection.created_at,
         tag_count=int(row.tag_count),
         content_identity=collection.content_identity,
+        tag_set_identity=collection.tag_set_identity,
         archive_root_sha256=str(row.archive_root_sha256),
         encryption_format=collection.encryption_format,
         passphrase_id=collection.passphrase_id,

@@ -268,9 +268,10 @@ def test_small_object_retry_uses_exact_identity_without_rereading_ciphertext() -
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
     first_content = b"first randomized ciphertext"
+    retry_content = b"different randomized ciphertext for the same plaintext authority"
 
     first = adapter.put_small_object(_small_request(first_content), first_content)
-    second = adapter.put_small_object(_small_request(first_content), first_content)
+    second = adapter.put_small_object(_small_request(retry_content), retry_content)
 
     assert second == first
     assert client.get_attempts == 0

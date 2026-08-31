@@ -25,17 +25,6 @@ class ArchiveObjectUploadReceipt:
 
 
 @dataclass(frozen=True, slots=True)
-class CollectionArchiveUploadReceipt:
-    objects: tuple[ArchiveObjectUploadReceipt, ...]
-
-    def require_object(self, object_id: str) -> ArchiveObjectUploadReceipt:
-        for current in self.objects:
-            if current.object_id == object_id:
-                return current
-        raise KeyError(object_id)
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveArtifactRead:
     receipt: ArchiveObjectUploadReceipt
     content: bytes
@@ -131,40 +120,6 @@ class ArchiveStore(Protocol):
         object: ArchiveObjectIdentity,
         passphrase_id: str,
     ) -> ArchiveArtifactRead: ...
-
-    def replace_archive_proof(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-        proof_bytes: bytes,
-        passphrase_id: str,
-    ) -> ArchiveObjectUploadReceipt: ...
-
-    def publish_archive_attestation(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        checksums: bytes,
-        signature: bytes,
-        proof: bytes,
-    ) -> CollectionArchiveUploadReceipt: ...
-
-    def read_archive_attestation_artifact(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-    ) -> ArchiveArtifactRead: ...
-
-    def replace_archive_attestation_proof(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-        proof_bytes: bytes,
-    ) -> ArchiveObjectUploadReceipt: ...
 
     def prepare_archive_objects_read(
         self,

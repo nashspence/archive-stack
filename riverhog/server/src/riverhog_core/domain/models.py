@@ -23,9 +23,7 @@ class ArchiveCopyStatus:
 class ArchiveRootPublicationStatus:
     object_path: str | None = None
     sha256: str | None = None
-    proof_object_path: str | None = None
-    proof_state: str = "pending"
-    proof_sha256: str | None = None
+    state: str = "pending"
 
 
 @dataclass(frozen=True)
@@ -72,6 +70,7 @@ class CollectionSummary:
     created_at: str
     tag_count: int
     content_identity: str
+    tag_set_identity: str
     archive_root_sha256: str
     encryption_format: str
     passphrase_id: str

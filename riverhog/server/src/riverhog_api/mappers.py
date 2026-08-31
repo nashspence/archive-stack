@@ -33,9 +33,7 @@ def map_archive_root_publication(
     return {
         "object_path": summary.object_path,
         "sha256": summary.sha256,
-        "proof_object_path": summary.proof_object_path,
-        "proof_state": summary.proof_state,
-        "proof_sha256": summary.proof_sha256,
+        "state": summary.state,
     }
 
 
@@ -90,6 +88,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "created_at": summary.created_at,
         "tag_count": summary.tag_count,
         "content_identity": summary.content_identity,
+        "tag_set_identity": summary.tag_set_identity,
         "archive_root_sha256": summary.archive_root_sha256,
         "encryption_format": summary.encryption_format,
         "passphrase_id": summary.passphrase_id,

@@ -76,7 +76,7 @@ class WrongCustodyReceiptClient(RecordingClient):
             sha256=str(row["sha256"]),
             archive_objects=(
                 CollectionUploadCustodyObjectDocument(
-                    volume_id="segment-000000000001",
+                    volume_id=f"segment-{1:064x}",
                     sealed_receipt_sha256="b" * 64,
                 ),
             ),
@@ -252,7 +252,6 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
         1,
         files_total=1,
         content_identity="b" * 64,
-        provenance_identity=None,
     )
 
     assert client.calls[0][2]["json"] == {
@@ -279,7 +278,6 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     assert client.calls[2][2]["json"] == {
         "files_total": 1,
         "content_identity": "b" * 64,
-        "provenance_identity": None,
     }
 
 
@@ -457,7 +455,7 @@ def test_client_rejects_noncanonical_upload_and_retrieval_http_identities() -> N
     with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
         client.put_collection_upload_session_unit(
             42,
-            "pack-000000000000",
+            f"pack-{0:064x}",
             0,
             plan_sha256="A" * 64,
             content=b"content",
@@ -473,13 +471,13 @@ def test_client_rejects_noncanonical_upload_and_retrieval_http_identities() -> N
     with pytest.raises(BadRequest):
         client.put_collection_upload_session_unit(
             42,
-            "pack-000000000000",
+            f"pack-{0:064x}",
             -1,
             plan_sha256="a" * 64,
             content=b"content",
         )
     with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
-        client.put_collection_upload_session_provenance_journal(
+        client.upload_collection_upload_session_provenance_journal(
             42,
             "urn:uuid:12345678-1234-5678-9234-567812345678",
             content=(b"journal",),
@@ -527,7 +525,7 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
         sort="stored_bytes",
         order="asc",
     )
-    client.get_retrieval_cache_object(42, "deep", "pack-000000000000")
+    client.get_retrieval_cache_object(42, "deep", f"pack-{0:064x}")
 
     assert client.calls == [
         ("GET", "/v1/retrieval-cache", {}),
@@ -553,7 +551,7 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
         ),
         (
             "GET",
-            "/v1/retrieval-cache/objects/42/deep/pack-000000000000",
+            f"/v1/retrieval-cache/objects/42/deep/pack-{0:064x}",
             {},
         ),
     ]
@@ -776,7 +774,7 @@ def test_collection_upload_unit_uses_the_canonical_content_contract() -> None:
 
     client.put_collection_upload_session_unit(
         42,
-        "pack-000000000000",
+        f"pack-{0:064x}",
         3,
         plan_sha256="a" * 64,
         content=b"source bytes",
@@ -785,7 +783,7 @@ def test_collection_upload_unit_uses_the_canonical_content_contract() -> None:
     assert client.calls == [
         (
             "PUT",
-            "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/3",
+            f"/v1/collection-upload-sessions/42/volumes/pack-{0:064x}/units/3",
             {
                 "headers": {
                     "Content-Type": "application/octet-stream",
@@ -881,7 +879,7 @@ def test_collection_upload_unit_uses_its_dedicated_timeout(
 
     client.put_collection_upload_session_unit(
         42,
-        "pack-000000000000",
+        f"pack-{0:064x}",
         0,
         plan_sha256="a" * 64,
         content=b"source bytes",

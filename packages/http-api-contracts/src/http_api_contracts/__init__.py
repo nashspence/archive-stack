@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
-import tempfile
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -34,9 +32,6 @@ FRAMED_BODY_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
 FRAMED_BODY_DECLARATION_LENGTH_BYTES = 4
 FRAMED_BODY_MAXIMUM_DECLARATION_BYTES = 32 * 1024
 JSON_SEQUENCE_MEDIA_TYPE = "application/json-seq"
-COMPLETE_ENUMERATION_FORMAT: Literal["riverhog-complete-enumeration/v1"] = (
-    "riverhog-complete-enumeration/v1"
-)
 _JSON_SEQUENCE_RECORD_SEPARATOR = b"\x1e"
 
 
@@ -57,30 +52,6 @@ class ErrorResponse(HttpApiModel):
 class HealthResponse(HttpApiModel):
     service: str = Field(min_length=1)
     status: Literal["ok"]
-
-
-class CompleteEnumerationItemSchema(HttpApiModel):
-    id: CanonicalVisibleText
-    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-
-
-class CompleteEnumerationBegin(HttpApiModel):
-    type: Literal["begin"] = "begin"
-    format: Literal["riverhog-complete-enumeration/v1"] = COMPLETE_ENUMERATION_FORMAT
-    query: dict[str, Any]
-    item_schema: CompleteEnumerationItemSchema
-
-
-class CompleteEnumerationItem(HttpApiModel):
-    type: Literal["item"] = "item"
-    ordinal: int = Field(ge=0)
-    item: Any
-
-
-class CompleteEnumerationEnd(HttpApiModel):
-    type: Literal["end"] = "end"
-    count: int = Field(ge=0)
-    items_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -123,47 +94,12 @@ def closed_literal_values(literal_type: object) -> frozenset[str]:
     return frozenset(values)
 
 
-def complete_enumeration_schema_identity(
-    item_type: object,
-    *,
-    schema_id: str,
-) -> CompleteEnumerationItemSchema:
-    """Seal the exact structural item schema advertised by one stream operation."""
-
-    schema = TypeAdapter(item_type).json_schema(mode="validation")
-    return CompleteEnumerationItemSchema(
-        id=schema_id,
-        sha256=hashlib.sha256(canonical_json_bytes(schema)).hexdigest(),
-    )
-
-
-def bounded_list_operation(*, paired_operation_id: str) -> dict[str, Any]:
+def bounded_list_operation() -> dict[str, Any]:
     """Classify one public read collection as a bounded interactive page."""
 
     return {
         "x-riverhog-read-collection": {
             "kind": "bounded-list",
-            "paired_operation_id": paired_operation_id,
-        }
-    }
-
-
-def complete_enumeration_operation(
-    *,
-    paired_operation_id: str,
-    item_type: object,
-    schema_id: str,
-) -> dict[str, Any]:
-    """Classify one public read collection as a complete snapshot stream."""
-
-    item_schema = complete_enumeration_schema_identity(item_type, schema_id=schema_id)
-    return {
-        "x-riverhog-read-collection": {
-            "kind": "complete-enumeration",
-            "paired_operation_id": paired_operation_id,
-            "format": COMPLETE_ENUMERATION_FORMAT,
-            "media_type": JSON_SEQUENCE_MEDIA_TYPE,
-            "item_schema": item_schema.model_dump(mode="json"),
         }
     }
 
@@ -188,105 +124,48 @@ def cursor_feed_operation(
     }
 
 
-def _json_sequence_record(value: object) -> bytes:
-    return _JSON_SEQUENCE_RECORD_SEPARATOR + canonical_json_bytes(value) + b"\n"
-
-
-def iter_complete_enumeration(
-    items: Iterable[object],
+def exact_set_page_operation(
     *,
-    query: Mapping[str, object],
-    item_schema: CompleteEnumerationItemSchema,
-) -> Iterator[bytes]:
-    """Drain one snapshot to transient storage, then emit its exact RFC 7464 stream.
+    authority: str,
+    cursor_parameter: str,
+    limit_parameter: str,
+    validator_header: str,
+) -> dict[str, Any]:
+    """Classify bounded traversal of one named immutable set authority."""
 
-    Draining before the first response byte keeps database cursor and transaction
-    lifetime under server control rather than consumer backpressure. The transient
-    file is operational state only and is removed when iteration ends.
-    """
-
-    begin = CompleteEnumerationBegin(
-        query=dict(query),
-        item_schema=item_schema,
-    )
-    digest = hashlib.sha256()
-    count = 0
-    with tempfile.TemporaryFile(mode="w+b") as snapshot:
-        for count, value in enumerate(items, start=1):
-            item = CompleteEnumerationItem(ordinal=count - 1, item=value)
-            encoded = canonical_json_bytes(item.model_dump(mode="json"))
-            digest.update(encoded)
-            snapshot.write(_JSON_SEQUENCE_RECORD_SEPARATOR + encoded + b"\n")
-        snapshot.seek(0)
-        yield _json_sequence_record(begin.model_dump(mode="json"))
-        while chunk := snapshot.read(64 * 1024):
-            yield chunk
-        end = CompleteEnumerationEnd(count=count, items_sha256=digest.hexdigest())
-        yield _json_sequence_record(end.model_dump(mode="json"))
+    return {
+        "x-riverhog-read-collection": {
+            "kind": "exact-set-page",
+            "authority": authority,
+            "cursor_parameter": cursor_parameter,
+            "limit_parameter": limit_parameter,
+            "validator_header": validator_header,
+        }
+    }
 
 
-class CompleteEnumerationReader:
-    """Incrementally validate one exact complete-enumeration stream."""
+def exact_authority_page_operation(
+    *,
+    authority: str,
+    authority_parameter: str | None,
+    cursor_parameter: str,
+    limit_parameter: str | None = None,
+    fixed_limit: int | None = None,
+) -> dict[str, Any]:
+    """Classify bounded traversal tied to one exact immutable authority."""
 
-    def __init__(
-        self,
-        chunks: Iterable[bytes],
-        *,
-        item_type: object,
-        expected_query: Mapping[str, object],
-        expected_item_schema: CompleteEnumerationItemSchema,
-    ) -> None:
-        self._chunks = iter(chunks)
-        self._item_adapter: TypeAdapter[Any] = TypeAdapter(item_type)
-        self._expected_query = dict(expected_query)
-        self._expected_item_schema = expected_item_schema
-        self.complete = False
-        self.count = 0
-        self.items_sha256: str | None = None
-        self._started = False
-
-    def __iter__(self) -> Iterator[Any]:
-        if self._started:
-            raise RuntimeError("complete-enumeration reader is single-use")
-        self._started = True
-        records = iter_json_sequence_records(self._chunks)
-        try:
-            first = next(records)
-        except StopIteration as exc:
-            raise ValueError("complete-enumeration stream has no begin frame") from exc
-        begin = CompleteEnumerationBegin.model_validate(first)
-        if begin.query != self._expected_query:
-            raise ValueError("complete-enumeration query identity differs")
-        if begin.item_schema != self._expected_item_schema:
-            raise ValueError("complete-enumeration item schema identity differs")
-
-        digest = hashlib.sha256()
-        ordinal = 0
-        for record in records:
-            frame_type = record.get("type") if isinstance(record, Mapping) else None
-            if frame_type == "end":
-                end = CompleteEnumerationEnd.model_validate(record)
-                if end.count != ordinal or end.items_sha256 != digest.hexdigest():
-                    raise ValueError("complete-enumeration terminal proof differs")
-                try:
-                    next(records)
-                except StopIteration:
-                    self.complete = True
-                    self.count = end.count
-                    self.items_sha256 = end.items_sha256
-                    return
-                raise ValueError("complete-enumeration stream continues after its terminal frame")
-            item = CompleteEnumerationItem.model_validate(record)
-            if item.ordinal != ordinal:
-                raise ValueError("complete-enumeration item ordinal is not contiguous")
-            digest.update(canonical_json_bytes(item.model_dump(mode="json")))
-            ordinal += 1
-            yield self._item_adapter.validate_python(item.item)
-        raise ValueError("complete-enumeration stream has no terminal frame")
-
-    def require_complete(self) -> None:
-        if not self.complete:
-            raise ValueError("complete-enumeration terminal proof was not consumed")
+    if (limit_parameter is None) == (fixed_limit is None):
+        raise ValueError("an exact authority page requires exactly one variable or fixed limit")
+    return {
+        "x-riverhog-read-collection": {
+            "kind": "exact-authority-page",
+            "authority": authority,
+            "authority_parameter": authority_parameter,
+            "cursor_parameter": cursor_parameter,
+            "limit_parameter": limit_parameter,
+            "fixed_limit": fixed_limit,
+        }
+    }
 
 
 def iter_json_sequence_records(chunks: Iterable[bytes]) -> Iterator[dict[str, Any]]:
@@ -634,6 +513,7 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
     "unauthorized": 401,
     "forbidden": 403,
     "not_found": 404,
+    "precondition_failed": 412,
     "method_not_allowed": 405,
     "length_required": 411,
     "conflict": 409,
@@ -644,6 +524,7 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
     "storage_hint_mismatch": 409,
     "submission_conflict": 409,
     "download_allowance_exceeded": 429,
+    "precondition_required": 428,
     "too_many_active_input_uploads": 429,
     "ingress_failed": 500,
     "internal_error": 500,
@@ -864,7 +745,6 @@ def parse_declared_error_payload(
 
 __all__ = [
     "CANONICAL_VISIBLE_TEXT_PATTERN",
-    "COMPLETE_ENUMERATION_FORMAT",
     "ERROR_STATUS_BY_CODE",
     "FRAMED_BODY_DECLARATION_LENGTH_BYTES",
     "FRAMED_BODY_FORMAT",
@@ -875,11 +755,6 @@ __all__ = [
     "QuotedSha256Identity",
     "Sha256Identity",
     "CanonicalVisibleText",
-    "CompleteEnumerationBegin",
-    "CompleteEnumerationEnd",
-    "CompleteEnumerationItem",
-    "CompleteEnumerationItemSchema",
-    "CompleteEnumerationReader",
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
@@ -892,18 +767,17 @@ __all__ = [
     "apply_openapi_error_contract",
     "canonical_json_bytes",
     "bounded_list_operation",
-    "complete_enumeration_operation",
-    "complete_enumeration_schema_identity",
     "cursor_feed_operation",
     "error_code_for_status",
     "error_payload",
+    "exact_authority_page_operation",
+    "exact_set_page_operation",
     "error_responses",
     "operation_interface",
     "operation_openapi",
     "inline_type_schema",
     "http_operation_for_request",
     "http_operation_inventory",
-    "iter_complete_enumeration",
     "iter_json_sequence_records",
     "parse_error_payload",
     "parse_declared_error_payload",

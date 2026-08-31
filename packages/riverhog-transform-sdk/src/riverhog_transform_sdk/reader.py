@@ -14,6 +14,7 @@ from riverhog_protocol.collection_workflows import (
     CollectionRootIdentity,
 )
 from riverhog_protocol.paths import CollectionId
+from riverhog_protocol.portable_collection import PortableCollectionInventoryPage
 
 from riverhog_transform_sdk.models import ClaimedArtifact
 
@@ -26,14 +27,14 @@ RetrievalPolicy = Literal["available-only", "allow"]
 class ClaimedCollectionApi(Protocol):
     def get_collection(self, collection_id: CollectionId) -> dict[str, Any]: ...
 
-    def stream_search(
+    def get_portable_collection_inventory(
         self,
-        query: str | None = None,
+        collection_id: CollectionId,
         *,
-        sort: str = "file_ref",
-        order: str = "asc",
-        collection: CollectionId | None = None,
-    ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
+        cursor: str | None = None,
+        limit: int = 100,
+        inventory_identity: str | None = None,
+    ) -> PortableCollectionInventoryPage: ...
 
     def plan_retrieval(
         self,
@@ -124,38 +125,45 @@ class ClaimedCollectionReader:
         self.api = api
 
     def inventory(self, *, include_control: bool = False) -> tuple[ClaimedArtifact, ...]:
-        artifacts: list[ClaimedArtifact] = []
+        return tuple(self.iter_inventory(include_control=include_control))
+
+    def iter_inventory(self, *, include_control: bool = False) -> Iterator[ClaimedArtifact]:
+        previous: ClaimedArtifact | None = None
         for root in self.inputs:
             self._verify_root(root)
-            with self.api.stream_search(
-                collection=root.collection_id,
-                sort="file_ref",
-                order="asc",
-            ) as rows:
-                for raw in rows:
-                    collection_id = _positive_int(
-                        raw.get("collection_id"),
-                        "inventory collection id",
-                    )
-                    if collection_id != root.collection_id:
-                        raise RuntimeError(
-                            "Riverhog search returned a file outside the claimed collection"
-                        )
-                    path = str(raw.get("path") or "")
+            cursor: str | None = None
+            inventory_identity: str | None = None
+            while True:
+                page = self.api.get_portable_collection_inventory(
+                    root.collection_id,
+                    cursor=cursor,
+                    limit=1000,
+                    inventory_identity=inventory_identity,
+                )
+                if inventory_identity is None:
+                    inventory_identity = page.authority.inventory_identity
+                elif page.authority.inventory_identity != inventory_identity:
+                    raise RuntimeError("claimed collection inventory identity changed")
+                for item in page.files:
+                    path = item.path
                     control = path in _CONTROL_PATHS or path.startswith("riverhog/")
                     artifact = ClaimedArtifact(
                         root=root,
                         path=path,
-                        bytes=_nonnegative_int(raw.get("bytes"), "artifact bytes"),
-                        sha256=str(raw.get("sha256") or ""),
+                        bytes=item.bytes,
+                        sha256=item.sha256,
                         control=control,
                     )
                     if include_control or not control:
-                        artifacts.append(artifact)
-        result = tuple(sorted(artifacts))
-        if len({current.key for current in result}) != len(result):
-            raise RuntimeError("claimed collection inventory repeats an artifact identity")
-        return result
+                        if previous is not None and artifact <= previous:
+                            raise RuntimeError(
+                                "claimed collection inventory is not canonical and unique"
+                            )
+                        previous = artifact
+                        yield artifact
+                if page.complete:
+                    break
+                cursor = page.next_cursor
 
     def prepare(
         self,
@@ -168,16 +176,13 @@ class ClaimedCollectionReader:
     ) -> ClaimedRetrieval:
         if lease_seconds < 1:
             raise ValueError("retrieval lease must be positive")
-        available = {current.key: current for current in self.inventory(include_control=True)}
-        selected = tuple(sorted(artifacts if artifacts is not None else self.inventory()))
+        if artifacts is None:
+            raise ValueError("claimed retrieval requires an explicit bounded artifact selection")
+        selected = tuple(sorted(artifacts))
         if not selected:
             raise ValueError("claimed retrieval requires at least one artifact")
         if len({current.key for current in selected}) != len(selected):
             raise ValueError("claimed retrieval artifacts must be unique")
-        for artifact in selected:
-            current = available.get(artifact.key)
-            if current != artifact:
-                raise ValueError("retrieval artifact is not the current claimed identity")
         refs = [(current.root.collection_id, current.path) for current in selected]
         plan = self.api.plan_retrieval(
             refs,

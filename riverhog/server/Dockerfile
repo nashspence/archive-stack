@@ -6,11 +6,9 @@ COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 WORKDIR /workspace
 COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
-    && mise install --locked minisign uv \
+    && mise install --locked uv \
     && mkdir -p /opt/riverhog-tools/bin \
-    && cp --preserve=mode,timestamps "$(mise which minisign)" /opt/riverhog-tools/bin/minisign \
     && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
-    && test "$(/opt/riverhog-tools/bin/minisign -v)" = "$(mise exec minisign -- minisign -v)" \
     && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
 
 
@@ -66,17 +64,12 @@ LABEL org.opencontainers.image.title="Riverhog" \
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
-COPY third_party/minisign/0.12/LICENSE /usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE
-RUN echo "01aa50818d6609e85a9610b7d04da037e8b28bcf3bb5b5b4963c0c3f7abdabbd  /usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE" \
-    | sha256sum -c -
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=locked-tools /opt/riverhog-tools/bin/minisign /usr/local/bin/minisign
-RUN test "$(minisign -v)" = "minisign 0.12" \
-    && ! command -v mise
+RUN ! command -v mise \
+    && ! command -v minisign
 
 COPY --from=build /opt/venv /opt/venv
 

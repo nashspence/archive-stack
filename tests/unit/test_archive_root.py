@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from riverhog_archive_contracts import format_archive_sequence
 from riverhog_core.archive_root import ArchiveRootPublisher
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -94,11 +95,13 @@ def test_root_publish_is_logically_idempotent_and_never_rewrites_manifest() -> N
     )
 
     first = publisher.publish(
+        archive_generation="a" * 64,
         archive_storage_prefix="archives/opaque",
         files=(file,),
         packs=((plan, pack),),
     )
     second = publisher.publish(
+        archive_generation="a" * 64,
         archive_storage_prefix="archives/opaque",
         files=(file,),
         packs=((plan, pack),),
@@ -106,4 +109,10 @@ def test_root_publish_is_logically_idempotent_and_never_rewrites_manifest() -> N
 
     assert first.manifest_bytes == second.manifest_bytes
     assert first.stored_sha256 == second.stored_sha256
-    assert len(store.objects) == 1
+    assert len(store.objects) == 3
+    assert first.volume_metadata[0].relative_path == (
+        f"metadata/volume-{format_archive_sequence(0)}.json.age"
+    )
+    assert first.volume_metadata[1].relative_path == (
+        f"metadata/volume-{format_archive_sequence(1)}.json.age"
+    )

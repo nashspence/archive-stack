@@ -17,24 +17,9 @@ from riverhog_core.ports.archive_store import (
 
 
 def archive_copy_is_complete(copy: CollectionArchiveCopyRecord) -> bool:
-    object_ids = {current.object_id for current in copy.objects}
-    provenance_kinds = {
-        current.kind for current in copy.objects if current.kind.startswith("provenance-")
-    }
-    provenance_required = copy.collection.provenance_mode != "omitted"
-    provenance_complete = (
-        {"provenance-index", "provenance-bundle"}.issubset(provenance_kinds)
-        if provenance_required
-        else not provenance_kinds
-    )
-    return bool(
-        copy.state == "uploaded"
-        and copy.last_verified_at
-        and {"manifest", "recovery-descriptor", "proof"}.issubset(object_ids)
-        and any(current.kind in {"pack", "segment"} for current in copy.objects)
-        and provenance_complete
-        and all(current.verified_at for current in copy.objects)
-    )
+    """Return the terminal authority established by bounded copy finalization."""
+
+    return bool(copy.state == "uploaded" and copy.last_uploaded_at and copy.last_verified_at)
 
 
 def archive_copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiveIdentity:

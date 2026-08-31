@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query
+from http_api_contracts import bounded_list_operation
 from riverhog_application_access import (
     ApplicationKeyId,
     ApplicationName,
@@ -18,22 +19,14 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import KeyManager
-from riverhog_api.complete_enumeration import (
-    CompleteEnumerationResponse,
-    bounded_list_operation,
-    complete_enumeration_operation,
-    complete_enumeration_response,
-)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.apps import (
-    AppAccessListItemOut,
     AppAccessListOut,
     AppAccessSetOut,
     AppKeyCreatedOut,
     AppKeyListOut,
     AppKeyOut,
     AppListOut,
-    AppSummaryOut,
     CreateAppKeyRequest,
     MutateAppAccessRequest,
     ReplaceAppAccessRequest,
@@ -45,7 +38,7 @@ router = APIRouter(tags=["apps"])
 @router.get(
     "/apps",
     response_model=AppListOut,
-    openapi_extra=bounded_list_operation(paired_operation_id="stream_apps"),
+    openapi_extra=bounded_list_operation(),
 )
 def list_apps(
     container: ContainerDep,
@@ -66,31 +59,6 @@ def list_apps(
             order=order,
             active=active,
         )
-    )
-
-
-@router.get(
-    "/apps/stream",
-    response_class=CompleteEnumerationResponse,
-    openapi_extra=complete_enumeration_operation(
-        paired_operation_id="list_apps",
-        item_type=AppSummaryOut,
-        schema_id="riverhog.application-summary/v1",
-    ),
-)
-def stream_apps(
-    container: ContainerDep,
-    _principal: KeyManager,
-    sort: Annotated[ApplicationSort, Query()] = "name",
-    order: Annotated[SortOrder, Query()] = "asc",
-    q: str | None = Query(None),
-    active: bool | None = Query(None),
-) -> Response:
-    return complete_enumeration_response(
-        container.app_keys.iter_apps(q=q, sort=sort, order=order, active=active),
-        query={"q": q, "sort": sort, "order": order, "active": active},
-        item_type=AppSummaryOut,
-        schema_id="riverhog.application-summary/v1",
     )
 
 
@@ -130,7 +98,7 @@ def rotate_app_key(
 @router.get(
     "/app-key-access",
     response_model=AppAccessListOut,
-    openapi_extra=bounded_list_operation(paired_operation_id="stream_app_key_access"),
+    openapi_extra=bounded_list_operation(),
 )
 def list_app_key_access(
     container: ContainerDep,
@@ -159,54 +127,6 @@ def list_app_key_access(
             resource=resource,
             active=active,
         )
-    )
-
-
-@router.get(
-    "/app-key-access/stream",
-    response_class=CompleteEnumerationResponse,
-    openapi_extra=complete_enumeration_operation(
-        paired_operation_id="list_app_key_access",
-        item_type=AppAccessListItemOut,
-        schema_id="riverhog.application-key-access/v1",
-    ),
-)
-def stream_app_key_access(
-    container: ContainerDep,
-    _principal: KeyManager,
-    sort: Annotated[ApplicationAccessSort, Query()] = "permission",
-    order: Annotated[SortOrder, Query()] = "asc",
-    q: str | None = Query(None),
-    app: Annotated[ApplicationName | None, Query()] = None,
-    key_id: Annotated[ApplicationKeyId | None, Query(alias="key")] = None,
-    permission: Annotated[ApplicationPermission | None, Query()] = None,
-    resource: Annotated[ApplicationResource | None, Query()] = None,
-    active: bool | None = Query(None),
-) -> Response:
-    query = {
-        "q": q,
-        "sort": sort,
-        "order": order,
-        "app": app,
-        "key": key_id,
-        "permission": permission,
-        "resource": resource,
-        "active": active,
-    }
-    return complete_enumeration_response(
-        container.app_keys.iter_access(
-            q=q,
-            sort=sort,
-            order=order,
-            app=app,
-            key_id=key_id,
-            permission=permission,
-            resource=resource,
-            active=active,
-        ),
-        query=query,
-        item_type=AppAccessListItemOut,
-        schema_id="riverhog.application-key-access/v1",
     )
 
 
@@ -275,7 +195,7 @@ def remove_app_key_access(
 @router.get(
     "/apps/{app}/keys",
     response_model=AppKeyListOut,
-    openapi_extra=bounded_list_operation(paired_operation_id="stream_app_keys"),
+    openapi_extra=bounded_list_operation(),
 )
 def list_app_keys(
     app: ApplicationName,
@@ -298,32 +218,6 @@ def list_app_keys(
             order=order,
             active=active,
         )
-    )
-
-
-@router.get(
-    "/apps/{app}/keys/stream",
-    response_class=CompleteEnumerationResponse,
-    openapi_extra=complete_enumeration_operation(
-        paired_operation_id="list_app_keys",
-        item_type=AppKeyOut,
-        schema_id="riverhog.application-key/v1",
-    ),
-)
-def stream_app_keys(
-    app: ApplicationName,
-    container: ContainerDep,
-    _principal: KeyManager,
-    sort: Annotated[ApplicationKeySort, Query()] = "created_at",
-    order: Annotated[SortOrder, Query()] = "desc",
-    q: str | None = Query(None),
-    active: bool | None = Query(None),
-) -> Response:
-    return complete_enumeration_response(
-        container.app_keys.iter_keys(app=app, q=q, sort=sort, order=order, active=active),
-        query={"app": app, "q": q, "sort": sort, "order": order, "active": active},
-        item_type=AppKeyOut,
-        schema_id="riverhog.application-key/v1",
     )
 
 

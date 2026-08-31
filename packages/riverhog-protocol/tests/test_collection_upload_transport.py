@@ -8,15 +8,14 @@ from riverhog_protocol import (
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
-    CollectionUploadUnitDocument,
-    CollectionUploadVolumeDocument,
-    CollectionUploadVolumeSetDocument,
-    CollectionUploadVolumeWorkDocument,
+    CollectionUploadUnitAssignmentDocument,
+    CollectionUploadWorkBatchDocument,
     validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
 from riverhog_protocol.manifest import collection_content_identity
+from riverhog_protocol.raw_ingress import ordered_raw_part_commitment
 
 
 def test_server_upload_creation_identity_is_not_public_protocol() -> None:
@@ -42,6 +41,15 @@ def _constraints(*, pack_member_bytes: int = 1024, raw_part_bytes: int = 65536) 
     return {
         "pack_member_bytes": pack_member_bytes,
         "raw_part_plaintext_bytes": raw_part_bytes,
+    }
+
+
+def _raw_parts(*sha256s: str, part_plaintext_bytes: int = 65536) -> dict[str, object]:
+    count, commitment = ordered_raw_part_commitment(sha256s)
+    return {
+        "part_plaintext_bytes": part_plaintext_bytes,
+        "part_count": count,
+        "ordered_sha256": commitment,
     }
 
 
@@ -103,21 +111,19 @@ def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
         sha256="a" * 64,
         archive_objects=(
             CollectionUploadCustodyObjectDocument(
-                volume_id="segment-000000000001",
+                volume_id="segment-" + "0" * 63 + "1",
                 sealed_receipt_sha256="b" * 64,
             ),
             CollectionUploadCustodyObjectDocument(
-                volume_id="segment-000000000002",
+                volume_id="segment-" + "0" * 63 + "2",
                 sealed_receipt_sha256="c" * 64,
             ),
         ),
     )
 
     assert receipt.path == "video/source/archive.mkv"
-    assert [item.volume_id for item in receipt.archive_objects] == [
-        "segment-000000000001",
-        "segment-000000000002",
-    ]
+    assert receipt.archive_object_count == 2
+    assert len(receipt.archive_object_set_sha256) == 64
     assert (
         CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
             receipt.model_dump_json()
@@ -169,10 +175,7 @@ def test_direct_ingress_registration_constraints_bind_raw_part_declarations() ->
     raw = {
         **_file("video.bin"),
         "bytes": 65537,
-        "raw_parts": {
-            "part_plaintext_bytes": 65536,
-            "sha256s": ["b" * 64, "c" * 64],
-        },
+        "raw_parts": _raw_parts("b" * 64, "c" * 64),
     }
     batch = CollectionUploadFileBatchDocument.model_validate({"files": [raw]})
     constraints = CollectionUploadRegistrationConstraintsDocument.model_validate(
@@ -196,19 +199,55 @@ def test_direct_ingress_registration_constraints_expose_only_producer_policy() -
 
 
 def test_server_planned_upload_work_uses_protocol_owned_exact_identities() -> None:
-    volume = CollectionUploadVolumeDocument(
-        volume_id="pack-000000000003",
-        sequence=3,
-        kind="pack",
+    assignment = CollectionUploadUnitAssignmentDocument(
+        volume={
+            "volume_id": "pack-" + "0" * 63 + "3",
+            "sequence": 3,
+            "kind": "pack",
+        },
         plan_sha256="b" * 64,
-        plaintext_bytes=2048,
-        source_bytes=5,
-        units=[
-            CollectionUploadUnitDocument(
-                unit=0,
-                payload_bytes=5,
-                plaintext_bytes=2048,
-                sources=[
+        unit={
+            "unit": 0,
+            "payload_bytes": 5,
+            "plaintext_bytes": 2048,
+            "sources": [
+                {
+                    "path": "camera/clip.mp4",
+                    "offset": 0,
+                    "bytes": 5,
+                    "artifact_sha256": "a" * 64,
+                }
+            ],
+            "state": "pending",
+        },
+    )
+
+    assert (
+        CollectionUploadUnitAssignmentDocument.model_validate_json(assignment.model_dump_json())
+        == assignment
+    )
+    assert assignment.unit.sources[0].path == "camera/clip.mp4"
+
+    changed = assignment.model_dump(mode="python")
+    changed["unit"]["payload_bytes"] = 4
+    with pytest.raises(ValidationError, match="source bytes"):
+        CollectionUploadUnitAssignmentDocument.model_validate(changed)
+
+
+def test_bounded_upload_work_batch_binds_assignment_and_checkpoint_state() -> None:
+    assignment = CollectionUploadUnitAssignmentDocument.model_validate(
+        {
+            "volume": {
+                "volume_id": "pack-" + "0" * 64,
+                "sequence": 0,
+                "kind": "pack",
+            },
+            "plan_sha256": "b" * 64,
+            "unit": {
+                "unit": 0,
+                "payload_bytes": 5,
+                "plaintext_bytes": 5,
+                "sources": [
                     {
                         "path": "camera/clip.mp4",
                         "offset": 0,
@@ -216,70 +255,27 @@ def test_server_planned_upload_work_uses_protocol_owned_exact_identities() -> No
                         "artifact_sha256": "a" * 64,
                     }
                 ],
-            )
-        ],
-    )
-
-    assert CollectionUploadVolumeDocument.model_validate_json(volume.model_dump_json()) == volume
-    assert volume.units[0].sources[0].path == "camera/clip.mp4"
-
-    changed = volume.model_dump(mode="python")
-    changed["units"][0]["payload_bytes"] = 4
-    with pytest.raises(ValidationError, match="source bytes"):
-        CollectionUploadVolumeDocument.model_validate(changed)
-
-
-def test_complete_upload_work_set_binds_order_and_checkpoint_state() -> None:
-    volume = CollectionUploadVolumeWorkDocument.model_validate(
-        {
-            "volume_id": "pack-000000000000",
-            "sequence": 0,
-            "kind": "pack",
-            "state": "planned",
-            "plan_sha256": "b" * 64,
-            "plaintext_bytes": 5,
-            "source_bytes": 5,
-            "units": [
-                {
-                    "unit": 0,
-                    "payload_bytes": 5,
-                    "plaintext_bytes": 5,
-                    "sources": [
-                        {
-                            "path": "camera/clip.mp4",
-                            "offset": 0,
-                            "bytes": 5,
-                            "artifact_sha256": "a" * 64,
-                        }
-                    ],
-                    "state": "pending",
-                }
-            ],
+                "state": "pending",
+            },
         }
     )
-    complete = CollectionUploadVolumeSetDocument(collection_id=7, volumes=(volume,))
+    batch = CollectionUploadWorkBatchDocument(
+        collection_id=7,
+        planning_complete=False,
+        complete=False,
+        committed_payload_bytes=0,
+        work=[assignment],
+    )
 
-    assert complete.volumes == (volume,)
-    changed = volume.model_dump(mode="python")
-    changed["state"] = "uploading"
-    assert CollectionUploadVolumeWorkDocument.model_validate(changed).state == "uploading"
-    changed["units"][0]["state"] = "committed"
-    changed["state"] = "planned"
-    with pytest.raises(ValidationError, match="cannot contain committed"):
-        CollectionUploadVolumeWorkDocument.model_validate(changed)
-    changed["state"] = "uploading"
-    with pytest.raises(ValidationError, match="pending unit"):
-        CollectionUploadVolumeWorkDocument.model_validate(changed)
-    changed["state"] = "sealed"
-    assert CollectionUploadVolumeWorkDocument.model_validate(changed).state == "sealed"
-    changed["state"] = "failed"
-    with pytest.raises(ValidationError):
-        CollectionUploadVolumeWorkDocument.model_validate(changed)
-
-    repeated = complete.model_dump(mode="python")
-    repeated["volumes"] = [*repeated["volumes"], repeated["volumes"][0]]
-    with pytest.raises(ValidationError, match="consecutive"):
-        CollectionUploadVolumeSetDocument.model_validate(repeated)
+    assert batch.work == [assignment]
+    repeated = batch.model_dump(mode="python")
+    repeated["work"] = [repeated["work"][0], repeated["work"][0]]
+    with pytest.raises(ValidationError, match="unique"):
+        CollectionUploadWorkBatchDocument.model_validate(repeated)
+    completed = batch.model_dump(mode="python")
+    completed["complete"] = True
+    with pytest.raises(ValidationError, match="completion"):
+        CollectionUploadWorkBatchDocument.model_validate(completed)
 
 
 @pytest.mark.parametrize(
@@ -307,17 +303,17 @@ def test_direct_ingress_rejects_unsatisfiable_raw_part_constraints(
 @pytest.mark.parametrize(
     "file_payload",
     (
-        {**_file("small.bin"), "raw_parts": {"part_plaintext_bytes": 65536, "sha256s": ["b" * 64]}},
+        {**_file("small.bin"), "raw_parts": _raw_parts("b" * 64)},
         {**_file("large.bin"), "bytes": 1024},
         {
             **_file("large.bin"),
             "bytes": 1024,
-            "raw_parts": {"part_plaintext_bytes": 131072, "sha256s": ["b" * 64]},
+            "raw_parts": _raw_parts("b" * 64, part_plaintext_bytes=131072),
         },
         {
             **_file("large.bin"),
             "bytes": 65537,
-            "raw_parts": {"part_plaintext_bytes": 65536, "sha256s": ["b" * 64]},
+            "raw_parts": _raw_parts("b" * 64),
         },
     ),
 )

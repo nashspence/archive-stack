@@ -145,7 +145,7 @@ _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
     ("riverhog", "resourcesync_change_list"): {"after"},
     ("riverhog", "trace_collection_file_provenance"): {"page", "per_page"},
-    ("stove0", "get_artifact_selection"): {"page", "per_page"},
+    ("stove0", "get_artifact_selection"): {"continuation"},
     ("stove0", "get_recipe"): {"revision"},
     ("stove0", "list_events"): {"after", "limit"},
 }
@@ -291,7 +291,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 archive_phase_updated_at, archive_attempt_count,
                 archive_next_attempt_at, archive_last_attempt_at, archive_failure,
                 archive_storage_prefix, collection_manifest_bytes_b64,
-                collection_manifest_proof_bytes_b64, planner_checkpoint_json,
+                planner_checkpoint_json,
                 file_count, file_bytes, custodied_file_count, custodied_file_bytes,
                 search_text
             )
@@ -305,7 +305,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                    'archive', {timestamp}, {timestamp}, NULL,
                    CASE WHEN g = {rows} THEN 'planning' ELSE 'orphaned' END,
                    {timestamp}, 0, NULL, NULL, NULL, 'qualification/' || g,
-                   NULL, NULL, '{{}}', g % 32, g * 1024, 0, 0,
+                   NULL, '{{}}', g % 32, g * 1024, 0, 0,
                    'source-' || lpad(g::text, 6, '0')
             FROM generate_series(1, {rows}) AS g
             """,

@@ -888,7 +888,8 @@ def _require_access_targets(session: Session, access: Sequence[ApplicationAccess
                 raise NotFound(f"tag not found: {tag}")
             continue
         collection_id = int(current.resource.removeprefix("collection:"))
-        if session.get(CollectionRecord, collection_id) is None:
+        collection = session.get(CollectionRecord, collection_id)
+        if collection is None or not collection.is_published:
             raise NotFound(f"collection not found: {collection_id}")
 
 

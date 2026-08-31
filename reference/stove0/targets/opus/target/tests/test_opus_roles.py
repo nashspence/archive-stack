@@ -187,7 +187,6 @@ def test_opus_execution_identity_is_the_canonical_semantic_result() -> None:
         bytes=12,
         sha256=_sha("3"),
         media_type="audio/ogg",
-        derived_from=("source",),
     )
     expected = canonical_json_sha256(
         {

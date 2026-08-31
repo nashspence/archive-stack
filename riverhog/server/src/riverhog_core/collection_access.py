@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from riverhog_application_access import permission_resources as access_permission_resources
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import exists, false, or_, select, true
+from sqlalchemy import and_, exists, false, or_, select, true
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -17,6 +17,7 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionRecord, CollectionTagRecord
+from riverhog_core.catalog_workflow_models import CollectionTransformCapabilityArtifactRecord
 from riverhog_core.runtime_config import RuntimeConfig
 
 
@@ -40,7 +41,15 @@ class SqlAlchemyCollectionAccessService:
         except PathNormalizationError as exc:
             raise BadRequest(str(exc)) from exc
         with session_scope(self._session_factory) as session:
-            if session.get(CollectionRecord, normalized) is None:
+            if (
+                session.scalar(
+                    select(CollectionRecord.id).where(
+                        CollectionRecord.id == normalized,
+                        CollectionRecord.is_published.is_(True),
+                    )
+                )
+                is None
+            ):
                 raise NotFound(f"collection not found: {normalized}")
             require_collection_access(session, principal, permission, normalized)
         return normalized
@@ -52,7 +61,17 @@ def require_collection_access(
     permission: str,
     collection_id: int,
 ) -> None:
+    published = session.scalar(
+        select(CollectionRecord.id).where(
+            CollectionRecord.id == collection_id,
+            CollectionRecord.is_published.is_(True),
+        )
+    )
+    if published is None:
+        raise NotFound(f"collection not found: {collection_id}")
     if principal is None:
+        return
+    if _capability_contains_collection(session, principal, collection_id):
         return
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources or f"{COLLECTION_PREFIX}{collection_id}" in resources:
@@ -93,14 +112,20 @@ def collection_access_filter(
     principal: ApplicationPrincipal | None,
     permission: str,
 ) -> ColumnElement[bool]:
+    published = column.in_(
+        select(CollectionRecord.id).where(CollectionRecord.is_published.is_(True))
+    )
     if principal is None:
-        return true()
+        return published
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources:
-        return true()
+        return published
     allowed_collection_ids = collection_ids(resources)
     allowed_tag_ids = tag_ids(resources)
     filters: list[ColumnElement[bool]] = []
+    capability_filter = _capability_collection_filter(column, principal)
+    if capability_filter is not None:
+        filters.append(capability_filter)
     if allowed_collection_ids:
         filters.append(column.in_(allowed_collection_ids))
     if allowed_tag_ids:
@@ -112,7 +137,43 @@ def collection_access_filter(
                 )
             )
         )
-    return or_(*filters) if filters else false()
+    return and_(published, or_(*filters)) if filters else false()
+
+
+def _capability_contains_collection(
+    session: Session,
+    principal: ApplicationPrincipal,
+    collection_id: int,
+) -> bool:
+    capability_id = principal.artifact_scope_capability_id
+    if capability_id is None:
+        return False
+    return (
+        session.scalar(
+            select(CollectionTransformCapabilityArtifactRecord.capability_id)
+            .where(
+                CollectionTransformCapabilityArtifactRecord.capability_id == capability_id,
+                CollectionTransformCapabilityArtifactRecord.collection_id == collection_id,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _capability_collection_filter(
+    column: ColumnElement[int] | InstrumentedAttribute[int],
+    principal: ApplicationPrincipal,
+) -> ColumnElement[bool] | None:
+    capability_id = principal.artifact_scope_capability_id
+    if capability_id is None:
+        return None
+    return exists(
+        select(1).where(
+            CollectionTransformCapabilityArtifactRecord.capability_id == capability_id,
+            CollectionTransformCapabilityArtifactRecord.collection_id == column,
+        )
+    )
 
 
 def tag_access_filter(

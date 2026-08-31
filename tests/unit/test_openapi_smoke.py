@@ -3,8 +3,6 @@ from __future__ import annotations
 from riverhog_api.app import create_app
 from riverhog_api.mappers import map_collection
 from riverhog_api.schemas.workflows import (
-    CollectionArtifactIdentityIn,
-    CollectionRootIdentityIn,
     OperationIdentityIn,
     ProcessingClaimCreateIn,
     ProcessingClaimPlanSealIn,
@@ -16,6 +14,7 @@ from riverhog_protocol import (
     RETRIEVAL_FILE_BATCH_MAX,
     canonical_json_sha256,
 )
+from riverhog_protocol.collection_workflow_transport import ExactSetAuthorityDocument
 from riverhog_protocol.lifecycle_events import RIVERHOG_EVENT_TYPES
 
 
@@ -43,8 +42,7 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/collection-upload-sessions/{collection_id}/files",
         "/v1/collection-upload-sessions/{collection_id}/complete",
         "/v1/collection-upload-sessions/{collection_id}/cancel",
-        "/v1/collection-upload-sessions/{collection_id}/volumes",
-        "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
+        "/v1/collection-upload-sessions/{collection_id}/work",
         "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "/v1/collections/{collection_id}",
         "/v1/collections/{collection_id}/provenance/files",
@@ -174,7 +172,7 @@ def test_collection_deletion_plan_types_the_retirement_evidence_reference() -> N
         "claim_id",
         "execution_id",
         "fence",
-        "outcomes_sha256",
+        "outcomes",
         "output_collection_id",
         "work_id",
     }
@@ -192,20 +190,11 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
         == RETRIEVAL_FILE_BATCH_MAX
     )
 
-    roots = [
-        CollectionRootIdentityIn(
-            collection_id=index,
-            archive_root_sha256="1" * 64,
-            content_identity="2" * 64,
-        )
-        for index in range(1, 1002)
-    ]
     work_document = {"format": "fixture-work/v1"}
     claim = ProcessingClaimCreateIn(
         work_id="3" * 64,
         work_document=work_document,
         work_document_sha256=canonical_json_sha256(work_document),
-        inputs=roots,
     )
     controller_evidence = {"format": "fixture-controller-evidence/v1"}
     sealed = ProcessingClaimPlanSealIn(
@@ -214,19 +203,12 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
         controller_evidence=controller_evidence,
         controller_evidence_sha256=canonical_json_sha256(controller_evidence),
         operation=OperationIdentityIn(id="fixture.operation/v1", sha256="7" * 64),
-        input_artifacts=[
-            CollectionArtifactIdentityIn(
-                collection=roots[0],
-                path="fixture.bin",
-                bytes=1,
-                sha256="8" * 64,
-            )
-        ],
-        output_tags=[f"fixture-tag-{index:03}" for index in range(101)],
     )
 
-    assert len(claim.inputs) == 1001
-    assert len(sealed.output_tags) == 101
+    logical_authority = ExactSetAuthorityDocument(count=10**100, sha256="8" * 64)
+    assert claim.work_id == "3" * 64
+    assert sealed.operation.id == "fixture.operation/v1"
+    assert logical_authority.count == 10**100
 
 
 def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() -> None:
@@ -235,7 +217,7 @@ def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() ->
     create = schemas["ProcessingClaimCreateDocument"]["properties"]
     settle = schemas["ProcessingClaimSettleDocument"]["properties"]
     claim = schemas["ProcessingClaimDocument"]["properties"]
-    assert create["inputs"]["items"]["$ref"].endswith("/CollectionRootIdentityDocument")
+    assert "inputs" not in create
     assert create["work_document"] == {
         "additionalProperties": True,
         "type": "object",
@@ -243,7 +225,12 @@ def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() ->
     }
     assert settle["derivation"]["$ref"].endswith("/CollectionDerivationDocument")
     assert claim["plan"]["anyOf"][0]["$ref"].endswith("/ProcessingClaimPlanDocument")
-    assert claim["outcomes"]["items"]["$ref"].endswith("/ProcessingOutcomeIdentityDocument")
+    assert claim["inputs"]["$ref"].endswith("/ReceivingSetDocument")
+    assert claim["outcomes"]["$ref"].endswith("/OutcomeSetDocument")
+    plan = schemas["ProcessingClaimPlanDocument"]["properties"]
+    assert plan["inputs"]["$ref"].endswith("/ExactSetAuthorityDocument")
+    assert plan["artifacts"]["$ref"].endswith("/ArtifactSetAuthorityDocument")
+    assert plan["output_tags"]["$ref"].endswith("/ExactSetAuthorityDocument")
     assert (
         "stove0"
         not in str(
@@ -372,6 +359,7 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
             created_at="2026-07-26T20:00:00.000000Z",
             tag_count=1,
             content_identity="1" * 64,
+            tag_set_identity="3" * 64,
             archive_root_sha256="2" * 64,
             encryption_format="age-v1-scrypt",
             passphrase_id="openapi-test-key-v1",

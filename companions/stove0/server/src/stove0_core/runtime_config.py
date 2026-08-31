@@ -37,6 +37,8 @@ class Stove0RuntimeConfig:
     recipes_path: Path
     observers: dict[str, EndpointRegistration]
     targets: dict[str, EndpointRegistration]
+    target_callback_base_url: str
+    target_callback_allow_insecure_http: bool
     workspace_assurance: Literal["encrypted", "ephemeral"]
     claim_lease_seconds: int
     capability_ttl_seconds: int
@@ -67,6 +69,12 @@ class Stove0RuntimeConfig:
         assurance = values.get("STOVE0_WORKSPACE_ASSURANCE", "encrypted").strip().casefold()
         if assurance not in {"encrypted", "ephemeral"}:
             raise ValueError("STOVE0_WORKSPACE_ASSURANCE must be encrypted or ephemeral")
+        targets = _registrations(values, "STOVE0_TARGETS_JSON")
+        callback_base_url = values.get("STOVE0_TARGET_CALLBACK_BASE_URL", "").strip()
+        if targets and not callback_base_url:
+            raise ValueError(
+                "STOVE0_TARGET_CALLBACK_BASE_URL is required when targets are configured"
+            )
         return cls(
             database_url=database_url,
             api_token=api_token,
@@ -83,7 +91,13 @@ class Stove0RuntimeConfig:
                 "STOVE0_OBSERVERS_JSON",
                 semantic_validators=True,
             ),
-            targets=_registrations(values, "STOVE0_TARGETS_JSON"),
+            targets=targets,
+            target_callback_base_url=callback_base_url or "https://stove0.invalid",
+            target_callback_allow_insecure_http=_boolean(
+                values,
+                "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP",
+                False,
+            ),
             workspace_assurance=cast(
                 Literal["encrypted", "ephemeral"],
                 assurance,

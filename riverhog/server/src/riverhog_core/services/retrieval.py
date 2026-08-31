@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -8,18 +10,32 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Literal, cast
 
-from http_api_contracts import closed_literal_values
+from http_api_contracts import canonical_json_bytes, closed_literal_values
 from riverhog_protocol import (
+    ImmutableFileIdentityDocument,
     PortableCollectionFile,
     PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
     RetrievalFileReferenceSetDocument,
     SortOrder,
 )
-from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
-from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
+from riverhog_protocol.errors import (
+    BadRequest,
+    Conflict,
+    InvalidState,
+    NotFound,
+    PreconditionFailed,
+)
+from riverhog_protocol.paths import (
+    PathNormalizationError,
+    normalize_collection_id,
+    relpath_sort_key,
+    validate_canonical_relpath,
+)
 from sqlalchemy import asc, case, delete, desc, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 from state_schema import read_snapshot
@@ -78,6 +94,51 @@ from riverhog_core.throughput import (
 )
 
 _DATA_KINDS = {"pack", "segment"}
+_INVENTORY_PAGE_LIMIT = 1000
+
+
+def _encode_inventory_cursor(
+    *,
+    collection_id: int,
+    inventory_identity: str,
+    after: str,
+) -> str:
+    payload = canonical_json_bytes(
+        {
+            "format": "riverhog-private-inventory-cursor/v1",
+            "collection_id": collection_id,
+            "inventory_identity": inventory_identity,
+            "after": after,
+        }
+    )
+    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+
+def _decode_inventory_cursor(cursor: str) -> tuple[int, str, str]:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
+        if not isinstance(payload, dict) or set(payload) != {
+            "format",
+            "collection_id",
+            "inventory_identity",
+            "after",
+        }:
+            raise ValueError
+        if payload["format"] != "riverhog-private-inventory-cursor/v1":
+            raise ValueError
+        collection_id = normalize_collection_id(payload["collection_id"])
+        inventory_identity = str(payload["inventory_identity"])
+        if len(inventory_identity) != 64 or any(
+            character not in "0123456789abcdef" for character in inventory_identity
+        ):
+            raise ValueError
+        after = validate_canonical_relpath(str(payload["after"]))
+    except (binascii.Error, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BadRequest("collection inventory cursor is invalid") from exc
+    return collection_id, inventory_identity, after
+
+
 _CACHE_SORT_FIELDS = closed_literal_values(RetrievalCacheSort)
 _CACHE_STATES = closed_literal_values(RetrievalCacheState)
 _CACHE_PROTECTION_FILTERS = closed_literal_values(RetrievalCacheProtection)
@@ -158,9 +219,9 @@ class SqlAlchemyRetrievalService:
                 ),
                 provenance_identity=collection.provenance_identity,
             )
-            inventory_identity = collection.inventory_identity
             file_count = int(collection.file_count)
             file_bytes = int(collection.file_bytes)
+            inventory_identity = collection.inventory_identity
 
         def files() -> Iterator[PortableCollectionFile]:
             statement = (
@@ -182,6 +243,103 @@ class SqlAlchemyRetrievalService:
                     )
 
         return header, files(), inventory_identity, file_count, file_bytes
+
+    def collection_inventory_page(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None,
+        limit: int,
+        expected_identity: str | None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> PortableCollectionInventoryPage:
+        """Read one bounded page from one immutable collection inventory."""
+
+        normalized_id = _normalize_collection_id_or_raise(collection_id)
+        if limit < 1 or limit > _INVENTORY_PAGE_LIMIT:
+            raise BadRequest("collection inventory limit must be between 1 and 1000")
+        if principal is not None and principal.has_artifact_scope:
+            raise NotFound(f"collection manifest not found: {normalized_id}")
+
+        cursor_after: str | None = None
+        cursor_identity: str | None = None
+        if cursor is not None:
+            cursor_collection, cursor_identity, cursor_after = _decode_inventory_cursor(cursor)
+            if cursor_collection != normalized_id:
+                raise PreconditionFailed(
+                    "collection inventory cursor belongs to another collection"
+                )
+
+        with read_snapshot(self._session_factory) as session:
+            collection = session.get(CollectionRecord, normalized_id)
+            if collection is None:
+                raise NotFound(f"collection not found: {normalized_id}")
+            require_collection_access(session, principal, CATALOG_READ, normalized_id)
+            inventory_identity = str(collection.inventory_identity)
+            if expected_identity is not None and expected_identity != inventory_identity:
+                raise PreconditionFailed("collection inventory identity changed")
+            if cursor_identity is not None and cursor_identity != inventory_identity:
+                raise PreconditionFailed("collection inventory cursor is stale")
+
+            header = PortableCollectionHeader(
+                collection=normalized_id,
+                content_identity=collection.content_identity,
+                encryption_format=collection.encryption_format,
+                passphrase_id=collection.passphrase_id,
+                provenance_mode=cast(
+                    Literal["captured", "mixed", "omitted"],
+                    collection.provenance_mode,
+                ),
+                provenance_identity=collection.provenance_identity,
+            )
+            file_count = int(collection.file_count)
+            file_bytes = int(collection.file_bytes)
+            statement = (
+                select(
+                    CollectionFileRecord.path,
+                    CollectionFileRecord.bytes,
+                    CollectionFileRecord.sha256,
+                )
+                .where(CollectionFileRecord.collection_id == normalized_id)
+                .order_by(CollectionFileRecord.path_sort_key)
+                .limit(limit + 1)
+            )
+            if cursor_after is not None:
+                statement = statement.where(
+                    CollectionFileRecord.path_sort_key > relpath_sort_key(cursor_after)
+                )
+            rows = list(session.execute(statement).tuples())
+
+        has_more = len(rows) > limit
+        selected = rows[:limit]
+        files = [
+            ImmutableFileIdentityDocument(
+                path=str(path),
+                bytes=int(byte_count),
+                sha256=str(sha256),
+            )
+            for path, byte_count, sha256 in selected
+        ]
+        next_cursor = (
+            _encode_inventory_cursor(
+                collection_id=normalized_id,
+                inventory_identity=inventory_identity,
+                after=files[-1].path,
+            )
+            if has_more and files
+            else None
+        )
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=header,
+                inventory_identity=inventory_identity,
+                file_count=file_count,
+                file_bytes=file_bytes,
+            ),
+            files=files,
+            next_cursor=next_cursor,
+            complete=not has_more,
+        )
 
     def resource_list_page(
         self,

@@ -46,6 +46,8 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             "STOVE0_TARGETS_JSON": (
                 '{"target":{"base_url":"https://target.invalid","allow_insecure_http":false}}'
             ),
+            "STOVE0_TARGET_CALLBACK_BASE_URL": "http://stove0.internal:8080",
+            "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP": "true",
         }
     )
 
@@ -61,6 +63,8 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.targets["target"].base_url == "https://target.invalid"
     assert config.targets["target"].allow_insecure_http is False
     assert config.targets["target"].semantic_validator_providers == ()
+    assert config.target_callback_base_url == "http://stove0.internal:8080"
+    assert config.target_callback_allow_insecure_http is True
     assert config.workspace_assurance == "ephemeral"
     assert config.claim_lease_seconds == 240
     assert config.capability_ttl_seconds == 120

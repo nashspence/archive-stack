@@ -583,8 +583,14 @@ def _measure_http_path(
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
-        with api.stream_tags(sort="id", order="asc") as items:
-            tag_rows = sum(1 for _item in items)
+        tag_rows = 0
+        page = 1
+        while True:
+            payload = api.list_tags(page=page, per_page=100, sort="id", order="asc")
+            tag_rows += len(payload.get("tags", []))
+            if page >= int(payload.get("pages", 0)):
+                break
+            page += 1
         tags_ms = (time.perf_counter() - started) * 1000
         _current, tags_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -592,8 +598,22 @@ def _measure_http_path(
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
-        with api.stream_portable_collection_inventory(1) as inventory:
-            inventory_rows = sum(1 for _file in inventory)
+        inventory_rows = 0
+        cursor: str | None = None
+        inventory_identity: str | None = None
+        while True:
+            inventory = api.get_portable_collection_inventory(
+                1,
+                cursor=cursor,
+                limit=1000,
+                inventory_identity=inventory_identity,
+            )
+            if inventory_identity is None:
+                inventory_identity = inventory.authority.inventory_identity
+            inventory_rows += len(inventory.files)
+            if inventory.complete:
+                break
+            cursor = inventory.next_cursor
         inventory_ms = (time.perf_counter() - started) * 1000
         _current, inventory_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -604,14 +624,13 @@ def _measure_http_path(
         with httpx.Client(base_url=base_url, headers=headers, timeout=30) as raw_client:
             with raw_client.stream(
                 "GET",
-                "/v1/tags/stream",
-                params={"sort": "id", "order": "asc"},
-                headers={"Accept": "application/json-seq"},
+                "/v1/tags",
+                params={"page": 1, "per_page": 100, "sort": "id", "order": "asc"},
             ) as response:
                 response.raise_for_status()
                 first_chunk = next(response.iter_bytes())
                 if not first_chunk:
-                    raise QualificationError("complete stream emitted an empty first chunk")
+                    raise QualificationError("bounded page emitted an empty first chunk")
                 time.sleep(0.1)
                 transactions_while_consumer_paused = _open_transactions(
                     admin,
@@ -643,7 +662,7 @@ def _measure_http_path(
     finally:
         _stop_http_server(restarted, restarted_thread)
     return {
-        "official_client_complete_stream": {
+        "official_client_bounded_pages": {
             "rows": tag_rows,
             "total_ms": round(tags_ms, 3),
             "peak_application_bytes": tags_peak,

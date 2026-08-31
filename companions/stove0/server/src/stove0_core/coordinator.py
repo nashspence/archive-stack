@@ -8,7 +8,7 @@ ports across processes while sharing the same durable :class:`WorkRecord`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -23,6 +23,7 @@ from stove0_observer_protocol import (
 )
 from stove0_protocol import (
     ArtifactSelection,
+    ArtifactSubject,
     BranchSetDecision,
     BranchSetEvaluation,
     BranchWorkBinding,
@@ -38,7 +39,9 @@ from stove0_target_client import TargetClient
 from stove0_target_protocol import (
     AcceptedTargetJob,
     OperationContract,
+    OutputArtifact,
     OutputCollectionRef,
+    TargetCallbackAccess,
     TargetContract,
     TargetJobDeclaration,
     TargetJobRequest,
@@ -47,6 +50,7 @@ from stove0_target_protocol import (
     TargetPreflightRequest,
     TargetPreflightResponse,
     TargetRuntimeAuthority,
+    TargetSettlementAuthority,
     validate_preflight_response_against_request,
 )
 
@@ -97,6 +101,7 @@ class RiverhogControlPort(Protocol):
         evidence: ControllerEvidence,
         plan: WorkflowPlan,
         target_plan: TargetPlan,
+        inputs: Iterable[ArtifactSubject],
     ) -> None: ...
 
     def target_authority(
@@ -104,19 +109,22 @@ class RiverhogControlPort(Protocol):
         claim: ClaimBinding,
         evidence: ControllerEvidence,
         target_plan: TargetPlan,
+        inputs: Iterable[ArtifactSubject],
     ) -> TargetInvocationAuthority: ...
 
     def verify_and_settle(
         self,
         record: WorkRecord,
+        operation: OperationContract,
+        outputs: Iterable[OutputArtifact],
         parent_outcome: ParentOutcomeBinding | None = None,
-    ) -> OutputCollectionRef: ...
+    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]: ...
 
     def settle_outcomes(
         self,
         record: WorkRecord,
         evaluation: BranchSetEvaluation,
-    ) -> None: ...
+    ) -> bool: ...
 
     def abandon_claim(self, record: WorkRecord) -> None: ...
 
@@ -148,6 +156,12 @@ class PlanningPort(Protocol):
         plan: WorkflowPlan,
         selections: dict[str, ArtifactSelection],
     ) -> TargetPreflightRequest: ...
+
+    def target_input_selection(
+        self,
+        plan: WorkflowPlan,
+        selections: dict[str, ArtifactSelection],
+    ) -> ArtifactSelection: ...
 
     def operation_contract(self, operation: OperationRef) -> OperationContract: ...
 
@@ -196,6 +210,16 @@ class TargetPort(Protocol):
         *,
         operation: OperationContract,
     ) -> TargetJobStatus: ...
+
+
+class TargetCallbackPort(Protocol):
+    """Stove0-owned capability issuer for one independently deployed target."""
+
+    def issue_access(
+        self,
+        record: WorkRecord,
+        target_registration_id: str,
+    ) -> TargetCallbackAccess: ...
 
 
 class PlanningObservationTerminal(RuntimeError):
@@ -302,12 +326,14 @@ class Stove0Coordinator:
         planning: PlanningPort,
         observers: ObserverPort,
         targets: TargetPort,
+        target_callbacks: TargetCallbackPort,
     ) -> None:
         self.work = work
         self.riverhog = riverhog
         self.planning = planning
         self.observers = observers
         self.targets = targets
+        self.target_callbacks = target_callbacks
 
     def create_or_resume(
         self,
@@ -480,7 +506,8 @@ class Stove0Coordinator:
                     projection.evaluation.succeeded_branches
                     or projection.evaluation.join_settlement is not None
                 ):
-                    self.riverhog.settle_outcomes(record, projection.evaluation)
+                    if not self.riverhog.settle_outcomes(record, projection.evaluation):
+                        return record
                 return self._begin_or_complete_retirement(record)
             return self._converge_coordination_outcome(record, projection.evaluation)
         if phase == "target_preflight":
@@ -490,13 +517,18 @@ class Stove0Coordinator:
         if phase in {"executing", "output_finalizing"}:
             return self._poll_target(record)
         if phase == "verifying":
-            output = self.riverhog.verify_and_settle(
+            assert record.workflow_plan is not None
+            assert record.target_plan is not None
+            output, target_settlement = self.riverhog.verify_and_settle(
                 record,
+                self.planning.operation_contract(record.workflow_plan.operation),
+                self.work.store.iter_target_outputs_by_path(record.work_id),
                 self._parent_outcome(record),
             )
             return self.work.verify_output(
                 work_id,
                 output,
+                target_settlement,
                 expected_revision=record.revision,
             )
         if phase == "settled":
@@ -659,10 +691,10 @@ class Stove0Coordinator:
         target = self.targets.contract(plan.target_registration_id)
         if target.contract_sha256 != plan.target_contract_sha256:
             raise RuntimeError("configured target contract changed after workflow planning")
-        request = self.planning.target_preflight_request(
-            plan,
-            self._selection_documents(record),
-        )
+        documents = self._selection_documents(record)
+        input_selection = self.planning.target_input_selection(plan, documents)
+        self.work.store.retain_selection(input_selection)
+        request = self.planning.target_preflight_request(plan, documents)
         response = self.targets.preflight(plan.target_registration_id, request)
         validate_preflight_response_against_request(response, request)
         if (
@@ -703,11 +735,17 @@ class Stove0Coordinator:
             record.controller_evidence,
             record.workflow_plan,
             record.target_plan,
+            self.work.store.iter_selection_artifacts(
+                record.target_plan.inputs.selection.selection_sha256
+            ),
         )
         authority = self.riverhog.target_authority(
             record.claim,
             record.controller_evidence,
             record.target_plan,
+            self.work.store.iter_selection_artifacts(
+                record.target_plan.inputs.selection.selection_sha256
+            ),
         )
         declaration = TargetJobDeclaration(
             job_id=(record.controller_evidence.execution_envelope.execution_envelope_sha256),
@@ -717,7 +755,11 @@ class Stove0Coordinator:
             plan=record.target_plan,
             workspace_assurance=authority.workspace_assurance,
         )
-        invocation = TargetJobRequest.seal(declaration, authority.runtime)
+        callback_access = self.target_callbacks.issue_access(
+            record,
+            record.workflow_plan.target_registration_id,
+        )
+        invocation = TargetJobRequest.seal(declaration, authority.runtime, callback_access)
         accepted = self.work.bind_target_request(
             record.work_id,
             invocation,
@@ -749,10 +791,17 @@ class Stove0Coordinator:
             record.claim,
             record.controller_evidence,
             record.target_plan,
+            self.work.store.iter_selection_artifacts(
+                record.target_plan.inputs.selection.selection_sha256
+            ),
         )
         refreshed = TargetJobRequest(
             declaration=record.target_request.declaration,
             runtime=authority.runtime,
+            callback_access=self.target_callbacks.issue_access(
+                record,
+                record.workflow_plan.target_registration_id,
+            ),
             request_sha256=record.target_request.request_sha256,
         )
         operation = self.planning.operation_contract(record.workflow_plan.operation)

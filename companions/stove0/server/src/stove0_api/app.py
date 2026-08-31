@@ -10,27 +10,25 @@ import secrets
 import signal
 import sys
 import threading
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from http_api_contracts import (
-    JSON_SEQUENCE_MEDIA_TYPE,
     apply_openapi_error_contract,
     bounded_list_operation,
-    complete_enumeration_operation,
-    complete_enumeration_schema_identity,
     cursor_feed_operation,
     error_code_for_status,
     error_payload,
-    iter_complete_enumeration,
+    exact_authority_page_operation,
+    operation_interface,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 from riverhog_api_client import ApiClient
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -52,6 +50,7 @@ from stove0_core import (
     Stove0Scheduler,
     Stove0StateError,
     Stove0WorkService,
+    TargetCallbackAuthority,
     WorkflowPreviewService,
     database_url_from_environment,
     scheduler_role,
@@ -59,7 +58,6 @@ from stove0_core import (
 )
 from stove0_observer_client import ContentObserverClient, load_semantic_validator_registry
 from stove0_operator_contracts import (
-    ArtifactSelectionPage,
     EvaluationPage,
     EvaluationPhase,
     EvaluationSort,
@@ -76,7 +74,8 @@ from stove0_operator_contracts import (
     WorkView,
 )
 from stove0_protocol import (
-    ArtifactSubject,
+    ARTIFACT_SELECTION_PAGE_MAX,
+    ArtifactSelectionPage,
     BranchSetEvaluation,
     CollectionRootRef,
     EvaluationDefinition,
@@ -84,6 +83,14 @@ from stove0_protocol import (
     WorkIdentity,
 )
 from stove0_target_client import TargetClient
+from stove0_target_protocol import (
+    InputDispositionDeclaration,
+    OutputArtifact,
+    OutputSourceEdge,
+    TargetCallbackAcknowledgement,
+    TargetInputPage,
+    TargetProductionSealResponse,
+)
 from time_formats import utc_timestamp_now
 
 from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
@@ -97,31 +104,6 @@ from stove0_api.schemas import (
 )
 
 LOGGER = logging.getLogger(__name__)
-
-
-class _CompleteEnumerationResponse(StreamingResponse):
-    media_type = JSON_SEQUENCE_MEDIA_TYPE
-
-
-def _complete_enumeration_response(
-    items: Iterable[object],
-    *,
-    query: Mapping[str, object],
-    item_type: object,
-    schema_id: str,
-) -> _CompleteEnumerationResponse:
-    adapter: TypeAdapter[Any] = TypeAdapter(item_type)
-    return _CompleteEnumerationResponse(
-        iter_complete_enumeration(
-            (
-                adapter.dump_python(adapter.validate_python(item), mode="json", warnings="error")
-                for item in items
-            ),
-            query=query,
-            item_schema=complete_enumeration_schema_identity(item_type, schema_id=schema_id),
-        ),
-        media_type=JSON_SEQUENCE_MEDIA_TYPE,
-    )
 
 
 def _error_response(
@@ -149,6 +131,7 @@ class Stove0Composition:
     preview: WorkflowPreviewService
     evaluations: EvaluationService
     scheduler: Stove0Scheduler
+    target_callbacks: TargetCallbackAuthority | None = None
 
     @classmethod
     def build(cls, config: Stove0RuntimeConfig) -> Stove0Composition:
@@ -190,11 +173,22 @@ class Stove0Composition:
             targets=targets,
         )
         work = Stove0WorkService(state)
+        if config.api_token is None:
+            raise ValueError("STOVE0_API_TOKEN is required by the stove0 server")
         authority = Stove0RiverhogClient(
             riverhog_api,
             claim_lease_seconds=config.claim_lease_seconds,
             capability_ttl_seconds=config.capability_ttl_seconds,
             workspace_assurance=config.workspace_assurance,
+        )
+        target_callbacks = TargetCallbackAuthority(
+            state,
+            signing_key=config.api_token,
+            base_url=config.target_callback_base_url,
+            allow_insecure_http=config.target_callback_allow_insecure_http,
+            ttl_seconds=config.capability_ttl_seconds,
+            operations=planner,
+            projector=authority,
         )
         coordinator = Stove0Coordinator(
             work,
@@ -202,6 +196,7 @@ class Stove0Composition:
             planning=planner,
             observers=observers,
             targets=targets,
+            target_callbacks=target_callbacks,
         )
         return cls(
             config=config,
@@ -225,6 +220,7 @@ class Stove0Composition:
                 state=state,
                 operational_state_retention_seconds=(config.operational_state_retention_seconds),
             ),
+            target_callbacks=target_callbacks,
         )
 
 
@@ -234,6 +230,13 @@ def _bearer(request: Request) -> str:
     if scheme.casefold() != "bearer" or not token.strip():
         raise HTTPException(status_code=401, detail="Bearer authentication is required")
     return token.strip()
+
+
+def _target_callback(composition: Stove0Composition) -> TargetCallbackAuthority:
+    callbacks = composition.target_callbacks
+    if callbacks is None:
+        raise HTTPException(status_code=503, detail="target callbacks are unavailable")
+    return callbacks
 
 
 def create_app(
@@ -266,9 +269,130 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+    @app.get(
+        "/v1/target-executions/{job_id}/inputs",
+        response_model=TargetInputPage,
+        operation_id="get_target_execution_inputs",
+        tags=["target-executions"],
+        openapi_extra={
+            **operation_interface("client-only-primitive"),
+            **exact_authority_page_operation(
+                authority="target-input-authority",
+                authority_parameter=None,
+                cursor_parameter="continuation",
+                fixed_limit=256,
+            ),
+        },
+    )
+    def get_target_execution_inputs(
+        job_id: str,
+        continuation: str | None = None,
+        token: str = Depends(_bearer),
+    ) -> TargetInputPage:
+        callbacks = composition.target_callbacks
+        if callbacks is None:
+            raise HTTPException(status_code=503, detail="target callbacks are unavailable")
+        try:
+            return callbacks.input_page(
+                token,
+                job_id=job_id,
+                continuation=continuation,
+                limit=256,
+            )
+        except PermissionError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+
+    @app.put(
+        "/v1/target-executions/{job_id}/outputs/{artifact_id}",
+        response_model=TargetCallbackAcknowledgement,
+        operation_id="declare_target_execution_output",
+        tags=["target-executions"],
+        openapi_extra=operation_interface("client-only-primitive"),
+    )
+    def declare_target_execution_output(
+        job_id: str,
+        artifact_id: str,
+        output: OutputArtifact,
+        token: str = Depends(_bearer),
+    ) -> TargetCallbackAcknowledgement:
+        if artifact_id != output.id:
+            raise HTTPException(status_code=409, detail="output path identity differs")
+        _target_callback(composition).declare_output(token, job_id=job_id, output=output)
+        return TargetCallbackAcknowledgement()
+
+    @app.put(
+        "/v1/target-executions/{job_id}/dispositions/{input_id}",
+        response_model=TargetCallbackAcknowledgement,
+        operation_id="declare_target_execution_disposition",
+        tags=["target-executions"],
+        openapi_extra=operation_interface("client-only-primitive"),
+    )
+    def declare_target_execution_disposition(
+        job_id: str,
+        input_id: str,
+        disposition: InputDispositionDeclaration,
+        token: str = Depends(_bearer),
+    ) -> TargetCallbackAcknowledgement:
+        if input_id != disposition.input_id:
+            raise HTTPException(status_code=409, detail="disposition path identity differs")
+        _target_callback(composition).declare_disposition(
+            token,
+            job_id=job_id,
+            disposition=disposition,
+        )
+        return TargetCallbackAcknowledgement()
+
+    @app.put(
+        "/v1/target-executions/{job_id}/source-edges/{output_id}/{input_id}",
+        response_model=TargetCallbackAcknowledgement,
+        operation_id="declare_target_execution_source_edge",
+        tags=["target-executions"],
+        openapi_extra=operation_interface("client-only-primitive"),
+    )
+    def declare_target_execution_source_edge(
+        job_id: str,
+        output_id: str,
+        input_id: str,
+        edge: OutputSourceEdge,
+        token: str = Depends(_bearer),
+    ) -> TargetCallbackAcknowledgement:
+        if output_id != edge.output_id or input_id != edge.input_id:
+            raise HTTPException(status_code=409, detail="source-edge path identity differs")
+        _target_callback(composition).declare_source_edge(token, job_id=job_id, edge=edge)
+        return TargetCallbackAcknowledgement()
+
+    @app.post(
+        "/v1/target-executions/{job_id}/production/seal",
+        response_model=TargetProductionSealResponse,
+        operation_id="seal_target_execution_production",
+        tags=["target-executions"],
+        openapi_extra=operation_interface("client-only-primitive"),
+    )
+    def seal_target_execution_production(
+        job_id: str,
+        token: str = Depends(_bearer),
+    ) -> TargetProductionSealResponse:
+        return _target_callback(composition).seal_production(token, job_id=job_id)
+
     @app.exception_handler(KeyError)
     async def missing(_request: Request, exc: KeyError) -> JSONResponse:
         return _error_response(404, code="not_found", message=str(exc.args[0]))
+
+    @app.exception_handler(PermissionError)
+    async def target_callback_unauthorized(
+        _request: Request,
+        exc: PermissionError,
+    ) -> JSONResponse:
+        return _error_response(
+            401,
+            code="unauthorized",
+            message=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.exception_handler(RequestValidationError)
     @app.exception_handler(ValidationError)
@@ -369,7 +493,7 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_work",
         tags=["work"],
-        openapi_extra=bounded_list_operation(paired_operation_id="stream_work"),
+        openapi_extra=bounded_list_operation(),
     )
     def list_work(
         page: int = Query(default=1, ge=1),
@@ -388,35 +512,6 @@ def create_app(
                 sort=sort,
                 order=order,
             )
-        )
-
-    @app.get(
-        "/v1/work/stream",
-        response_class=_CompleteEnumerationResponse,
-        dependencies=[Depends(authorize)],
-        operation_id="stream_work",
-        tags=["work"],
-        openapi_extra=complete_enumeration_operation(
-            paired_operation_id="list_work",
-            item_type=WorkView,
-            schema_id="stove0.work-view/v1",
-        ),
-    )
-    def stream_work(
-        phase: WorkPhase | None = None,
-        q: str | None = None,
-        sort: WorkSort = "updated_at",
-        order: SortOrder = "desc",
-    ) -> StreamingResponse:
-        items = (
-            WorkView.from_record(record)
-            for record in composition.state.iter_work(phase=phase, query=q, sort=sort, order=order)
-        )
-        return _complete_enumeration_response(
-            items,
-            query={"phase": phase, "q": q, "sort": sort, "order": order},
-            item_type=WorkView,
-            schema_id="stove0.work-view/v1",
         )
 
     @app.post(
@@ -477,56 +572,31 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="get_artifact_selection",
         tags=["artifact-selections"],
-        openapi_extra=bounded_list_operation(paired_operation_id="stream_artifact_selection"),
+        openapi_extra=exact_authority_page_operation(
+            authority="artifact-selection",
+            authority_parameter="selection_sha256",
+            cursor_parameter="continuation",
+            fixed_limit=256,
+        ),
     )
     def get_artifact_selection(
         selection_sha256: str,
-        page: int = Query(default=1, ge=1),
-        per_page: int = Query(default=100, ge=1, le=1000),
+        continuation: str | None = None,
     ) -> ArtifactSelectionPage:
         selection = composition.state.load_selection_ref(selection_sha256)
         if selection is None:
             raise KeyError(selection_sha256)
-        total = selection.artifact_count
-        start = (page - 1) * per_page
-        selected = composition.state.selection_artifact_page(
+        selected, next_continuation, complete = composition.state.selection_artifact_page(
             selection_sha256,
-            offset=start,
-            limit=per_page,
+            continuation=continuation,
+            limit=ARTIFACT_SELECTION_PAGE_MAX,
         )
-        pages = (total + per_page - 1) // per_page
         return ArtifactSelectionPage(
-            page=page,
-            per_page=per_page,
-            total=total,
-            pages=pages,
-            filters={},
-            selection_sha256=selection.selection_sha256,
-            total_bytes=selection.total_bytes,
+            authority=selection,
+            continuation=continuation,
+            next_continuation=next_continuation,
+            complete=complete,
             artifacts=selected,
-        )
-
-    @app.get(
-        "/v1/artifact-selections/{selection_sha256}/stream",
-        response_class=_CompleteEnumerationResponse,
-        dependencies=[Depends(authorize)],
-        operation_id="stream_artifact_selection",
-        tags=["artifact-selections"],
-        openapi_extra=complete_enumeration_operation(
-            paired_operation_id="get_artifact_selection",
-            item_type=ArtifactSubject,
-            schema_id="stove0.artifact-subject/v1",
-        ),
-    )
-    def stream_artifact_selection(selection_sha256: str) -> StreamingResponse:
-        selection = composition.state.load_selection_ref(selection_sha256)
-        if selection is None:
-            raise KeyError(selection_sha256)
-        return _complete_enumeration_response(
-            composition.state.iter_selection_artifacts(selection_sha256),
-            query={"selection_sha256": selection_sha256},
-            item_type=ArtifactSubject,
-            schema_id="stove0.artifact-subject/v1",
         )
 
     @app.post(
@@ -575,7 +645,7 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_evaluations",
         tags=["evaluations"],
-        openapi_extra=bounded_list_operation(paired_operation_id="stream_evaluations"),
+        openapi_extra=bounded_list_operation(),
     )
     def list_evaluations(
         page: int = Query(default=1, ge=1),
@@ -594,37 +664,6 @@ def create_app(
                 sort=sort,
                 order=order,
             )
-        )
-
-    @app.get(
-        "/v1/evaluations/stream",
-        response_class=_CompleteEnumerationResponse,
-        dependencies=[Depends(authorize)],
-        operation_id="stream_evaluations",
-        tags=["evaluations"],
-        openapi_extra=complete_enumeration_operation(
-            paired_operation_id="list_evaluations",
-            item_type=EvaluationView,
-            schema_id="stove0.evaluation-view/v1",
-        ),
-    )
-    def stream_evaluations(
-        phase: EvaluationPhase | None = None,
-        q: str | None = None,
-        sort: EvaluationSort = "updated_at",
-        order: SortOrder = "desc",
-    ) -> StreamingResponse:
-        items = (
-            EvaluationView.from_record(record)
-            for record in composition.state.iter_evaluations(
-                phase=phase, query=q, sort=sort, order=order
-            )
-        )
-        return _complete_enumeration_response(
-            items,
-            query={"phase": phase, "q": q, "sort": sort, "order": order},
-            item_type=EvaluationView,
-            schema_id="stove0.evaluation-view/v1",
         )
 
     @app.post(

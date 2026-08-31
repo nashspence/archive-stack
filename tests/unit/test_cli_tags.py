@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from typing import Any
 
 import riverhog_cli.main
@@ -136,10 +135,12 @@ def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> Non
                 "tags": [tag],
             }
 
-        @contextmanager
-        def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+        def get_collection_tags(
+            self, collection_id: int, *, page: int, per_page: int
+        ) -> dict[str, object]:
             assert collection_id == 41
-            yield iter(({"tag": "photos"},))
+            assert (page, per_page) == (1, 25)
+            return {**collection_tags, "page": 1, "pages": 1, "total": 1, "tags": ["photos"]}
 
         def replace_collection_tags(self, collection_id: int, tags: list[str]) -> dict[str, object]:
             assert collection_id == 41

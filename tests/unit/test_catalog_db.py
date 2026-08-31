@@ -126,29 +126,6 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     assert {
         column["name"] for column in inspector.get_columns("collection_archive_object_uploads")
     } >= {"uploaded_units", "total_units"}
-    assert {column["name"] for column in inspector.get_columns("collection_proof_maturations")} == {
-        "collection_id",
-        "store",
-        "state",
-        "attempt_count",
-        "next_attempt_at",
-        "last_attempt_at",
-        "matured_at",
-        "failure",
-    }
-    assert {
-        column["name"] for column in inspector.get_columns("collection_archive_attestations")
-    } == {
-        "collection_id",
-        "store",
-        "state",
-        "attempt_count",
-        "next_attempt_at",
-        "last_attempt_at",
-        "published_at",
-        "matured_at",
-        "failure",
-    }
     assert {column["name"] for column in inspector.get_columns("collection_archive_objects")} >= {
         "archive_parts_json",
         "revision",
@@ -195,7 +172,9 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")
     }
-    assert upload_file_columns["raw_digest_manifest_json"]["nullable"] is True
+    assert upload_file_columns["raw_part_count"]["nullable"] is True
+    assert upload_file_columns["raw_part_ordered_sha256"]["nullable"] is True
+    assert upload_file_columns["raw_parts_accepted"]["nullable"] is False
     assert upload_file_columns["raw_part_plaintext_bytes"]["nullable"] is True
     upload_volume_columns = {
         column["name"]: column

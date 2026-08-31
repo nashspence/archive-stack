@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any, Literal, TypeVar
+from urllib.parse import quote
 
 import httpx
 from http_api_contracts import (
@@ -13,15 +14,24 @@ from http_api_contracts import (
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from stove0_target_protocol import (
+    TARGET_CALLBACK_HTTP_OPERATIONS,
     TARGET_HTTP_OPERATIONS,
     AcceptedTargetJob,
+    InputArtifact,
+    InputDispositionDeclaration,
     OperationContract,
+    OutputArtifact,
+    OutputSourceEdge,
     Sha256,
+    TargetCallbackAccess,
+    TargetCallbackAcknowledgement,
     TargetContract,
+    TargetInputPage,
     TargetJobRequest,
     TargetJobStatus,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    TargetProductionSealResponse,
     validate_preflight_response_against_request,
     validate_status_against_request,
 )
@@ -193,6 +203,138 @@ class TargetClient:
             ) from exc
 
 
+class TargetCallbackClient:
+    """Execution-scoped bounded reads from the Stove0 callback surface."""
+
+    def __init__(self, access: TargetCallbackAccess, *, timeout: float | None = 300.0) -> None:
+        self.base_url = safe_http_base_url(
+            access.stove0_base_url,
+            setting="Stove0 target callback base URL",
+            allow_insecure_http=access.allow_insecure_http,
+        )
+        self.token = access.token
+        self._client = httpx.Client(http2=True, timeout=timeout)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def get_target_execution_inputs(
+        self,
+        job_id: str,
+        *,
+        continuation: str | None = None,
+    ) -> TargetInputPage:
+        job = _JOB_ID.validate_python(job_id)
+        path = f"/v1/target-executions/{quote(job, safe='')}/inputs"
+        return self._request(
+            "GET",
+            path,
+            TargetInputPage,
+            params={} if continuation is None else {"continuation": continuation},
+        )
+
+    def declare_target_execution_output(
+        self, job_id: str, output: OutputArtifact
+    ) -> TargetCallbackAcknowledgement:
+        job = _JOB_ID.validate_python(job_id)
+        path = f"/v1/target-executions/{quote(job, safe='')}/outputs/{quote(output.id, safe='')}"
+        return self._request("PUT", path, TargetCallbackAcknowledgement, payload=output)
+
+    def declare_target_execution_disposition(
+        self,
+        job_id: str,
+        disposition: InputDispositionDeclaration,
+    ) -> TargetCallbackAcknowledgement:
+        job = _JOB_ID.validate_python(job_id)
+        path = (
+            f"/v1/target-executions/{quote(job, safe='')}/dispositions/"
+            f"{quote(disposition.input_id, safe='')}"
+        )
+        return self._request("PUT", path, TargetCallbackAcknowledgement, payload=disposition)
+
+    def declare_target_execution_source_edge(
+        self, job_id: str, edge: OutputSourceEdge
+    ) -> TargetCallbackAcknowledgement:
+        job = _JOB_ID.validate_python(job_id)
+        path = (
+            f"/v1/target-executions/{quote(job, safe='')}/source-edges/"
+            f"{quote(edge.output_id, safe='')}/{quote(edge.input_id, safe='')}"
+        )
+        return self._request("PUT", path, TargetCallbackAcknowledgement, payload=edge)
+
+    def seal_target_execution_production(self, job_id: str) -> TargetProductionSealResponse:
+        job = _JOB_ID.validate_python(job_id)
+        path = f"/v1/target-executions/{quote(job, safe='')}/production/seal"
+        return self._request("POST", path, TargetProductionSealResponse)
+
+    def iter_inputs(self, job_id: str) -> Iterator[InputArtifact]:
+        continuation: str | None = None
+        authority = None
+        while True:
+            page = self.get_target_execution_inputs(job_id, continuation=continuation)
+            if authority is None:
+                authority = page.authority
+            elif page.authority != authority:
+                raise TargetProtocolError(
+                    "Stove0 target-input authority changed during traversal",
+                    failure_kind="invalid_response",
+                )
+            yield from page.artifacts
+            if page.complete:
+                return
+            continuation = page.next_continuation
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        model: type[ModelT],
+        *,
+        payload: BaseModel | None = None,
+        params: Mapping[str, str] | None = None,
+    ) -> ModelT:
+        operation = http_operation_for_request(TARGET_CALLBACK_HTTP_OPERATIONS, method, path)
+        if operation is None:
+            raise ValueError("target callback request is absent from its HTTP contract")
+        response = self._client.request(
+            method,
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+            params=params,
+            json=(
+                payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+                if payload is not None
+                else None
+            ),
+        )
+        if response.status_code >= 400:
+            try:
+                code, message, details = parse_declared_error_payload(
+                    operation,
+                    status=response.status_code,
+                    payload=response.json(),
+                )
+            except (TypeError, ValueError) as exc:
+                raise TargetProtocolError(
+                    "Stove0 returned an undeclared callback error response",
+                    failure_kind="invalid_response",
+                ) from exc
+            raise TargetProtocolError(
+                message,
+                failure_kind="remote_rejection",
+                code=code,
+                observed_status=response.status_code,
+                details=details,
+            )
+        try:
+            return model.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise TargetProtocolError(
+                "Stove0 returned an invalid target-callback response",
+                failure_kind="invalid_response",
+            ) from exc
+
+
 def _job_id(value: str) -> str:
     try:
         return _JOB_ID.validate_python(value, strict=True)
@@ -200,4 +342,4 @@ def _job_id(value: str) -> str:
         raise ValueError("target job ID must be a lowercase SHA-256") from exc
 
 
-__all__ = ["TargetClient", "TargetProtocolError"]
+__all__ = ["TargetCallbackClient", "TargetClient", "TargetProtocolError"]

@@ -104,6 +104,7 @@ def build_archive_catalog_projection(
     verified_raw_files: Sequence[VerifiedRawFile] = (),
     provenance_identity: str | None = None,
     provenance_objects: Sequence[SealedProvenanceObject] = (),
+    validate_manifest: bool = True,
 ) -> ArchiveCatalogProjection:
     """Build the exact durable catalog projection for one immutable archive root."""
 
@@ -112,17 +113,19 @@ def build_archive_catalog_projection(
     prefix = archive_storage_prefix.strip("/")
     if not prefix:
         raise ValueError("archive storage prefix is required")
-    expected_manifest = build_collection_archive_manifest(
-        files=files,
-        packs=packs,
-        raw_volumes=raw_volumes,
-        verified_raw_files=verified_raw_files,
-        provenance_identity=provenance_identity,
-        provenance_objects=provenance_objects,
-    )
-    if expected_manifest != root.manifest_bytes:
-        raise ValueError("sealed root does not match the supplied archive volumes")
     manifest = CollectionArchiveManifest.from_json_bytes(root.manifest_bytes)
+    if validate_manifest:
+        expected_manifest = build_collection_archive_manifest(
+            archive_generation=manifest.archive_generation,
+            files=files,
+            packs=packs,
+            raw_volumes=raw_volumes,
+            verified_raw_files=verified_raw_files,
+            provenance_identity=provenance_identity,
+            provenance_objects=provenance_objects,
+        )
+        if expected_manifest != root.manifest_bytes:
+            raise ValueError("sealed root does not match the supplied archive volumes")
     expected_root_path = f"{prefix}/manifest.json.age"
     if (
         root.object_path != expected_root_path
@@ -210,8 +213,8 @@ def build_archive_catalog_projection(
     volumes.sort(key=lambda current: current.sequence)
     if [current.sequence for current in volumes] != list(range(len(volumes))):
         raise ValueError("archive catalog volume sequences are not contiguous")
-    if [current.id for current in manifest.volumes] != [current.volume_id for current in volumes]:
-        raise ValueError("archive catalog volumes do not match the immutable root")
+    if root.volume_metadata and len(root.volume_metadata) != len(volumes) + 1:
+        raise ValueError("archive volume metadata does not match the immutable root")
 
     root_projection = ArchiveRootProjection(
         collection_id=collection_id,

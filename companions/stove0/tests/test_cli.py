@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,49 +18,6 @@ class FakeClient:
 
     def close(self) -> None:
         pass
-
-    @contextmanager
-    def stream_work(self, **_kwargs: Any) -> Iterator[Iterator[Any]]:
-        yield iter(
-            (
-                SimpleNamespace(
-                    model_dump=lambda **_kwargs: {
-                        "work_id": "work-1",
-                        "phase": "complete",
-                        "revision": 3,
-                    }
-                ),
-            )
-        )
-
-    @contextmanager
-    def stream_evaluations(self, **_kwargs: Any) -> Iterator[Iterator[Any]]:
-        yield iter(
-            (
-                SimpleNamespace(
-                    model_dump=lambda **_kwargs: {
-                        "evaluation_id": "evaluation-1",
-                        "phase": "complete",
-                        "revision": 3,
-                    }
-                ),
-            )
-        )
-
-    @contextmanager
-    def stream_artifact_selection(self, _selection_sha256: str) -> Iterator[Iterator[Any]]:
-        yield iter(
-            (
-                SimpleNamespace(
-                    model_dump=lambda **_kwargs: {
-                        "id": "source",
-                        "role": "munchy.source/v1",
-                        "path": "source.bin",
-                        "bytes": 1,
-                    }
-                ),
-            )
-        )
 
     def __getattr__(self, name: str) -> Any:
         if name == "list_events":
@@ -101,6 +55,21 @@ class FakeClient:
                 "total": 1,
                 "evaluations": [
                     {"evaluation_id": "evaluation-1", "phase": "complete", "revision": 3}
+                ],
+            }
+        if name == "get_artifact_selection":
+            return lambda *_args, **_kwargs: {
+                "page": 1,
+                "pages": 1,
+                "per_page": 1,
+                "total": 1,
+                "artifacts": [
+                    {
+                        "id": "source",
+                        "role": "munchy.source/v1",
+                        "path": "source.bin",
+                        "bytes": 1,
+                    }
                 ],
             }
         if name in {"health_live", "health_ready"}:
@@ -250,12 +219,12 @@ def test_work_list_rich_and_json_preserve_effect_result_identity(
 @pytest.mark.parametrize(
     ("command", "key"),
     (
-        (["work", "list", "--all"], "work"),
-        (["evaluation", "list", "--all"], "evaluations"),
-        (["selection", "show", "a" * 64, "--all"], "artifacts"),
+        (["work", "list"], "work"),
+        (["evaluation", "list"], "evaluations"),
+        (["selection", "show", "a" * 64], "artifacts"),
     ),
 )
-def test_stove0_complete_enumerations_keep_rich_and_json_cli_parity(
+def test_stove0_bounded_pages_keep_rich_and_json_cli_parity(
     command: list[str],
     key: str,
     monkeypatch: pytest.MonkeyPatch,

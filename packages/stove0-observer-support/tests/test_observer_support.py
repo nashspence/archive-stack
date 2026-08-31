@@ -15,6 +15,12 @@ import stove0_observer_client.providers as observer_provider_module
 from http_api_contracts import http_operation_inventory
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
+from riverhog_protocol import (
+    ImmutableFileIdentityDocument,
+    PortableCollectionHeader,
+    PortableCollectionInventoryAuthority,
+    PortableCollectionInventoryPage,
+)
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
 from stove0_observer_client import (
     ContentObserverClient,
@@ -94,9 +100,37 @@ class RetrievalApi:
             ]
         }
 
-    @contextmanager
-    def stream_search(self, _query: str | None = None, **kwargs: Any) -> Iterator[Any]:
-        yield iter(self.search(_query, **kwargs)["files"])
+    def get_portable_collection_inventory(
+        self, collection_id: int, **kwargs: Any
+    ) -> PortableCollectionInventoryPage:
+        assert collection_id == 1
+        assert kwargs["cursor"] is None
+        files = [
+            ImmutableFileIdentityDocument(
+                path=str(item["path"]),
+                bytes=int(item["bytes"]),
+                sha256=str(item["sha256"]),
+            )
+            for item in sorted(
+                self.search()["files"], key=lambda item: str(item["path"]).encode("utf-8")
+            )
+        ]
+        return PortableCollectionInventoryPage(
+            authority=PortableCollectionInventoryAuthority(
+                header=PortableCollectionHeader(
+                    collection=1,
+                    content_identity=_sha("2"),
+                    encryption_format="age-v1-scrypt",
+                    passphrase_id="fixture-archive-key-v1",
+                    provenance_mode="omitted",
+                ),
+                inventory_identity=_sha("8"),
+                file_count=len(files),
+                file_bytes=sum(file.bytes for file in files),
+            ),
+            files=files,
+            complete=True,
+        )
 
     def _rows(self, files: Sequence[tuple[int, str]]) -> list[dict[str, object]]:
         return [

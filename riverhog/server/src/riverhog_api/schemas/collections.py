@@ -11,13 +11,13 @@ from riverhog_protocol import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
+    CollectionUploadProvenanceJournalStatusDocument,
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
     CollectionUploadUnitWorkDocument,
-    CollectionUploadVolumeSetDocument,
     CollectionUploadVolumeSummaryDocument,
-    CollectionUploadVolumeWorkDocument,
+    CollectionUploadWorkBatchDocument,
     FileProvenanceBinding,
     ImmutableFileIdentityDocument,
     ProcessingClaimId,
@@ -29,7 +29,6 @@ from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
 )
 from riverhog_protocol.paths import CanonicalTag
-from riverhog_provenance_contracts import ProvenanceJournalId, ProvenanceStateId
 from time_formats import format_utc_timestamp, parse_utc_timestamp
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
@@ -369,7 +368,6 @@ class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocum
 class CompleteCollectionUploadSessionRequest(RiverhogModel):
     files_total: int = Field(ge=1, strict=True)
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionSummaryOut(RiverhogModel):
@@ -377,6 +375,7 @@ class CollectionSummaryOut(RiverhogModel):
     created_at: str
     tag_count: int = Field(ge=0, strict=True)
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
@@ -479,18 +478,11 @@ class CollectionDeletionResultOut(RiverhogModel):
 
 
 class CollectionUploadFileOut(ImmutableFileIdentityDocument):
-    provenance: FileProvenanceBinding
+    provenance: FileProvenanceBinding | None = None
     custody_receipt: CollectionUploadArtifactCustodyReceiptDocument | None = None
 
 
-class CollectionUploadProvenanceJournalOut(RiverhogModel):
-    journal_id: ProvenanceJournalId
-    bytes: int
-    sha256: str
-    current_state_id: ProvenanceStateId
-    current_path: str
-    current_bytes: int
-    current_sha256: str
+CollectionUploadProvenanceJournalOut = CollectionUploadProvenanceJournalStatusDocument
 
 
 class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
@@ -831,5 +823,4 @@ class CollectionUploadDiscardResultOut(RiverhogModel):
 
 
 CollectionUploadUnitOut = CollectionUploadUnitWorkDocument
-CollectionUploadVolumeOut = CollectionUploadVolumeWorkDocument
-ListCollectionUploadVolumesResponse = CollectionUploadVolumeSetDocument
+CollectionUploadWorkBatchOut = CollectionUploadWorkBatchDocument

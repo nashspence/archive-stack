@@ -1,53 +1,29 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import sysconfig
-import tempfile
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from http_api_contracts import canonical_json_bytes, iter_json_sequence_records
+from http_api_contracts import canonical_json_bytes
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.paths import (
     CollectionId,
     normalize_relpath,
-    validate_collection_id,
 )
 
 PORTABLE_COLLECTION_FORMAT: Literal["riverhog-collection/v1"] = "riverhog-collection/v1"
-PORTABLE_COLLECTION_STREAM_FORMAT: Literal["riverhog-collection-inventory-stream/v1"] = (
-    "riverhog-collection-inventory-stream/v1"
+PORTABLE_COLLECTION_INVENTORY_PAGE_FORMAT: Literal["riverhog-collection-inventory-page/v1"] = (
+    "riverhog-collection-inventory-page/v1"
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_PASSPHRASE_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 
 
 class PortableCollectionError(ValueError):
     """The document is not the canonical portable Riverhog collection contract."""
-
-
-def portable_collection_json_schema() -> dict[str, Any]:
-    """Load the shipped structural projection of the canonical portable record."""
-
-    candidates = (
-        Path(__file__).parents[2] / "schemas" / "riverhog-collection-v1.schema.json",
-        Path(sysconfig.get_path("data"))
-        / "share"
-        / "riverhog-protocol"
-        / "schemas"
-        / "riverhog-collection-v1.schema.json",
-    )
-    for path in candidates:
-        if path.is_file():
-            document = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(document, dict):
-                return document
-    raise RuntimeError("the riverhog portable-collection schema is not installed")
 
 
 def _sha256(value: object, label: str) -> str:
@@ -59,12 +35,6 @@ def _sha256(value: object, label: str) -> str:
 def _nonnegative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise PortableCollectionError(f"{label} must be a non-negative integer")
-    return value
-
-
-def _string(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise PortableCollectionError(f"{label} must be a string")
     return value
 
 
@@ -128,32 +98,38 @@ class PortableCollectionHeader(BaseModel):
         return self
 
 
-class PortableCollectionInventoryBegin(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class PortableCollectionInventoryAuthority(BaseModel):
+    """The immutable authority shared by every bounded inventory page."""
 
-    type: Literal["begin"] = "begin"
-    format: Literal["riverhog-collection-inventory-stream/v1"] = PORTABLE_COLLECTION_STREAM_FORMAT
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
     header: PortableCollectionHeader
     inventory_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    files: int = Field(ge=1)
-    bytes: int = Field(ge=0)
+    file_count: int = Field(ge=1)
+    file_bytes: int = Field(ge=0)
 
 
-class PortableCollectionInventoryFile(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class PortableCollectionInventoryPage(BaseModel):
+    """One bounded, canonically ordered slice of an immutable inventory."""
 
-    type: Literal["file"] = "file"
-    ordinal: int = Field(ge=0)
-    file: dict[str, object]
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    format: Literal["riverhog-collection-inventory-page/v1"] = (
+        PORTABLE_COLLECTION_INVENTORY_PAGE_FORMAT
+    )
+    authority: PortableCollectionInventoryAuthority
+    files: list[ImmutableFileIdentityDocument] = Field(max_length=1000)
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=8192)
+    complete: bool
 
-class PortableCollectionInventoryEnd(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    type: Literal["end"] = "end"
-    files: int = Field(ge=1)
-    bytes: int = Field(ge=0)
-    inventory_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    @model_validator(mode="after")
+    def validate_page(self) -> PortableCollectionInventoryPage:
+        paths = tuple(file.path for file in self.files)
+        if paths != tuple(sorted(set(paths), key=lambda value: value.encode("utf-8"))):
+            raise ValueError("portable inventory page files are not canonical")
+        if self.complete != (self.next_cursor is None):
+            raise ValueError("portable inventory page continuation is inconsistent")
+        return self
 
 
 class PortableCollectionIdentityBuilder:
@@ -194,284 +170,14 @@ def portable_collection_inventory_identity(
     return builder.identity
 
 
-@dataclass(frozen=True, slots=True)
-class PortableCollectionRecord:
-    collection: CollectionId
-    content_identity: str
-    encryption_format: str
-    passphrase_id: str
-    provenance_mode: Literal["captured", "mixed", "omitted"]
-    provenance_identity: str | None
-    files: tuple[PortableCollectionFile, ...]
-    format: str = PORTABLE_COLLECTION_FORMAT
-
-    def __post_init__(self) -> None:
-        try:
-            collection = validate_collection_id(self.collection)
-        except ValueError as exc:
-            raise PortableCollectionError("portable collection id is invalid") from exc
-        if collection != self.collection:
-            raise PortableCollectionError("portable collection id is not canonical")
-        _sha256(self.content_identity, "portable collection content identity")
-        if (
-            not isinstance(self.encryption_format, str)
-            or not self.encryption_format
-            or self.encryption_format.strip() != self.encryption_format
-        ):
-            raise PortableCollectionError("portable collection encryption format is invalid")
-        if (
-            not isinstance(self.passphrase_id, str)
-            or _PASSPHRASE_ID_RE.fullmatch(self.passphrase_id) is None
-        ):
-            raise PortableCollectionError("portable collection passphrase id is invalid")
-        if self.provenance_mode not in {"captured", "mixed", "omitted"}:
-            raise PortableCollectionError("portable collection provenance mode is invalid")
-        if self.provenance_identity is not None:
-            _sha256(self.provenance_identity, "portable collection provenance identity")
-        if self.provenance_mode == "omitted" and self.provenance_identity is not None:
-            raise PortableCollectionError("omitted provenance cannot have an identity")
-        if self.provenance_mode != "omitted" and self.provenance_identity is None:
-            raise PortableCollectionError("captured provenance requires an identity")
-        if (
-            not isinstance(self.files, tuple)
-            or not self.files
-            or not all(isinstance(item, PortableCollectionFile) for item in self.files)
-        ):
-            raise PortableCollectionError("portable collection files must not be empty")
-        if tuple(sorted(self.files, key=lambda item: item.path)) != self.files or len(
-            {item.path for item in self.files}
-        ) != len(self.files):
-            raise PortableCollectionError("portable collection files are not canonical")
-        if self.format != PORTABLE_COLLECTION_FORMAT:
-            raise PortableCollectionError("portable collection format is unsupported")
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        collection: CollectionId,
-        content_identity: str,
-        encryption_format: str,
-        passphrase_id: str,
-        provenance_mode: Literal["captured", "mixed", "omitted"],
-        provenance_identity: str | None,
-        files: Iterable[tuple[str, int, str]],
-    ) -> PortableCollectionRecord:
-        return cls(
-            collection=collection,
-            content_identity=content_identity,
-            encryption_format=encryption_format,
-            passphrase_id=passphrase_id,
-            provenance_mode=provenance_mode,
-            provenance_identity=provenance_identity,
-            files=tuple(
-                sorted(
-                    (
-                        PortableCollectionFile.from_mapping(
-                            {"path": path, "bytes": byte_count, "sha256": sha256}
-                        )
-                        for path, byte_count, sha256 in files
-                    ),
-                    key=lambda item: item.path,
-                )
-            ),
-        )
-
-    @classmethod
-    def from_mapping(cls, value: object) -> PortableCollectionRecord:
-        fields = {
-            "format",
-            "collection",
-            "content_identity",
-            "encryption_format",
-            "passphrase_id",
-            "provenance_mode",
-            "provenance_identity",
-            "files",
-        }
-        if not isinstance(value, Mapping) or set(value) != fields:
-            raise PortableCollectionError("portable collection fields are invalid")
-        raw_files = value["files"]
-        if not isinstance(raw_files, list):
-            raise PortableCollectionError("portable collection files are invalid")
-        mode = value["provenance_mode"]
-        if mode not in {"captured", "mixed", "omitted"}:
-            raise PortableCollectionError("portable collection provenance mode is invalid")
-        return cls(
-            format=_string(value["format"], "portable collection format"),
-            collection=_nonnegative_int(value["collection"], "portable collection id"),
-            content_identity=_string(
-                value["content_identity"], "portable collection content identity"
-            ),
-            encryption_format=_string(
-                value["encryption_format"], "portable collection encryption format"
-            ),
-            passphrase_id=_string(value["passphrase_id"], "portable collection passphrase id"),
-            provenance_mode=mode,
-            provenance_identity=(
-                None
-                if value["provenance_identity"] is None
-                else _string(
-                    value["provenance_identity"],
-                    "portable collection provenance identity",
-                )
-            ),
-            files=tuple(PortableCollectionFile.from_mapping(item) for item in raw_files),
-        )
-
-    @classmethod
-    def from_json_bytes(cls, content: bytes | str) -> PortableCollectionRecord:
-        try:
-            text = content.decode("utf-8") if isinstance(content, bytes) else content
-            value: Any = json.loads(text)
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise PortableCollectionError("portable collection is not valid JSON") from exc
-        record = cls.from_mapping(value)
-        if record.to_json_bytes() != text.encode("utf-8"):
-            raise PortableCollectionError("portable collection JSON is not canonical")
-        return record
-
-    def to_mapping(self) -> dict[str, object]:
-        return {
-            "format": self.format,
-            "collection": self.collection,
-            "content_identity": self.content_identity,
-            "encryption_format": self.encryption_format,
-            "passphrase_id": self.passphrase_id,
-            "provenance_mode": self.provenance_mode,
-            "provenance_identity": self.provenance_identity,
-            "files": [item.to_mapping() for item in self.files],
-        }
-
-    def to_json_bytes(self) -> bytes:
-        return json.dumps(self.to_mapping(), sort_keys=True, separators=(",", ":")).encode()
-
-    @property
-    def identity(self) -> str:
-        return portable_collection_inventory_identity(self.header, self.files)
-
-    @property
-    def header(self) -> PortableCollectionHeader:
-        return PortableCollectionHeader(
-            collection=self.collection,
-            content_identity=self.content_identity,
-            encryption_format=self.encryption_format,
-            passphrase_id=self.passphrase_id,
-            provenance_mode=self.provenance_mode,
-            provenance_identity=self.provenance_identity,
-        )
-
-
-def _json_sequence_record(value: object) -> bytes:
-    return b"\x1e" + canonical_json_bytes(value) + b"\n"
-
-
-def iter_portable_collection_inventory(
-    header: PortableCollectionHeader,
-    files: Iterable[PortableCollectionFile],
-    *,
-    inventory_identity: str,
-    file_count: int,
-    file_bytes: int,
-) -> Iterator[bytes]:
-    """Validate one immutable inventory before emitting its bounded JSON sequence."""
-
-    builder = PortableCollectionIdentityBuilder(header)
-    with tempfile.TemporaryFile(mode="w+b") as snapshot:
-        for ordinal, file in enumerate(files):
-            builder.add(file)
-            frame = PortableCollectionInventoryFile(
-                ordinal=ordinal,
-                file=file.to_mapping(),
-            )
-            snapshot.write(_json_sequence_record(frame.model_dump(mode="json")))
-        if (
-            builder.identity != inventory_identity
-            or builder.files != file_count
-            or builder.bytes != file_bytes
-        ):
-            raise PortableCollectionError("portable collection inventory identity differs")
-        begin = PortableCollectionInventoryBegin(
-            header=header,
-            inventory_identity=inventory_identity,
-            files=file_count,
-            bytes=file_bytes,
-        )
-        snapshot.seek(0)
-        yield _json_sequence_record(begin.model_dump(mode="json"))
-        while chunk := snapshot.read(64 * 1024):
-            yield chunk
-        end = PortableCollectionInventoryEnd(
-            files=file_count,
-            bytes=file_bytes,
-            inventory_identity=inventory_identity,
-        )
-        yield _json_sequence_record(end.model_dump(mode="json"))
-
-
-class PortableCollectionInventoryReader:
-    """Incrementally validate one exact portable inventory JSON sequence."""
-
-    def __init__(self, chunks: Iterable[bytes]) -> None:
-        self._records = iter_json_sequence_records(chunks)
-        try:
-            self.begin = PortableCollectionInventoryBegin.model_validate(next(self._records))
-        except StopIteration as exc:
-            raise PortableCollectionError(
-                "portable collection inventory has no begin frame"
-            ) from exc
-        self.complete = False
-        self._started = False
-
-    def __iter__(self) -> Iterator[PortableCollectionFile]:
-        if self._started:
-            raise RuntimeError("portable collection inventory reader is single-use")
-        self._started = True
-        builder = PortableCollectionIdentityBuilder(self.begin.header)
-        ordinal = 0
-        for record in self._records:
-            if record.get("type") == "end":
-                end = PortableCollectionInventoryEnd.model_validate(record)
-                if (
-                    ordinal != self.begin.files
-                    or builder.files != end.files
-                    or builder.bytes != self.begin.bytes
-                    or builder.bytes != end.bytes
-                    or builder.identity != self.begin.inventory_identity
-                    or builder.identity != end.inventory_identity
-                ):
-                    raise PortableCollectionError(
-                        "portable collection inventory terminal proof differs"
-                    )
-                self.complete = True
-                return
-            frame = PortableCollectionInventoryFile.model_validate(record)
-            if frame.ordinal != ordinal:
-                raise PortableCollectionError("portable collection inventory ordinal differs")
-            file = PortableCollectionFile.from_mapping(frame.file)
-            builder.add(file)
-            ordinal += 1
-            yield file
-        raise PortableCollectionError("portable collection inventory has no terminal frame")
-
-    def require_complete(self) -> None:
-        if not self.complete:
-            raise PortableCollectionError("portable collection inventory terminal proof is absent")
-
-
 __all__ = [
     "PORTABLE_COLLECTION_FORMAT",
-    "PORTABLE_COLLECTION_STREAM_FORMAT",
+    "PORTABLE_COLLECTION_INVENTORY_PAGE_FORMAT",
     "PortableCollectionError",
     "PortableCollectionFile",
     "PortableCollectionHeader",
+    "PortableCollectionInventoryAuthority",
     "PortableCollectionIdentityBuilder",
-    "PortableCollectionInventoryBegin",
-    "PortableCollectionInventoryEnd",
-    "PortableCollectionInventoryFile",
-    "PortableCollectionInventoryReader",
-    "PortableCollectionRecord",
-    "iter_portable_collection_inventory",
+    "PortableCollectionInventoryPage",
     "portable_collection_inventory_identity",
-    "portable_collection_json_schema",
 ]

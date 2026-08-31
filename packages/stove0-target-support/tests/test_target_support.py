@@ -28,7 +28,7 @@ from riverhog_protocol import (
     Unauthorized,
 )
 from riverhog_protocol.collection_workflows import (
-    ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
 )
 from riverhog_protocol.collection_workflows import (
@@ -41,6 +41,8 @@ from riverhog_transform_sdk import (
     DerivedCollectionReceipt,
 )
 from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSubject,
     CollectionRootRef,
     ControllerEvidence,
     ControllerEvidencePayload,
@@ -59,8 +61,14 @@ from stove0_protocol import (
 )
 from stove0_target_client import TargetClient, TargetProtocolError
 from stove0_target_protocol import (
+    OutputArtifactSetIdentity,
     SemanticIntentConformanceVector,
     SemanticIntentConformanceVectors,
+    TargetCallbackAccess,
+    TargetInputAuthority,
+    TargetProductionAuthority,
+    TargetProductionAuthorityPayload,
+    TargetProductionSealResponse,
 )
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
@@ -214,6 +222,22 @@ def _input() -> InputArtifact:
     )
 
 
+def _input_authority() -> TargetInputAuthority:
+    value = _input()
+    return TargetInputAuthority.from_selection(
+        ArtifactSelection.seal(
+            (ArtifactSubject.model_validate(value.model_dump(mode="python", exclude_none=True)),)
+        )
+    )
+
+
+def _callback_access() -> TargetCallbackAccess:
+    return TargetCallbackAccess(
+        stove0_base_url="https://stove0.invalid",
+        token="callback-secret",
+    )
+
+
 def _work() -> WorkIdentity:
     return WorkIdentity.seal(
         WorkPayload(
@@ -234,7 +258,7 @@ def _plan(
             target_contract_sha256=target.contract_sha256,
             operation_id=operation.id,
             operation_contract_sha256=operation.contract_sha256,
-            inputs=(_input(),),
+            inputs=_input_authority(),
             intent={"suffix": ".copy"},
             target_options={},
         )
@@ -296,6 +320,7 @@ def _request_for(
             riverhog_base_url="https://riverhog.invalid",
             capability_token="first-secret",
         ),
+        _callback_access(),
     )
     return request
 
@@ -362,7 +387,7 @@ def _effect_request() -> tuple[OperationContract, TargetContract, TargetJobReque
             target_contract_sha256=target.contract_sha256,
             operation_id=operation.id,
             operation_contract_sha256=operation.contract_sha256,
-            inputs=(_input(),),
+            inputs=_input_authority(),
             intent={},
             target_options={},
         )
@@ -408,6 +433,7 @@ def _effect_request() -> tuple[OperationContract, TargetContract, TargetJobReque
             riverhog_base_url="https://riverhog.invalid",
             capability_token="effect-secret",
         ),
+        _callback_access(),
     )
     return operation, target, request
 
@@ -432,6 +458,7 @@ def test_preflight_job_identity_excludes_refreshable_capability_secret() -> None
     second = TargetJobRequest.seal(
         request.declaration,
         request.runtime.model_copy(update={"capability_token": "replacement-secret"}),
+        request.callback_access,
     )
     assert second.request_sha256 == request.request_sha256
 
@@ -456,7 +483,6 @@ def _success_status(
         path="output/result.bin",
         bytes=12,
         sha256=_sha("5"),
-        derived_from=("source",),
     )
     declaration = request.declaration
     workflow = declaration.controller_evidence.execution_envelope.workflow_plan
@@ -466,8 +492,9 @@ def _success_status(
         fence=declaration.fence,
         recipe=workflow.work.recipe.to_identity(),
         operation=workflow.operation.to_identity(),
-        inputs=tuple(item.to_identity() for item in workflow.work.inputs),
-        output_tags=workflow.output_tags,
+        input_set_sha256=_sha("a"),
+        artifact_set_sha256=_sha("b"),
+        output_tag_set_sha256=_sha("c"),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256=_sha("9"),
         controller_evidence=declaration.controller_evidence.model_dump(
@@ -480,15 +507,24 @@ def _success_status(
                 mode="json", by_alias=True, exclude_none=True
             )
         ),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=_input().collection.collection_id,
-                input_archive_root_sha256=_input().collection.archive_root_sha256,
-                input_path=_input().path,
-                status="transformed",
-                outputs=(output.path,),
-            ),
+        disposition_set=ArtifactDispositionSetIdentity(
+            disposition_count=1,
+            output_edge_count=1,
+            output_artifact_count=1,
+            sha256=_sha("d"),
         ),
+    )
+    production = TargetProductionAuthority.seal(
+        TargetProductionAuthorityPayload(
+            job_id=declaration.job_id,
+            plan_sha256=declaration.plan.plan_sha256,
+            outputs=OutputArtifactSetIdentity.seal((output,)),
+            disposition_count=1,
+            disposition_sha256=_sha("e"),
+            source_edge_count=1,
+            source_edge_sha256=_sha("f"),
+            riverhog_disposition_set=derivation.disposition_set,
+        )
     )
     return TargetJobStatus(
         job_id=request.declaration.job_id,
@@ -497,7 +533,7 @@ def _success_status(
         request_sha256=request.request_sha256,
         plan_sha256=request.declaration.plan.plan_sha256,
         progress=TargetProgress(phase="done", completed=1, total=1, unit="artifacts"),
-        outputs=(output,),
+        production=production,
         output_collection=OutputCollectionRef(
             collection_id=7,
             archive_root_sha256=_sha("6"),
@@ -550,7 +586,7 @@ def test_effect_success_is_canonical_bound_and_collection_free() -> None:
     validate_status_against_request(first, request, operation)
     assert first == second
     assert first.protocol == EFFECT_TARGET_PROTOCOL
-    assert first.outputs == ()
+    assert first.production is None
     assert first.output_collection is None
     assert first.derivation is None
     assert first.effect_receipt is not None
@@ -561,16 +597,9 @@ def test_effect_success_is_canonical_bound_and_collection_free() -> None:
         TargetJobStatus.model_validate(
             {
                 **first.model_dump(mode="json"),
-                "outputs": [
-                    {
-                        "id": "forbidden",
-                        "role": "fixture.output/v1",
-                        "path": "forbidden.bin",
-                        "bytes": 0,
-                        "sha256": _sha("0"),
-                        "derived_from": ["source"],
-                    }
-                ],
+                "production": _success_status(_operation(), _request()[2]).production.model_dump(
+                    mode="json"
+                ),
             }
         )
 
@@ -584,12 +613,7 @@ def test_effect_execution_uses_only_generic_claimed_collection_read_custody() ->
         assert not hasattr(execution.runtime, "spec")
         assert not hasattr(execution.runtime, "writer")
         with pytest.raises(RuntimeError, match="cannot publish"):
-            execution.publish(
-                {},
-                artifacts=(),
-                execution_sha256=_sha("6"),
-                dispositions=(),
-            )
+            execution.open_collection_publication()
     finally:
         execution.runtime.close()
 
@@ -609,9 +633,7 @@ def test_effect_receipt_is_operation_schema_checked() -> None:
         validate_status_against_request(changed, request, operation)
 
 
-def test_target_runtime_builds_complete_success_status(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_target_runtime_builds_complete_success_status() -> None:
     operation, _target_contract, request = _request()
     expected = _success_status(operation, request)
     assert expected.derivation is not None
@@ -619,30 +641,41 @@ def test_target_runtime_builds_complete_success_status(
     output_collection = expected.output_collection
     assert output_collection is not None
     session = TargetExecutionSession(request, 1, ClaimedCollectionRuntimeRegistry())
-    runtime = TargetExecutionRuntime(
-        request,
-        object(),  # type: ignore[arg-type]
-        session=session,
-    )
+    assert expected.production is not None
 
-    def publish(*_args: object, **_kwargs: object) -> tuple[DerivedCollectionReceipt, object]:
-        return (
-            DerivedCollectionReceipt(
+    class Runtime:
+        def finish_incremental_publication(
+            self,
+            _writer: object,
+            *,
+            execution_sha256: str,
+            disposition_set: ArtifactDispositionSetIdentity,
+            **_kwargs: object,
+        ) -> DerivedCollectionReceipt:
+            assert execution_sha256 == _sha("9")
+            assert disposition_set == derivation.disposition_set
+            return DerivedCollectionReceipt(
                 collection_id=output_collection.collection_id,
                 archive_root_sha256=output_collection.archive_root_sha256,
                 content_identity=output_collection.content_identity,
                 derivation=derivation,
-            ),
-            output_collection,
-        )
+            )
 
-    monkeypatch.setattr(runtime, "publish", publish)
-    result = runtime.publish_success(
-        {"output": object()},  # type: ignore[dict-item]
-        artifacts=expected.outputs,
+    class Callback:
+        def seal_target_execution_production(self, job_id: str) -> TargetProductionSealResponse:
+            assert job_id == request.declaration.job_id
+            return TargetProductionSealResponse(production=expected.production)
+
+    class Writer:
+        custody_receipts: dict[str, ProducerArtifactCustody] = {}
+
+    runtime = TargetExecutionRuntime(request, Runtime(), session=session)  # type: ignore[arg-type]
+    runtime._input_client = Callback()  # type: ignore[assignment]
+    publication = TargetCollectionPublication(runtime, Writer())  # type: ignore[arg-type]
+
+    result = publication.finish_success(
         operation=operation,
         execution_sha256=_sha("9"),
-        dispositions=derivation.dispositions,
         runtime_evidence={"tool": "fixture"},
     )
     assert result == expected
@@ -661,7 +694,6 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
         path="output/result.bin",
         bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
-        derived_from=("source",),
     )
 
     class Writer:
@@ -676,9 +708,7 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
             _source: object,
             *,
             identity: ProducerArtifactIdentity,
-            sources: object,
         ) -> tuple[ProducerArtifactCustody, ...]:
-            assert sources
             assert local.exists()
             receipt = ProducerArtifactCustody(
                 identity,
@@ -689,7 +719,7 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
                     sha256=identity.sha256,
                     archive_objects=(
                         CollectionUploadCustodyObjectDocument(
-                            volume_id="pack-000000000000",
+                            volume_id="pack-" + "0" * 64,
                             sealed_receipt_sha256=_sha("a"),
                         ),
                     ),
@@ -700,12 +730,26 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
 
     class Execution:
         runtime = Runtime()
+        job_id = _sha("1")
 
-        def inputs(self) -> tuple[tuple[InputArtifact, object], ...]:
-            return ((_input(), object()),)
+        class Callback:
+            def declare_target_execution_output(
+                self, job_id: str, artifact: OutputArtifact
+            ) -> None:
+                assert job_id == _sha("1")
+                assert artifact == output
+
+            def declare_target_execution_source_edge(self, job_id: str, edge: object) -> None:
+                assert job_id == _sha("1")
+
+        _input_client = Callback()
 
     publication = TargetCollectionPublication(Execution(), writer)  # type: ignore[arg-type]
-    custody = publication.append(ProducerFile(local, output.path), output)
+    custody = publication.append(
+        ProducerFile(local, output.path),
+        output,
+        derived_from=("source",),
+    )
 
     assert custody[0].artifact == ProducerArtifactIdentity(
         output.path,
@@ -1117,48 +1161,6 @@ def test_target_http_operations_publish_exact_job_paths_and_empty_cancel() -> No
     assert "requestBody" not in operation_openapi(cancel)["openapi_extra"]
 
 
-def test_operation_contract_rejects_unpermitted_input_disposition() -> None:
-    operation, _target_contract, request = _request()
-    status = _success_status(operation, request)
-    assert status.derivation is not None
-    assert status.output_collection is not None
-    derivation = CollectionDerivation.from_mapping(status.derivation)
-    rejected = ArtifactDisposition(
-        input_collection_id=derivation.dispositions[0].input_collection_id,
-        input_archive_root_sha256=derivation.dispositions[0].input_archive_root_sha256,
-        input_path=derivation.dispositions[0].input_path,
-        status="rejected",
-        code="fixture.rejected/v1",
-        message="fixture rejection",
-    )
-    changed = CollectionDerivation(
-        execution_id=derivation.execution_id,
-        claim_id=derivation.claim_id,
-        fence=derivation.fence,
-        recipe=derivation.recipe,
-        operation=derivation.operation,
-        inputs=derivation.inputs,
-        output_tags=derivation.output_tags,
-        execution_envelope_sha256=derivation.execution_envelope_sha256,
-        execution_sha256=derivation.execution_sha256,
-        controller_evidence=derivation.controller_evidence,
-        controller_evidence_sha256=derivation.controller_evidence_sha256,
-        dispositions=(rejected,),
-    )
-    changed_status = TargetJobStatus.model_validate(
-        {
-            **status.model_dump(mode="json", exclude={"derivation", "output_collection"}),
-            "derivation": changed.as_dict(),
-            "output_collection": {
-                **status.output_collection.model_dump(mode="json"),
-                "derivation_sha256": changed.sha256,
-            },
-        }
-    )
-    with pytest.raises(ValueError, match="disposition is not permitted"):
-        validate_status_against_request(changed_status, request, operation)
-
-
 class BindingTargetService:
     def __init__(
         self,
@@ -1327,7 +1329,7 @@ def test_persistent_target_requires_and_executes_advertised_semantic_validation(
                 TargetPreflightRequest(
                     operation_id=operation.id,
                     operation_contract_sha256=operation.contract_sha256,
-                    inputs=(_input(),),
+                    inputs=_input_authority(),
                     intent={"suffix": ".rejected"},
                     target_options={},
                 )
@@ -1677,6 +1679,7 @@ def test_running_target_receives_capability_refresh_without_persisting_secrets(
         replacement = TargetJobRequest.seal(
             request.declaration,
             request.runtime.model_copy(update={"capability_token": "replacement-secret"}),
+            request.callback_access,
         )
         assert service.put_job(replacement).state == "running"
         assert refreshed.wait(timeout=5)
@@ -1807,6 +1810,7 @@ def test_persisted_publication_survives_lost_response_and_process_restart(
         replacement = TargetJobRequest.seal(
             request.declaration,
             request.runtime.model_copy(update={"capability_token": "replacement-secret"}),
+            request.callback_access,
         )
         assert restarted.put_job(replacement) == success
         assert not called

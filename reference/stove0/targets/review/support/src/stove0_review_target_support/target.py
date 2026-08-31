@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from jsonschema import Draft202012Validator
 from pydantic import JsonValue
 from riverhog_api_client import ProducerFile
-from riverhog_protocol import ArtifactDisposition, canonical_json_bytes, canonical_json_sha256
+from riverhog_protocol import canonical_json_bytes, canonical_json_sha256
 from riverhog_transform_sdk import TransformWorkspace
 from stove0_protocol import JsonSchemaDocument
 from stove0_review_sampler_client import ReviewSamplerClient
@@ -250,7 +250,6 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
         request: TargetJobRequest,
         publication: TargetCollectionPublication | None,
         artifacts: tuple[OutputArtifact, ...],
-        dispositions: tuple[ArtifactDisposition, ...],
         execution_sha256: str,
         attempt: int,
         runtime_evidence: dict[str, JsonValue],
@@ -303,7 +302,6 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
         ) as execution:
             workspace = execution.open_workspace(self.workspace_root)
             try:
-                resolved = execution.inputs()
                 windows = tuple(
                     SamplerWindow(
                         id=f"sample-{index:04d}",
@@ -321,7 +319,7 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
                 sampler_results: list[SamplerResult] = []
                 allowed_output_paths: set[str] = set()
                 produced_bytes = 0
-                for artifact, claimed in sorted(resolved, key=lambda item: item[0].id):
+                for artifact, claimed in execution.iter_inputs():
                     artifact_windows = tuple(
                         item for item in windows if item.input_id == artifact.id
                     )
@@ -386,12 +384,13 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
                                 bytes=output.bytes,
                                 sha256=output.sha256,
                                 media_type=output.media_type,
-                                derived_from=output.derived_from,
                             )
                             artifacts.append(output_artifact)
                             if publication is not None:
                                 publication.append(
-                                    ProducerFile(path, collection_path), output_artifact
+                                    ProducerFile(path, collection_path),
+                                    output_artifact,
+                                    derived_from=output.derived_from,
                                 )
                             window = next(item for item in windows if item.id == output.id)
                             samples.append(
@@ -441,24 +440,18 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
                     bytes=index_bytes,
                     sha256=index_sha,
                     media_type="application/json",
-                    derived_from=tuple(sorted(item.id for item, _claimed in resolved)),
                 )
                 artifacts.append(index)
                 if publication is not None:
-                    publication.append(ProducerFile(index_path, index.path), index)
-                declared = tuple(sorted(artifacts, key=lambda item: item.id))
-                dispositions = tuple(
-                    ArtifactDisposition(
-                        input_collection_id=artifact.collection.collection_id,
-                        input_archive_root_sha256=artifact.collection.archive_root_sha256,
-                        input_path=artifact.path,
-                        status="transformed",
-                        outputs=tuple(
-                            output.path for output in declared if artifact.id in output.derived_from
-                        ),
+                    publication.append(
+                        ProducerFile(index_path, index.path),
+                        index,
+                        derived_from=(item.id for item, _claimed in execution.iter_inputs()),
                     )
-                    for artifact, _claimed in resolved
-                )
+                declared = tuple(sorted(artifacts, key=lambda item: item.id))
+                if publication is not None:
+                    for artifact, _claimed in execution.iter_inputs():
+                        execution.declare_disposition(artifact.id, "transformed")
                 execution_sha256 = _execution_sha256(
                     request.declaration.plan.plan_sha256,
                     self.image_digest,
@@ -471,7 +464,6 @@ class ReviewTargetServiceBase(PersistentTargetService, ABC):
                     request=request,
                     publication=publication,
                     artifacts=declared,
-                    dispositions=dispositions,
                     execution_sha256=execution_sha256,
                     attempt=attempt,
                     runtime_evidence={

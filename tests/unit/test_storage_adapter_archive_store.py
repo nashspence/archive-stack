@@ -243,48 +243,6 @@ def test_metadata_publication_keeps_archive_semantics_in_riverhog() -> None:
     assert adapter.objects["AGENTS.md"].placement == "immediate"
 
 
-def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
-    adapter = _MemoryAdapter()
-    store = _store(adapter)
-    proof_path = "archives/opaque/manifest.json.ots.age"
-    previous = ArchiveObjectIdentity(
-        object_id="proof",
-        kind="proof",
-        object_path=proof_path,
-        plaintext_bytes=0,
-        stored_bytes=0,
-        sha256=hashlib.sha256(b"").hexdigest(),
-        stored_sha256=None,
-        revision=None,
-    )
-
-    receipt = store.replace_archive_proof(
-        collection_id=17,
-        object=previous,
-        proof_bytes=b"proof-bytes",
-        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
-    )
-    identity = ArchiveObjectIdentity(
-        object_id=receipt.object_id,
-        kind=receipt.kind,
-        object_path=receipt.object_path,
-        plaintext_bytes=receipt.plaintext_bytes,
-        stored_bytes=receipt.stored_bytes,
-        sha256=receipt.sha256,
-        stored_sha256=receipt.stored_sha256,
-        revision=receipt.revision,
-    )
-
-    artifact = store.read_archive_artifact(
-        collection_id=17,
-        object=identity,
-        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
-    )
-
-    assert artifact.content == b"proof-bytes"
-    assert adapter.objects[proof_path].placement == "immediate"
-
-
 def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None:
     adapter = _MemoryAdapter()
     content = b"opaque-encrypted-volume"
@@ -317,32 +275,6 @@ def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None
         archive=CollectionArchiveIdentity(objects=(identity,)),
     )
     assert adapter.reads == 0
-
-
-def test_attestation_publication_replaces_a_changed_signed_closure() -> None:
-    adapter = _MemoryAdapter()
-    store = _store(adapter)
-    prefix = "archives/opaque"
-
-    store.publish_archive_attestation(
-        collection_id=17,
-        archive_storage_prefix=prefix,
-        checksums=b"first checksums\n",
-        signature=b"first signature\n",
-        proof=b"first proof\n",
-    )
-    store.publish_archive_attestation(
-        collection_id=17,
-        archive_storage_prefix=prefix,
-        checksums=b"checksums including recovery.json\n",
-        signature=b"replacement signature\n",
-        proof=b"replacement proof\n",
-    )
-
-    assert adapter.objects[f"{prefix}/SHA256SUMS"].content == (
-        b"checksums including recovery.json\n"
-    )
-    assert adapter.objects[f"{prefix}/SHA256SUMS.minisig"].content == (b"replacement signature\n")
 
 
 def test_read_preparation_carries_only_exact_opaque_objects() -> None:
@@ -410,56 +342,6 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
 
     assert len(adapter.deleted) == 1
     assert adapter.deleted[0].mode == "all_versions"
-
-
-def test_plaintext_attestations_round_trip_and_the_proof_is_replaceable() -> None:
-    adapter = _MemoryAdapter()
-    store = _store(adapter)
-
-    published = store.publish_archive_attestation(
-        collection_id=17,
-        archive_storage_prefix="archives/opaque",
-        checksums=b"checksums",
-        signature=b"signature",
-        proof=b"proof",
-    )
-    signature = published.require_object("signature")
-    signature_identity = ArchiveObjectIdentity(
-        object_id=signature.object_id,
-        kind=signature.kind,
-        object_path=signature.object_path,
-        plaintext_bytes=signature.plaintext_bytes,
-        stored_bytes=signature.stored_bytes,
-        sha256=signature.sha256,
-        stored_sha256=signature.stored_sha256,
-        revision=signature.revision,
-    )
-    proof = published.require_object("signature-proof")
-    proof_identity = ArchiveObjectIdentity(
-        object_id=proof.object_id,
-        kind=proof.kind,
-        object_path=proof.object_path,
-        plaintext_bytes=proof.plaintext_bytes,
-        stored_bytes=proof.stored_bytes,
-        sha256=proof.sha256,
-        stored_sha256=proof.stored_sha256,
-        revision=proof.revision,
-    )
-
-    assert (
-        store.read_archive_attestation_artifact(
-            collection_id=17,
-            object=signature_identity,
-        ).content
-        == b"signature"
-    )
-    replaced = store.replace_archive_attestation_proof(
-        collection_id=17,
-        object=proof_identity,
-        proof_bytes=b"mature-proof",
-    )
-    assert adapter.objects[replaced.object_path].content == b"mature-proof"
-    assert adapter.objects[replaced.object_path].placement == "immediate"
 
 
 def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> None:

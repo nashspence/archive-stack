@@ -22,9 +22,7 @@ ObjectPath = Annotated[str, Field(min_length=1)]
 class PendingArchiveRootPublicationOut(RiverhogModel):
     object_path: ObjectPath | None = None
     sha256: Sha256 | None = None
-    proof_object_path: None = None
-    proof_sha256: None = None
-    proof_state: Literal["pending"] = "pending"
+    state: Literal["pending"] = "pending"
 
     @model_validator(mode="after")
     def validate_manifest_pair(self) -> Self:
@@ -36,26 +34,18 @@ class PendingArchiveRootPublicationOut(RiverhogModel):
 class UploadedArchiveRootPublicationOut(RiverhogModel):
     object_path: ObjectPath
     sha256: Sha256
-    proof_object_path: ObjectPath
-    proof_sha256: Sha256
-    proof_state: Literal["uploaded"]
+    state: Literal["uploaded"]
 
 
 class FailedArchiveRootPublicationOut(RiverhogModel):
     object_path: ObjectPath | None = None
     sha256: Sha256 | None = None
-    proof_object_path: ObjectPath | None = None
-    proof_sha256: Sha256 | None = None
-    proof_state: Literal["failed"]
+    state: Literal["failed"]
 
     @model_validator(mode="after")
     def validate_object_pairs(self) -> Self:
         if (self.object_path is None) != (self.sha256 is None):
             raise ValueError("archive-root manifest path and identity must appear together")
-        if (self.proof_object_path is None) != (self.proof_sha256 is None):
-            raise ValueError("archive-root proof path and identity must appear together")
-        if self.proof_object_path is not None and self.object_path is None:
-            raise ValueError("archive-root proof requires its manifest identity")
         return self
 
 
@@ -63,7 +53,7 @@ type _ArchiveRootPublication = Annotated[
     PendingArchiveRootPublicationOut
     | UploadedArchiveRootPublicationOut
     | FailedArchiveRootPublicationOut,
-    Field(discriminator="proof_state"),
+    Field(discriminator="state"),
 ]
 
 

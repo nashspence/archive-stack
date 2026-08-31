@@ -17,19 +17,24 @@ from riverhog_protocol import (
     RetirementClaimReferenceDocument,
     SortOrder,
 )
+from riverhog_protocol.collection_workflow_transport import ExactSetAuthorityDocument
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
+    DispositionState,
     OperationIdentity,
     canonical_json_bytes,
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, InvalidState, NotFound
-from sqlalchemy import asc, delete, desc, func, literal, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, asc, delete, desc, func, literal, or_, select
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
@@ -37,6 +42,7 @@ from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc
 
 from riverhog_core.app_permissions import (
     CATALOG_READ,
+    COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
@@ -44,7 +50,6 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
     collection_resource,
-    tag_resource,
 )
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -52,7 +57,6 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionTagRecord,
     CollectionUploadRecord,
     TagRecord,
 )
@@ -60,11 +64,16 @@ from riverhog_core.catalog_workflow_models import (
     CollectionDerivationRecord,
     CollectionProcessingClaimArtifactRecord,
     CollectionProcessingClaimInputRecord,
+    CollectionProcessingClaimOutputTagRecord,
     CollectionProcessingClaimRecord,
+    CollectionProcessingDispositionOutputRecord,
+    CollectionProcessingDispositionRecord,
+    CollectionProcessingDispositionSetRecord,
     CollectionProcessingOutcomeRecord,
     CollectionTransformCapabilityArtifactRecord,
     CollectionTransformCapabilityRecord,
 )
+from riverhog_core.checkpoint_sha256 import CheckpointSHA256
 from riverhog_core.runtime_config import RuntimeConfig
 
 _MIN_LEASE_SECONDS = 30
@@ -78,6 +87,8 @@ _RETIREMENT_POLICIES = frozenset({"retain", "retire-after-verified-output"})
 _CLAIM_STATES = closed_literal_values(ClaimState)
 _CLAIM_SORT_NAMES = closed_literal_values(ProcessingClaimSort)
 _SORT_ORDERS = closed_literal_values(SortOrder)
+_DISPOSITION_BATCH_MAX = 128
+_DISPOSITION_VALIDATION_BATCH = 128
 _CLAIM_SORT_FIELDS = {
     "created_at": CollectionProcessingClaimRecord.created_at,
     "updated_at": CollectionProcessingClaimRecord.updated_at,
@@ -105,7 +116,6 @@ class SqlAlchemyCollectionWorkflowService:
         work_id: str,
         work_document: Mapping[str, object],
         work_document_sha256: str,
-        inputs: Sequence[CollectionRootIdentity],
         lease_seconds: int = _DEFAULT_LEASE_SECONDS,
         purpose: str = "collection-work/v1",
         principal: ApplicationPrincipal,
@@ -124,7 +134,6 @@ class SqlAlchemyCollectionWorkflowService:
         )
         if hashlib.sha256(encoded_work).hexdigest() != normalized_work_sha256:
             raise BadRequest("work document identity does not match its canonical JSON")
-        normalized_inputs = _canonical_roots(inputs)
         claim_id = canonical_json_sha256(
             {
                 "format": "riverhog-processing-claim-identity/v1",
@@ -136,12 +145,6 @@ class SqlAlchemyCollectionWorkflowService:
         now = utc_timestamp_now()
         expires_at = format_utc_timestamp(utc_now() + timedelta(seconds=lease))
         with session_scope(self._session_factory) as session:
-            for expected in normalized_inputs:
-                if _collection_root(session, expected.collection_id, lock=True) != expected:
-                    raise Conflict(
-                        f"input collection root differs from the claimed identity: "
-                        f"{expected.collection_id}"
-                    )
             claim = session.scalar(
                 select(CollectionProcessingClaimRecord)
                 .where(CollectionProcessingClaimRecord.id == claim_id)
@@ -155,7 +158,6 @@ class SqlAlchemyCollectionWorkflowService:
                     purpose=normalized_purpose,
                     work_document_json=encoded_work.decode("utf-8"),
                     work_document_sha256=normalized_work_sha256,
-                    inputs=normalized_inputs,
                     principal=principal,
                 )
                 if claim.state == "active" and _expired(claim.expires_at):
@@ -194,18 +196,360 @@ class SqlAlchemyCollectionWorkflowService:
             )
             session.add(claim)
             session.flush()
-            session.add_all(
-                CollectionProcessingClaimInputRecord(
-                    claim_id=claim.id,
-                    collection_id=root.collection_id,
-                    collection_order=index,
-                    archive_root_sha256=root.archive_root_sha256,
-                    content_identity=root.content_identity,
-                )
-                for index, root in enumerate(normalized_inputs)
-            )
-            session.flush()
             return _claim_payload(session, claim)
+
+    def append_claim_inputs(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        start_ordinal: int,
+        inputs: Sequence[CollectionRootIdentity],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        """Append one bounded, retry-safe canonical input-root batch."""
+
+        values = tuple(inputs)
+        _bounded_batch(values, "input root")
+        if values != tuple(sorted(values)) or len({item.collection_id for item in values}) != len(
+            values
+        ):
+            raise BadRequest("input roots must be unique and canonically ordered")
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            if claim.inputs_sealed_at is not None:
+                return _input_set_payload(claim)
+            ordinal = _append_start(start_ordinal, claim.input_count)
+            checkpoint = _set_checkpoint(claim.input_hash_state, "claim-inputs")
+            for value in values:
+                if ordinal < claim.input_count:
+                    current = session.scalar(
+                        select(CollectionProcessingClaimInputRecord).where(
+                            CollectionProcessingClaimInputRecord.claim_id == claim.id,
+                            CollectionProcessingClaimInputRecord.collection_order == ordinal,
+                        )
+                    )
+                    if current is None or _input_identity(current) != value:
+                        raise Conflict("input-root retry differs from staged authority")
+                    ordinal += 1
+                    continue
+                previous = _last_input_identity(session, claim.id)
+                if previous is not None and value <= previous:
+                    raise BadRequest("input roots must remain canonically ordered across batches")
+                if (
+                    session.get(
+                        CollectionProcessingClaimInputRecord,
+                        (claim.id, value.collection_id),
+                    )
+                    is not None
+                ):
+                    raise Conflict("input collection is already staged")
+                if _collection_root(session, value.collection_id, lock=True) != value:
+                    raise Conflict(
+                        f"input collection root differs from the claimed identity: "
+                        f"{value.collection_id}"
+                    )
+                session.add(
+                    CollectionProcessingClaimInputRecord(
+                        claim_id=claim.id,
+                        collection_id=value.collection_id,
+                        collection_order=ordinal,
+                        archive_root_sha256=value.archive_root_sha256,
+                        content_identity=value.content_identity,
+                    )
+                )
+                _checkpoint_item(checkpoint, value.as_dict())
+                claim.input_count += 1
+                ordinal += 1
+                session.flush()
+            claim.input_hash_state = checkpoint.export_state()
+            claim.updated_at = utc_timestamp_now()
+            return _input_set_payload(claim)
+
+    def seal_claim_inputs(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            if claim.inputs_sealed_at is None:
+                if claim.input_count < 1 or claim.input_hash_state is None:
+                    raise Conflict("input-root authority is empty")
+                claim.input_set_sha256 = CheckpointSHA256.from_state(
+                    claim.input_hash_state
+                ).hexdigest()
+                claim.inputs_sealed_at = utc_timestamp_now()
+                claim.updated_at = claim.inputs_sealed_at
+            return _input_set_payload(claim)
+
+    def list_claim_inputs(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        start = _page_start(start_ordinal)
+        with read_snapshot(self._session_factory) as session:
+            claim = _claim_actor(session, claim_id, principal)
+            authority = _require_set_authority(
+                claim.input_count,
+                claim.input_set_sha256,
+                authority_sha256,
+                "input-root",
+            )
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingClaimInputRecord)
+                    .where(
+                        CollectionProcessingClaimInputRecord.claim_id == claim.id,
+                        CollectionProcessingClaimInputRecord.collection_order >= start,
+                    )
+                    .order_by(CollectionProcessingClaimInputRecord.collection_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
+                )
+            )
+            next_ordinal = start + len(rows)
+            return {
+                "authority": authority,
+                "start_ordinal": start,
+                "next_ordinal": next_ordinal if next_ordinal < claim.input_count else None,
+                "inputs": [_input_identity(item).as_dict() for item in rows],
+            }
+
+    def append_claim_artifacts(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        start_ordinal: int,
+        artifacts: Sequence[CollectionArtifactIdentity],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        values = tuple(artifacts)
+        _bounded_batch(values, "artifact")
+        if values != tuple(sorted(values)):
+            raise BadRequest("artifacts must be unique and canonically ordered")
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            _require_inputs_sealed(claim)
+            if claim.artifacts_sealed_at is not None:
+                return _artifact_set_payload(claim)
+            ordinal = _append_start(start_ordinal, claim.artifact_count)
+            checkpoint = _set_checkpoint(claim.artifact_hash_state, "claim-artifacts")
+            for value in values:
+                if ordinal < claim.artifact_count:
+                    current = session.scalar(
+                        select(CollectionProcessingClaimArtifactRecord).where(
+                            CollectionProcessingClaimArtifactRecord.claim_id == claim.id,
+                            CollectionProcessingClaimArtifactRecord.artifact_order == ordinal,
+                        )
+                    )
+                    if current is None or _artifact_identity(session, claim.id, current) != value:
+                        raise Conflict("artifact retry differs from staged authority")
+                    ordinal += 1
+                    continue
+                previous = _last_artifact_identity(session, claim.id)
+                if previous is not None and value <= previous:
+                    raise BadRequest("artifacts must remain canonically ordered across batches")
+                _validate_claim_artifacts(session, claim, (value,))
+                existing = session.get(
+                    CollectionProcessingClaimArtifactRecord,
+                    (claim.id, value.collection.collection_id, value.path),
+                )
+                if existing is not None:
+                    raise Conflict("artifact is already staged")
+                session.add(
+                    CollectionProcessingClaimArtifactRecord(
+                        claim_id=claim.id,
+                        collection_id=value.collection.collection_id,
+                        path=value.path,
+                        artifact_order=ordinal,
+                        bytes=value.bytes,
+                        sha256=value.sha256,
+                    )
+                )
+                _checkpoint_item(checkpoint, value.as_dict())
+                claim.artifact_count += 1
+                claim.artifact_bytes += value.bytes
+                ordinal += 1
+                session.flush()
+            claim.artifact_hash_state = checkpoint.export_state()
+            claim.updated_at = utc_timestamp_now()
+            return _artifact_set_payload(claim)
+
+    def seal_claim_artifacts(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            if claim.artifacts_sealed_at is None:
+                if claim.artifact_count < 1 or claim.artifact_hash_state is None:
+                    raise Conflict("artifact authority is empty")
+                claim.artifact_set_sha256 = CheckpointSHA256.from_state(
+                    claim.artifact_hash_state
+                ).hexdigest()
+                claim.artifacts_sealed_at = utc_timestamp_now()
+                claim.updated_at = claim.artifacts_sealed_at
+            return _artifact_set_payload(claim)
+
+    def list_claim_artifacts(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        start = _page_start(start_ordinal)
+        with read_snapshot(self._session_factory) as session:
+            claim = _claim_actor(session, claim_id, principal)
+            authority = _require_artifact_authority(claim, authority_sha256)
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingClaimArtifactRecord)
+                    .where(
+                        CollectionProcessingClaimArtifactRecord.claim_id == claim.id,
+                        CollectionProcessingClaimArtifactRecord.artifact_order >= start,
+                    )
+                    .order_by(CollectionProcessingClaimArtifactRecord.artifact_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
+                )
+            )
+            next_ordinal = start + len(rows)
+            return {
+                "authority": authority,
+                "start_ordinal": start,
+                "next_ordinal": next_ordinal if next_ordinal < claim.artifact_count else None,
+                "artifacts": [
+                    _artifact_identity(session, claim.id, item).as_dict() for item in rows
+                ],
+            }
+
+    def append_claim_output_tags(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        start_ordinal: int,
+        tags: Sequence[str],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        values = tuple(str(item) for item in tags)
+        _bounded_batch(values, "output tag")
+        if values != tuple(sorted(set(values))):
+            raise BadRequest("output tags must be unique and canonically ordered")
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            if claim.output_tags_sealed_at is not None:
+                return _output_tag_set_payload(claim)
+            ordinal = _append_start(start_ordinal, claim.output_tag_count)
+            checkpoint = _tag_checkpoint(claim.output_tag_hash_state)
+            for value in values:
+                if session.get(TagRecord, value) is None:
+                    raise BadRequest(f"output tag does not exist: {value}")
+                if ordinal < claim.output_tag_count:
+                    current = session.scalar(
+                        select(CollectionProcessingClaimOutputTagRecord).where(
+                            CollectionProcessingClaimOutputTagRecord.claim_id == claim.id,
+                            CollectionProcessingClaimOutputTagRecord.tag_order == ordinal,
+                        )
+                    )
+                    if current is None or current.tag != value:
+                        raise Conflict("output-tag retry differs from staged authority")
+                    ordinal += 1
+                    continue
+                previous = session.scalar(
+                    select(CollectionProcessingClaimOutputTagRecord.tag)
+                    .where(CollectionProcessingClaimOutputTagRecord.claim_id == claim.id)
+                    .order_by(CollectionProcessingClaimOutputTagRecord.tag_order.desc())
+                    .limit(1)
+                )
+                if previous is not None and value <= previous:
+                    raise BadRequest("output tags must remain canonically ordered across batches")
+                session.add(
+                    CollectionProcessingClaimOutputTagRecord(
+                        claim_id=claim.id,
+                        tag=value,
+                        tag_order=ordinal,
+                    )
+                )
+                _checkpoint_tag(checkpoint, value, ordinal=ordinal)
+                claim.output_tag_count += 1
+                ordinal += 1
+                session.flush()
+            claim.output_tag_hash_state = checkpoint.export_state()
+            claim.updated_at = utc_timestamp_now()
+            return _output_tag_set_payload(claim)
+
+    def seal_claim_output_tags(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            if claim.output_tags_sealed_at is None:
+                if claim.output_tag_count < 1 or claim.output_tag_hash_state is None:
+                    raise Conflict("output-tag authority is empty")
+                checkpoint = CheckpointSHA256.from_state(claim.output_tag_hash_state)
+                checkpoint.update(b"]}")
+                claim.output_tag_set_sha256 = checkpoint.hexdigest()
+                claim.output_tags_sealed_at = utc_timestamp_now()
+                claim.updated_at = claim.output_tags_sealed_at
+            return _output_tag_set_payload(claim)
+
+    def list_claim_output_tags(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        start = _page_start(start_ordinal)
+        with read_snapshot(self._session_factory) as session:
+            claim = _claim_actor(session, claim_id, principal)
+            authority = _require_set_authority(
+                claim.output_tag_count,
+                claim.output_tag_set_sha256,
+                authority_sha256,
+                "output-tag",
+            )
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingClaimOutputTagRecord)
+                    .where(
+                        CollectionProcessingClaimOutputTagRecord.claim_id == claim.id,
+                        CollectionProcessingClaimOutputTagRecord.tag_order >= start,
+                    )
+                    .order_by(CollectionProcessingClaimOutputTagRecord.tag_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
+                )
+            )
+            next_ordinal = start + len(rows)
+            return {
+                "authority": authority,
+                "start_ordinal": start,
+                "next_ordinal": next_ordinal if next_ordinal < claim.output_tag_count else None,
+                "tags": [item.tag for item in rows],
+            }
 
     def get_claim(
         self,
@@ -214,7 +558,7 @@ class SqlAlchemyCollectionWorkflowService:
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
         with session_scope(self._session_factory) as session:
-            return _claim_payload(session, _owned_claim(session, claim_id, principal))
+            return _claim_payload(session, _claim_actor(session, claim_id, principal))
 
     def list_claims(
         self,
@@ -335,8 +679,6 @@ class SqlAlchemyCollectionWorkflowService:
         controller_evidence_sha256: str,
         operation_id: str,
         operation_sha256: str,
-        input_artifacts: Sequence[CollectionArtifactIdentity],
-        output_tags: Sequence[str],
         retirement_policy: str,
         retirement_grace_seconds: int,
         principal: ApplicationPrincipal,
@@ -361,12 +703,14 @@ class SqlAlchemyCollectionWorkflowService:
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
         policy = _retirement_policy(retirement_policy, retirement_grace_seconds)
-        artifacts = _canonical_artifacts(input_artifacts)
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
             _require_live_claim(claim, fence=fence)
-            _validate_claim_artifacts(session, claim, artifacts)
-            tags = _require_output_tags(session, output_tags)
+            _require_inputs_sealed(claim)
+            if claim.artifacts_sealed_at is None or claim.artifact_set_sha256 is None:
+                raise Conflict("artifact authority is not sealed")
+            if claim.output_tags_sealed_at is None or claim.output_tag_set_sha256 is None:
+                raise Conflict("output-tag authority is not sealed")
             encoded_evidence = json.dumps(
                 evidence,
                 ensure_ascii=False,
@@ -380,7 +724,6 @@ class SqlAlchemyCollectionWorkflowService:
                     evidence_sha256,
                     operation.id,
                     operation.sha256,
-                    json.dumps(list(tags), separators=(",", ":")),
                     policy,
                     int(retirement_grace_seconds),
                 )
@@ -390,14 +733,11 @@ class SqlAlchemyCollectionWorkflowService:
                     claim.controller_evidence_sha256,
                     claim.operation_id,
                     claim.operation_sha256,
-                    claim.output_tags_json,
                     claim.retirement_policy,
                     claim.retirement_grace_seconds,
                 )
                 if actual != expected:
                     raise Conflict("collection processing claim already has another sealed plan")
-                if tuple(_claim_artifact_identities(session, claim.id)) != artifacts:
-                    raise Conflict("collection processing claim already has another artifact scope")
                 return _claim_payload(session, claim)
             conflict = session.scalar(
                 select(CollectionProcessingClaimRecord.id).where(
@@ -413,22 +753,10 @@ class SqlAlchemyCollectionWorkflowService:
             claim.controller_evidence_sha256 = evidence_sha256
             claim.operation_id = operation.id
             claim.operation_sha256 = operation.sha256
-            claim.output_tags_json = json.dumps(list(tags), separators=(",", ":"))
             claim.retirement_policy = policy
             claim.retirement_grace_seconds = int(retirement_grace_seconds)
             claim.plan_sealed_at = now
             claim.updated_at = now
-            session.add_all(
-                CollectionProcessingClaimArtifactRecord(
-                    claim_id=claim.id,
-                    collection_id=item.collection.collection_id,
-                    path=item.path,
-                    bytes=item.bytes,
-                    sha256=item.sha256,
-                )
-                for item in artifacts
-            )
-            session.flush()
             # Observation capabilities are no longer required after a plan is sealed.
             # Revocation narrows the active payload readers before target execution.
             _revoke_capabilities(session, claim.id, now=now)
@@ -441,7 +769,6 @@ class SqlAlchemyCollectionWorkflowService:
         fence: int,
         audience: str,
         actions: Sequence[str],
-        artifacts: Sequence[CollectionArtifactIdentity],
         ttl_seconds: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
@@ -452,22 +779,11 @@ class SqlAlchemyCollectionWorkflowService:
         normalized_audience = str(audience)
         if _CAPABILITY_AUDIENCE.fullmatch(normalized_audience) is None:
             raise BadRequest("transform capability audience is invalid")
-        scoped_artifacts = _canonical_artifacts(artifacts)
-        if "read-inputs" not in normalized_actions and scoped_artifacts:
-            raise BadRequest("only read-input capabilities accept artifact scope")
-        if "read-inputs" in normalized_actions and not scoped_artifacts:
-            raise BadRequest("read-input capability requires exact artifact scope")
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
             _require_live_claim(claim, fence=fence)
-            _validate_claim_artifacts(session, claim, scoped_artifacts)
             if "write-output" in normalized_actions and claim.plan_sealed_at is None:
                 raise Conflict("write-output capability requires a sealed execution plan")
-            if (
-                "write-output" in normalized_actions
-                and tuple(_claim_artifact_identities(session, claim.id)) != scoped_artifacts
-            ):
-                raise Conflict("write-output capability differs from the sealed artifact scope")
             claim_expiry = parse_utc_timestamp(claim.expires_at)
             requested_expiry = utc_now() + timedelta(seconds=ttl)
             expiry = min(claim_expiry, requested_expiry)
@@ -480,22 +796,12 @@ class SqlAlchemyCollectionWorkflowService:
                 audience=normalized_audience,
                 token_sha256=hashlib.sha256(token.encode("utf-8")).hexdigest(),
                 actions_json=json.dumps(list(normalized_actions), separators=(",", ":")),
-                state="active",
+                state="receiving",
                 expires_at=format_utc_timestamp(expiry),
                 created_at=now,
             )
             session.add(capability)
             session.flush()
-            session.add_all(
-                CollectionTransformCapabilityArtifactRecord(
-                    capability_id=capability.id,
-                    collection_id=item.collection.collection_id,
-                    path=item.path,
-                    bytes=item.bytes,
-                    sha256=item.sha256,
-                )
-                for item in scoped_artifacts
-            )
             claim.updated_at = now
             session.flush()
             return {
@@ -505,11 +811,123 @@ class SqlAlchemyCollectionWorkflowService:
                 "fence": claim.fence,
                 "audience": capability.audience,
                 "actions": list(normalized_actions),
+                "state": "receiving",
                 "principal_app": _capability_app(claim, normalized_actions),
                 "expires_at": capability.expires_at,
-                "artifacts": [item.as_dict() for item in scoped_artifacts],
+                "artifacts": {
+                    "state": "receiving",
+                    "count": 0,
+                    "total_bytes": 0,
+                    "authority": None,
+                },
                 "token": token,
             }
+
+    def append_capability_artifacts(
+        self,
+        claim_id: str,
+        capability_id: str,
+        *,
+        fence: int,
+        start_ordinal: int,
+        artifacts: Sequence[CollectionArtifactIdentity],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        values = tuple(artifacts)
+        _bounded_batch(values, "capability artifact")
+        if values != tuple(sorted(values)):
+            raise BadRequest("capability artifacts must be unique and canonically ordered")
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            capability = _owned_capability(session, claim, capability_id)
+            if capability.state == "active":
+                return _capability_artifact_set_payload(capability)
+            if capability.state != "receiving":
+                raise Conflict("capability no longer accepts artifact scope")
+            ordinal = _append_start(start_ordinal, capability.artifact_count)
+            checkpoint = _set_checkpoint(capability.artifact_hash_state, "claim-artifacts")
+            for value in values:
+                if ordinal < capability.artifact_count:
+                    current = session.scalar(
+                        select(CollectionTransformCapabilityArtifactRecord).where(
+                            CollectionTransformCapabilityArtifactRecord.capability_id
+                            == capability.id,
+                            CollectionTransformCapabilityArtifactRecord.artifact_order == ordinal,
+                        )
+                    )
+                    if (
+                        current is None
+                        or _capability_artifact_identity(session, claim, current) != value
+                    ):
+                        raise Conflict("capability artifact retry differs from staged authority")
+                    ordinal += 1
+                    continue
+                previous = _last_capability_artifact_identity(session, claim, capability.id)
+                if previous is not None and value <= previous:
+                    raise BadRequest(
+                        "capability artifacts must remain canonically ordered across batches"
+                    )
+                _validate_claim_artifacts(session, claim, (value,))
+                existing = session.get(
+                    CollectionTransformCapabilityArtifactRecord,
+                    (capability.id, value.collection.collection_id, value.path),
+                )
+                if existing is not None:
+                    raise Conflict("capability artifact is already staged")
+                session.add(
+                    CollectionTransformCapabilityArtifactRecord(
+                        capability_id=capability.id,
+                        collection_id=value.collection.collection_id,
+                        path=value.path,
+                        artifact_order=ordinal,
+                        bytes=value.bytes,
+                        sha256=value.sha256,
+                    )
+                )
+                _checkpoint_item(checkpoint, value.as_dict())
+                capability.artifact_count += 1
+                capability.artifact_bytes += value.bytes
+                ordinal += 1
+                session.flush()
+            capability.artifact_hash_state = checkpoint.export_state()
+            claim.updated_at = utc_timestamp_now()
+            return _capability_artifact_set_payload(capability)
+
+    def seal_capability_artifacts(
+        self,
+        claim_id: str,
+        capability_id: str,
+        *,
+        fence: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_live_claim(claim, fence=fence)
+            capability = _owned_capability(session, claim, capability_id)
+            if capability.state == "active":
+                return _capability_artifact_set_payload(capability)
+            if (
+                capability.state != "receiving"
+                or capability.artifact_count < 1
+                or capability.artifact_hash_state is None
+            ):
+                raise Conflict("capability artifact authority is empty or unavailable")
+            identity = CheckpointSHA256.from_state(capability.artifact_hash_state).hexdigest()
+            actions = tuple(sorted(set(json.loads(capability.actions_json))))
+            if "write-output" in actions and (
+                claim.plan_sealed_at is None
+                or claim.artifact_set_sha256 != identity
+                or claim.artifact_count != capability.artifact_count
+                or claim.artifact_bytes != capability.artifact_bytes
+            ):
+                raise Conflict("write-output capability differs from the sealed artifact plan")
+            capability.artifact_set_sha256 = identity
+            capability.artifacts_sealed_at = utc_timestamp_now()
+            capability.state = "active"
+            claim.updated_at = capability.artifacts_sealed_at
+            return _capability_artifact_set_payload(capability)
 
     def authenticate_capability(self, token: str) -> ApplicationPrincipal | None:
         supplied = token.strip()
@@ -537,21 +955,30 @@ class SqlAlchemyCollectionWorkflowService:
             if "write-output" in actions and claim.plan_sealed_at is None:
                 return None
             grants: set[ApplicationAccess] = set()
+            grants.add(ApplicationAccess(COLLECTION_TRANSFORMS_EXECUTE))
             if "read-inputs" in actions:
-                for item in _claim_inputs(session, claim.id):
-                    resource = collection_resource(item.collection_id)
-                    grants.update(
-                        {
-                            ApplicationAccess(CATALOG_READ, resource),
-                            ApplicationAccess(RETRIEVAL_MANAGE, resource),
-                            ApplicationAccess(PROVENANCE_READ, resource),
-                            ApplicationAccess(PROVENANCE_EXPORT, resource),
-                        }
+                representative_collection_id = session.scalar(
+                    select(CollectionTransformCapabilityArtifactRecord.collection_id)
+                    .where(
+                        CollectionTransformCapabilityArtifactRecord.capability_id == capability.id
                     )
+                    .order_by(CollectionTransformCapabilityArtifactRecord.artifact_order)
+                    .limit(1)
+                )
+                if representative_collection_id is None:
+                    return None
+                resource = collection_resource(representative_collection_id)
+                grants.update(
+                    {
+                        ApplicationAccess(CATALOG_READ, resource),
+                        ApplicationAccess(RETRIEVAL_MANAGE, resource),
+                        ApplicationAccess(PROVENANCE_READ, resource),
+                        ApplicationAccess(PROVENANCE_EXPORT, resource),
+                    }
+                )
             if "write-output" in actions:
-                assert claim.output_tags_json is not None
-                for tag in json.loads(claim.output_tags_json):
-                    grants.add(ApplicationAccess(COLLECTIONS_CREATE, tag_resource(str(tag))))
+                grants.add(ApplicationAccess(COLLECTION_TRANSFORMS_EXECUTE))
+                grants.add(ApplicationAccess(COLLECTIONS_CREATE))
             app = _capability_app(claim, actions)
             has_artifact_scope = session.scalar(
                 select(CollectionTransformCapabilityArtifactRecord.capability_id)
@@ -569,6 +996,361 @@ class SqlAlchemyCollectionWorkflowService:
                 access=frozenset(grants),
                 artifact_scope_capability_id=(capability.id if "read-inputs" in actions else None),
             )
+
+    def record_dispositions(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        dispositions: Sequence[ArtifactDisposition],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        """Insert one bounded idempotent disposition batch in any arrival order."""
+
+        values = tuple(dispositions)
+        if not values or len(values) > _DISPOSITION_BATCH_MAX:
+            raise BadRequest(f"disposition batch must contain 1 to {_DISPOSITION_BATCH_MAX} facts")
+        keys = [
+            (item.input_collection_id, item.input_archive_root_sha256, item.input_path)
+            for item in values
+        ]
+        if len(keys) != len(set(keys)):
+            raise BadRequest("disposition batch repeats an input artifact")
+        with session_scope(self._session_factory) as session:
+            claim = _claim_execution_actor(
+                session,
+                claim_id,
+                fence=fence,
+                principal=principal,
+            )
+            disposition_set = _receiving_disposition_set(session, claim)
+            additions = 0
+            transformed = 0
+            for item in values:
+                _require_disposition_input(session, claim, item)
+                existing = session.get(
+                    CollectionProcessingDispositionRecord,
+                    (claim.id, item.input_collection_id, item.input_path),
+                )
+                if existing is not None:
+                    if _disposition_record_identity(session, claim, existing) != item:
+                        raise Conflict("input artifact already has another disposition")
+                    continue
+                if disposition_set.state != "receiving":
+                    raise Conflict("disposition set no longer accepts facts")
+                session.add(
+                    CollectionProcessingDispositionRecord(
+                        claim_id=claim.id,
+                        collection_id=item.input_collection_id,
+                        path=item.input_path,
+                        status=item.status,
+                        failure_code=item.code,
+                        failure_message=item.message,
+                    )
+                )
+                additions += 1
+                transformed += int(item.status == "transformed")
+            if additions:
+                disposition_set.disposition_count += additions
+                disposition_set.transformed_count += transformed
+                disposition_set.updated_at = utc_timestamp_now()
+                claim.updated_at = disposition_set.updated_at
+            session.flush()
+            return _disposition_set_payload(disposition_set)
+
+    def record_disposition_outputs(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        outputs: Sequence[ArtifactDispositionOutput],
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        """Insert one bounded idempotent source-to-output edge batch."""
+
+        values = tuple(outputs)
+        if not values or len(values) > _DISPOSITION_BATCH_MAX:
+            raise BadRequest(
+                f"disposition output batch must contain 1 to {_DISPOSITION_BATCH_MAX} edges"
+            )
+        keys = [(item.output_path, item.input_collection_id, item.input_path) for item in values]
+        if len(keys) != len(set(keys)):
+            raise BadRequest("disposition output batch repeats a source edge")
+        with session_scope(self._session_factory) as session:
+            claim = _claim_execution_actor(
+                session,
+                claim_id,
+                fence=fence,
+                principal=principal,
+            )
+            disposition_set = _receiving_disposition_set(session, claim)
+            additions = 0
+            new_outputs = 0
+            newly_mapped_inputs = 0
+            for item in values:
+                _require_disposition_output(session, claim, item)
+                existing = session.get(
+                    CollectionProcessingDispositionOutputRecord,
+                    (
+                        claim.id,
+                        item.output_path,
+                        item.input_collection_id,
+                        item.input_path,
+                    ),
+                )
+                if existing is not None:
+                    continue
+                if disposition_set.state != "receiving":
+                    raise Conflict("disposition set no longer accepts output edges")
+                output_exists = session.scalar(
+                    select(CollectionProcessingDispositionOutputRecord.claim_id)
+                    .where(
+                        CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+                        CollectionProcessingDispositionOutputRecord.output_path == item.output_path,
+                    )
+                    .limit(1)
+                )
+                source_exists = session.scalar(
+                    select(CollectionProcessingDispositionOutputRecord.claim_id)
+                    .where(
+                        CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+                        CollectionProcessingDispositionOutputRecord.input_collection_id
+                        == item.input_collection_id,
+                        CollectionProcessingDispositionOutputRecord.input_path == item.input_path,
+                    )
+                    .limit(1)
+                )
+                session.add(
+                    CollectionProcessingDispositionOutputRecord(
+                        claim_id=claim.id,
+                        output_path=item.output_path,
+                        input_collection_id=item.input_collection_id,
+                        input_path=item.input_path,
+                    )
+                )
+                additions += 1
+                new_outputs += int(output_exists is None)
+                newly_mapped_inputs += int(source_exists is None)
+            if additions:
+                disposition_set.output_edge_count += additions
+                disposition_set.output_artifact_count += new_outputs
+                disposition_set.transformed_with_outputs_count += newly_mapped_inputs
+                disposition_set.updated_at = utc_timestamp_now()
+                claim.updated_at = disposition_set.updated_at
+            session.flush()
+            return _disposition_set_payload(disposition_set)
+
+    def seal_disposition_set(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        """Begin bounded restartable sealing of one exact relational set."""
+
+        with session_scope(self._session_factory) as session:
+            claim = _claim_execution_actor(
+                session,
+                claim_id,
+                fence=fence,
+                principal=principal,
+            )
+            disposition_set = _receiving_disposition_set(session, claim)
+            if disposition_set.state in {"sealing", "sealed"}:
+                return _disposition_set_payload(disposition_set)
+            if disposition_set.state == "failed":
+                raise Conflict("disposition set sealing failed")
+            expected = int(claim.artifact_count)
+            if disposition_set.disposition_count != expected:
+                raise Conflict("disposition set does not account for every claimed artifact")
+            if (
+                disposition_set.output_edge_count < 1
+                or disposition_set.output_artifact_count < 1
+                or disposition_set.transformed_count
+                != disposition_set.transformed_with_outputs_count
+            ):
+                raise Conflict("disposition set does not bind every transformed artifact")
+            now = utc_timestamp_now()
+            disposition_set.state = "sealing"
+            disposition_set.validation_phase = "dispositions"
+            disposition_set.disposition_hash_state = CheckpointSHA256().export_state()
+            disposition_set.output_hash_state = CheckpointSHA256().export_state()
+            disposition_set.failure = None
+            disposition_set.updated_at = now
+            claim.updated_at = now
+        self._advance_disposition_set(claim_id)
+        return self.get_disposition_set(claim_id, principal=principal)
+
+    def get_disposition_set(
+        self,
+        claim_id: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            claim = _claim_actor(session, claim_id, principal)
+            disposition_set = session.get(CollectionProcessingDispositionSetRecord, claim.id)
+            if disposition_set is None:
+                raise NotFound(f"disposition set not found: {claim_id}")
+            return _disposition_set_payload(disposition_set)
+
+    def list_dispositions(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        page: int,
+        per_page: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        _page_args(page, per_page)
+        expected = _sha256(authority_sha256, "disposition set identity")
+        with read_snapshot(self._session_factory) as session:
+            claim = _claim_actor(session, claim_id, principal)
+            disposition_set = _sealed_disposition_authority(session, claim.id, expected)
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingDispositionRecord)
+                    .where(CollectionProcessingDispositionRecord.claim_id == claim.id)
+                    .order_by(
+                        CollectionProcessingDispositionRecord.collection_id,
+                        CollectionProcessingDispositionRecord.path,
+                    )
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                )
+            )
+            return {
+                "authority": _disposition_set_identity(disposition_set).as_dict(),
+                "page": page,
+                "per_page": per_page,
+                "total": int(disposition_set.disposition_count),
+                "pages": (int(disposition_set.disposition_count) + per_page - 1) // per_page,
+                "dispositions": [
+                    _disposition_record_identity(session, claim, row).as_dict() for row in rows
+                ],
+            }
+
+    def list_disposition_outputs(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        page: int,
+        per_page: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        _page_args(page, per_page)
+        expected = _sha256(authority_sha256, "disposition set identity")
+        with read_snapshot(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal)
+            disposition_set = _sealed_disposition_authority(session, claim.id, expected)
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingDispositionOutputRecord)
+                    .where(CollectionProcessingDispositionOutputRecord.claim_id == claim.id)
+                    .order_by(
+                        CollectionProcessingDispositionOutputRecord.output_path,
+                        CollectionProcessingDispositionOutputRecord.input_collection_id,
+                        CollectionProcessingDispositionOutputRecord.input_path,
+                    )
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                )
+            )
+            return {
+                "authority": _disposition_set_identity(disposition_set).as_dict(),
+                "page": page,
+                "per_page": per_page,
+                "total": int(disposition_set.output_edge_count),
+                "pages": (int(disposition_set.output_edge_count) + per_page - 1) // per_page,
+                "outputs": [
+                    _disposition_output_record_identity(session, claim, row).as_dict()
+                    for row in rows
+                ],
+            }
+
+    def process_due_disposition_sets(self, *, limit: int = 1) -> int:
+        if limit < 1:
+            return 0
+        with session_scope(self._session_factory) as session:
+            ids = list(
+                session.scalars(
+                    select(CollectionProcessingDispositionSetRecord.claim_id)
+                    .where(CollectionProcessingDispositionSetRecord.state == "sealing")
+                    .order_by(
+                        CollectionProcessingDispositionSetRecord.updated_at,
+                        CollectionProcessingDispositionSetRecord.claim_id,
+                    )
+                    .limit(limit)
+                )
+            )
+        for claim_id in ids:
+            self._advance_disposition_set(claim_id)
+        return len(ids)
+
+    def requeue_interrupted_disposition_sets_for_startup(self) -> int:
+        """Sealing checkpoints are durable; startup only makes their work visible."""
+
+        with session_scope(self._session_factory) as session:
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionProcessingDispositionSetRecord)
+                    .where(CollectionProcessingDispositionSetRecord.state == "sealing")
+                )
+                or 0
+            )
+
+    def _advance_disposition_set(self, claim_id: str) -> None:
+        with session_scope(self._session_factory) as session:
+            disposition_set = session.scalar(
+                select(CollectionProcessingDispositionSetRecord)
+                .where(CollectionProcessingDispositionSetRecord.claim_id == claim_id)
+                .with_for_update(skip_locked=True)
+            )
+            if disposition_set is None or disposition_set.state != "sealing":
+                return
+            try:
+                if disposition_set.validation_phase == "dispositions":
+                    if _advance_disposition_hash(session, disposition_set):
+                        return
+                    disposition_set.disposition_sha256 = CheckpointSHA256.from_state(
+                        cast(str, disposition_set.disposition_hash_state)
+                    ).hexdigest()
+                    disposition_set.validation_phase = "outputs"
+                    disposition_set.updated_at = utc_timestamp_now()
+                    return
+                if disposition_set.validation_phase == "outputs":
+                    if _advance_disposition_output_hash(session, disposition_set):
+                        return
+                    disposition_set.output_sha256 = CheckpointSHA256.from_state(
+                        cast(str, disposition_set.output_hash_state)
+                    ).hexdigest()
+                    identity = canonical_json_sha256(
+                        {
+                            "format": "riverhog-artifact-disposition-set/v1",
+                            "disposition_count": disposition_set.disposition_count,
+                            "dispositions_sha256": disposition_set.disposition_sha256,
+                            "output_edge_count": disposition_set.output_edge_count,
+                            "output_artifact_count": disposition_set.output_artifact_count,
+                            "outputs_sha256": disposition_set.output_sha256,
+                        }
+                    )
+                    now = utc_timestamp_now()
+                    disposition_set.identity_sha256 = identity
+                    disposition_set.state = "sealed"
+                    disposition_set.validation_phase = None
+                    disposition_set.sealed_at = now
+                    disposition_set.updated_at = now
+                    return
+                raise RuntimeError("disposition set has no validation phase")
+            except Exception as exc:
+                disposition_set.state = "failed"
+                disposition_set.validation_phase = None
+                disposition_set.failure = str(exc)[:1000] or type(exc).__name__
+                disposition_set.updated_at = utc_timestamp_now()
 
     def settle_claim(
         self,
@@ -611,25 +1393,19 @@ class SqlAlchemyCollectionWorkflowService:
             assert claim.controller_evidence_sha256 is not None
             assert claim.operation_id is not None
             assert claim.operation_sha256 is not None
-            assert claim.output_tags_json is not None
-            inputs = tuple(
-                CollectionRootIdentity(
-                    collection_id=item.collection_id,
-                    archive_root_sha256=item.archive_root_sha256,
-                    content_identity=item.content_identity,
-                )
-                for item in _claim_inputs(session, claim.id)
-            )
+            assert claim.input_set_sha256 is not None
+            assert claim.artifact_set_sha256 is not None
+            assert claim.output_tag_set_sha256 is not None
             expected_evidence = cast(dict[str, object], json.loads(claim.controller_evidence_json))
             if (
                 document.claim_id != claim.id
                 or document.execution_id != claim.execution_id
                 or document.fence != claim.fence
-                or document.inputs != inputs
+                or document.input_set_sha256 != claim.input_set_sha256
+                or document.artifact_set_sha256 != claim.artifact_set_sha256
                 or document.operation
                 != OperationIdentity(claim.operation_id, claim.operation_sha256)
-                or document.output_tags
-                != tuple(str(item) for item in json.loads(claim.output_tags_json))
+                or document.output_tag_set_sha256 != claim.output_tag_set_sha256
                 or document.execution_envelope_sha256 != claim.execution_id
                 or document.controller_evidence != expected_evidence
                 or document.controller_evidence_sha256 != claim.controller_evidence_sha256
@@ -637,7 +1413,10 @@ class SqlAlchemyCollectionWorkflowService:
                 raise Conflict("derivation differs from the sealed collection work plan")
             output = session.scalar(
                 select(CollectionRecord)
-                .where(CollectionRecord.id == int(output_collection_id))
+                .where(
+                    CollectionRecord.id == int(output_collection_id),
+                    CollectionRecord.is_published.is_(True),
+                )
                 .with_for_update()
             )
             if output is None:
@@ -648,14 +1427,7 @@ class SqlAlchemyCollectionWorkflowService:
                 or output.creation_idempotency_key != claim.execution_id
             ):
                 raise Conflict("derived collection was not created by the sealed output intent")
-            actual_tags = tuple(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
-                    .where(CollectionTagRecord.collection_id == output.id)
-                    .order_by(CollectionTagRecord.tag_id)
-                )
-            )
-            if actual_tags != document.output_tags:
+            if output.tag_set_identity != claim.output_tag_set_sha256:
                 raise Conflict("derived collection tags differ from the sealed work plan")
             evidence = session.get(
                 CollectionFileRecord,
@@ -663,7 +1435,8 @@ class SqlAlchemyCollectionWorkflowService:
             )
             if evidence is None or evidence.sha256 != document.sha256:
                 raise Conflict("derived collection does not contain its exact derivation evidence")
-            _verify_dispositions(session, claim, document, output.id)
+            disposition_set = _verified_disposition_set(session, claim, document.disposition_set)
+            _verify_dispositions(session, claim, disposition_set, output)
             _collection_root(session, output.id)
             existing = session.get(CollectionDerivationRecord, output.id)
             encoded = document.to_json_bytes().decode("utf-8")
@@ -705,14 +1478,12 @@ class SqlAlchemyCollectionWorkflowService:
         claim_id: str,
         *,
         fence: int,
-        outcomes: Sequence[CollectionProcessingOutcomeIdentity],
         retirement_policy: str,
         retirement_grace_seconds: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        """Close an exact set of independently verified collection outcomes."""
+        """Seal, then close, the durable exact outcome authority."""
 
-        expected_outcomes = _canonical_outcomes(outcomes)
         policy = _retirement_policy(retirement_policy, retirement_grace_seconds)
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
@@ -723,41 +1494,101 @@ class SqlAlchemyCollectionWorkflowService:
                 if (
                     claim.retirement_policy != policy
                     or claim.retirement_grace_seconds != int(retirement_grace_seconds)
-                    or tuple(_processing_outcomes(session, claim.id)) != expected_outcomes
+                    or claim.outcome_state != "sealed"
+                    or claim.outcome_set_sha256 is None
                 ):
                     raise Conflict("collection processing claim has another outcome settlement")
                 return _claim_payload(session, claim)
             _require_active_generation(claim, fence=fence)
-            actual_outcomes = tuple(_processing_outcomes(session, claim.id))
-            if actual_outcomes != expected_outcomes:
-                raise Conflict("declared outcomes differ from verified collection outputs")
-            for outcome in actual_outcomes:
-                if (
-                    _collection_root(
-                        session,
-                        outcome.output_collection.collection_id,
-                    )
-                    != outcome.output_collection
+            if claim.outcome_state == "failed":
+                raise Conflict(claim.outcome_failure or "outcome authority sealing failed")
+            if claim.outcome_state == "receiving":
+                if claim.outcome_count < 1:
+                    raise Conflict("outcome authority is empty")
+                claim.retirement_policy = policy
+                claim.retirement_grace_seconds = int(retirement_grace_seconds)
+                claim.outcome_state = "sealing"
+                claim.outcome_hash_state = _set_checkpoint(None, "claim-outcomes").export_state()
+                claim.outcome_validation_cursor = None
+                claim.outcome_validation_count = 0
+                claim.updated_at = utc_timestamp_now()
+                return _claim_payload(session, claim)
+            if claim.outcome_state == "sealing":
+                if claim.retirement_policy != policy or claim.retirement_grace_seconds != int(
+                    retirement_grace_seconds
                 ):
-                    raise Conflict("processing outcome collection root changed")
-                derivation = session.get(
-                    CollectionDerivationRecord,
-                    outcome.output_collection.collection_id,
-                )
-                if (
-                    derivation is None
-                    or derivation.claim_id != outcome.source_claim_id
-                    or derivation.document_sha256 != outcome.derivation_sha256
-                ):
-                    raise Conflict("processing outcome derivation is unavailable")
+                    raise Conflict("outcome authority is sealing with another retirement policy")
+                return _claim_payload(session, claim)
+            if claim.outcome_state != "sealed" or claim.outcome_set_sha256 is None:
+                raise InvalidState("outcome authority is unavailable")
+            if claim.retirement_policy != policy or claim.retirement_grace_seconds != int(
+                retirement_grace_seconds
+            ):
+                raise Conflict("outcome authority was sealed with another retirement policy")
             now = utc_timestamp_now()
-            claim.retirement_policy = policy
-            claim.retirement_grace_seconds = int(retirement_grace_seconds)
             claim.state = "settled"
             claim.settled_at = claim.settled_at or now
             claim.updated_at = now
             _revoke_capabilities(session, claim.id, now=now)
             return _claim_payload(session, claim)
+
+    def process_due_outcome_sets(self, *, limit: int = 1) -> int:
+        processed = 0
+        for _ in range(max(0, int(limit))):
+            with session_scope(self._session_factory) as session:
+                claim = session.scalar(
+                    select(CollectionProcessingClaimRecord)
+                    .where(CollectionProcessingClaimRecord.outcome_state == "sealing")
+                    .order_by(CollectionProcessingClaimRecord.updated_at)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                if claim is None:
+                    break
+                try:
+                    _advance_outcome_set(session, claim)
+                except Exception as exc:
+                    claim.outcome_state = "failed"
+                    claim.outcome_failure = str(exc)[:1000] or type(exc).__name__
+                    claim.updated_at = utc_timestamp_now()
+                processed += 1
+        return processed
+
+    def list_claim_outcomes(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        start = _page_start(start_ordinal)
+        with read_snapshot(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal)
+            authority = _require_set_authority(
+                claim.outcome_count,
+                claim.outcome_set_sha256,
+                authority_sha256,
+                "outcome",
+            )
+            rows = list(
+                session.scalars(
+                    select(CollectionProcessingOutcomeRecord)
+                    .where(
+                        CollectionProcessingOutcomeRecord.claim_id == claim.id,
+                        CollectionProcessingOutcomeRecord.outcome_order >= start,
+                    )
+                    .order_by(CollectionProcessingOutcomeRecord.outcome_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
+                )
+            )
+            next_ordinal = start + len(rows)
+            return {
+                "authority": authority,
+                "start_ordinal": start,
+                "next_ordinal": next_ordinal if next_ordinal < claim.outcome_count else None,
+                "outcomes": [_outcome_identity(item).as_dict() for item in rows],
+            }
 
     def get_derivation(
         self,
@@ -808,27 +1639,41 @@ class SqlAlchemyCollectionWorkflowService:
                 derivation = CollectionDerivation.from_mapping(
                     json.loads(derivation_record.document_json)
                 )
-                expected_artifacts = {
-                    (item.collection_id, path)
-                    for item in _claim_inputs(session, claim.id)
-                    for path in _collection_payload_paths(session, item.collection_id)
-                }
-                planned_artifacts = {
-                    (item.collection_id, item.path) for item in _claim_artifacts(session, claim.id)
-                }
-                if planned_artifacts != expected_artifacts:
+                expected_artifact_count = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(CollectionFileRecord)
+                        .join(
+                            CollectionProcessingClaimInputRecord,
+                            and_(
+                                CollectionProcessingClaimInputRecord.claim_id == claim.id,
+                                CollectionProcessingClaimInputRecord.collection_id
+                                == CollectionFileRecord.collection_id,
+                            ),
+                        )
+                        .where(~CollectionFileRecord.path.startswith("riverhog/"))
+                    )
+                    or 0
+                )
+                if claim.artifact_count != expected_artifact_count:
                     raise Conflict(
                         "source retirement requires a plan covering every input artifact"
                     )
-                unsafe = [
-                    item.input_path
-                    for item in derivation.dispositions
-                    if item.status not in {"transformed", "preserved"}
-                ]
-                if unsafe:
+                _verified_disposition_set(session, claim, derivation.disposition_set)
+                unsafe = session.scalar(
+                    select(CollectionProcessingDispositionRecord.path)
+                    .where(
+                        CollectionProcessingDispositionRecord.claim_id == claim.id,
+                        CollectionProcessingDispositionRecord.status.not_in(
+                            ("transformed", "preserved")
+                        ),
+                    )
+                    .order_by(CollectionProcessingDispositionRecord.collection_id)
+                    .limit(1)
+                )
+                if unsafe is not None:
                     raise Conflict(
-                        "source retirement is not authorized for omitted or rejected artifacts: "
-                        + ", ".join(unsafe[:10])
+                        "source retirement is not authorized for omitted or rejected artifacts"
                     )
                 _collection_root(session, claim.output_collection_id)
             else:
@@ -1021,7 +1866,6 @@ def _require_same_claim(
     purpose: str,
     work_document_json: str,
     work_document_sha256: str,
-    inputs: tuple[CollectionRootIdentity, ...],
     principal: ApplicationPrincipal,
 ) -> None:
     if (
@@ -1032,22 +1876,22 @@ def _require_same_claim(
         or claim.work_document_sha256 != work_document_sha256
     ):
         raise Conflict("collection work identity is already owned by another request")
-    stored = tuple(
-        CollectionRootIdentity(
-            collection_id=item.collection_id,
-            archive_root_sha256=item.archive_root_sha256,
-            content_identity=item.content_identity,
-        )
-        for item in _claim_inputs(session, claim.id)
-    )
-    if stored != inputs:
-        raise Conflict("collection work identity was reused with different input roots")
 
 
 def _clear_plan(session: Session, claim: CollectionProcessingClaimRecord) -> None:
     session.execute(
+        delete(CollectionProcessingDispositionSetRecord).where(
+            CollectionProcessingDispositionSetRecord.claim_id == claim.id
+        )
+    )
+    session.execute(
         delete(CollectionProcessingClaimArtifactRecord).where(
             CollectionProcessingClaimArtifactRecord.claim_id == claim.id
+        )
+    )
+    session.execute(
+        delete(CollectionProcessingClaimOutputTagRecord).where(
+            CollectionProcessingClaimOutputTagRecord.claim_id == claim.id
         )
     )
     session.execute(
@@ -1060,7 +1904,23 @@ def _clear_plan(session: Session, claim: CollectionProcessingClaimRecord) -> Non
     claim.controller_evidence_sha256 = None
     claim.operation_id = None
     claim.operation_sha256 = None
-    claim.output_tags_json = None
+    claim.artifact_count = 0
+    claim.artifact_bytes = 0
+    claim.artifact_hash_state = None
+    claim.artifact_set_sha256 = None
+    claim.artifacts_sealed_at = None
+    claim.output_tag_count = 0
+    claim.output_tag_hash_state = None
+    claim.output_tag_set_sha256 = None
+    claim.output_tags_sealed_at = None
+    claim.outcome_count = 0
+    claim.outcome_state = "receiving"
+    claim.outcome_hash_state = None
+    claim.outcome_validation_cursor = None
+    claim.outcome_validation_count = 0
+    claim.outcome_set_sha256 = None
+    claim.outcome_failure = None
+    claim.outcomes_sealed_at = None
     claim.retirement_policy = None
     claim.retirement_grace_seconds = 0
     claim.plan_sealed_at = None
@@ -1143,11 +2003,258 @@ def _require_sealed_transform_plan(claim: CollectionProcessingClaimRecord) -> No
             claim.controller_evidence_sha256,
             claim.operation_id,
             claim.operation_sha256,
-            claim.output_tags_json,
+            claim.input_set_sha256,
+            claim.artifact_set_sha256,
+            claim.output_tag_set_sha256,
             claim.retirement_policy,
         )
     ):
         raise InvalidState("collection processing claim has no sealed execution plan")
+
+
+def _bounded_batch(values: Sequence[object], label: str) -> None:
+    if not values or len(values) > _DISPOSITION_BATCH_MAX:
+        raise BadRequest(f"{label} batch must contain 1 to {_DISPOSITION_BATCH_MAX} items")
+
+
+def _append_start(value: int, count: int) -> int:
+    start = int(value)
+    if start < 0 or start > count:
+        raise Conflict("append ordinal is outside the staged authority")
+    return start
+
+
+def _page_start(value: int) -> int:
+    start = int(value)
+    if start < 0:
+        raise BadRequest("page start ordinal must be non-negative")
+    return start
+
+
+def _set_checkpoint(state: str | None, domain: str) -> CheckpointSHA256:
+    if state is not None:
+        return CheckpointSHA256.from_state(state)
+    return CheckpointSHA256(f"riverhog-{domain}/v1\0".encode("ascii"))
+
+
+def _tag_checkpoint(state: str | None) -> CheckpointSHA256:
+    if state is not None:
+        return CheckpointSHA256.from_state(state)
+    return CheckpointSHA256(b'{"format":"riverhog-tag-set/v1","tags":[')
+
+
+def _checkpoint_tag(checkpoint: CheckpointSHA256, value: str, *, ordinal: int) -> None:
+    if ordinal:
+        checkpoint.update(b",")
+    checkpoint.update(b'"')
+    checkpoint.update(value.encode("ascii"))
+    checkpoint.update(b'"')
+
+
+def _checkpoint_item(checkpoint: CheckpointSHA256, value: object) -> None:
+    encoded = canonical_json_bytes(value)
+    checkpoint.update(len(encoded).to_bytes(8, "big"))
+    checkpoint.update(encoded)
+
+
+def _input_identity(row: CollectionProcessingClaimInputRecord) -> CollectionRootIdentity:
+    return CollectionRootIdentity(
+        collection_id=row.collection_id,
+        archive_root_sha256=row.archive_root_sha256,
+        content_identity=row.content_identity,
+    )
+
+
+def _last_input_identity(session: Session, claim_id: str) -> CollectionRootIdentity | None:
+    row = session.scalar(
+        select(CollectionProcessingClaimInputRecord)
+        .where(CollectionProcessingClaimInputRecord.claim_id == claim_id)
+        .order_by(CollectionProcessingClaimInputRecord.collection_order.desc())
+        .limit(1)
+    )
+    return _input_identity(row) if row is not None else None
+
+
+def _artifact_identity(
+    session: Session,
+    claim_id: str,
+    row: CollectionProcessingClaimArtifactRecord,
+) -> CollectionArtifactIdentity:
+    input_row = session.get(
+        CollectionProcessingClaimInputRecord,
+        (claim_id, row.collection_id),
+    )
+    if input_row is None:
+        raise InvalidState("claim artifact has no exact input root")
+    return CollectionArtifactIdentity(
+        collection=_input_identity(input_row),
+        path=row.path,
+        bytes=row.bytes,
+        sha256=row.sha256,
+    )
+
+
+def _last_artifact_identity(session: Session, claim_id: str) -> CollectionArtifactIdentity | None:
+    row = session.scalar(
+        select(CollectionProcessingClaimArtifactRecord)
+        .where(CollectionProcessingClaimArtifactRecord.claim_id == claim_id)
+        .order_by(CollectionProcessingClaimArtifactRecord.artifact_order.desc())
+        .limit(1)
+    )
+    return _artifact_identity(session, claim_id, row) if row is not None else None
+
+
+def _owned_capability(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    capability_id: str,
+) -> CollectionTransformCapabilityRecord:
+    capability = session.get(CollectionTransformCapabilityRecord, capability_id)
+    if capability is None or capability.claim_id != claim.id or capability.fence != claim.fence:
+        raise NotFound(f"transform capability not found: {capability_id}")
+    return capability
+
+
+def _capability_artifact_identity(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    row: CollectionTransformCapabilityArtifactRecord,
+) -> CollectionArtifactIdentity:
+    input_row = session.get(
+        CollectionProcessingClaimInputRecord,
+        (claim.id, row.collection_id),
+    )
+    if input_row is None:
+        raise InvalidState("capability artifact has no exact input root")
+    return CollectionArtifactIdentity(
+        collection=_input_identity(input_row),
+        path=row.path,
+        bytes=row.bytes,
+        sha256=row.sha256,
+    )
+
+
+def _last_capability_artifact_identity(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    capability_id: str,
+) -> CollectionArtifactIdentity | None:
+    row = session.scalar(
+        select(CollectionTransformCapabilityArtifactRecord)
+        .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability_id)
+        .order_by(CollectionTransformCapabilityArtifactRecord.artifact_order.desc())
+        .limit(1)
+    )
+    return _capability_artifact_identity(session, claim, row) if row is not None else None
+
+
+def _capability_artifact_set_payload(
+    capability: CollectionTransformCapabilityRecord,
+) -> dict[str, object]:
+    authority = (
+        {
+            "count": capability.artifact_count,
+            "total_bytes": capability.artifact_bytes,
+            "sha256": capability.artifact_set_sha256,
+        }
+        if capability.artifact_set_sha256 is not None
+        else None
+    )
+    return {
+        "state": "sealed" if authority is not None else "receiving",
+        "count": capability.artifact_count,
+        "total_bytes": capability.artifact_bytes,
+        "authority": authority,
+    }
+
+
+def _require_inputs_sealed(claim: CollectionProcessingClaimRecord) -> None:
+    if claim.inputs_sealed_at is None or claim.input_set_sha256 is None:
+        raise Conflict("input-root authority is not sealed")
+
+
+def _require_set_authority(
+    count: int,
+    actual_sha256: str | None,
+    requested_sha256: str,
+    label: str,
+) -> dict[str, object]:
+    expected = _sha256(requested_sha256, f"{label} authority")
+    if actual_sha256 is None or actual_sha256 != expected or count < 1:
+        raise Conflict(f"{label} authority is unavailable or changed")
+    return {"count": count, "sha256": actual_sha256}
+
+
+def _require_artifact_authority(
+    claim: CollectionProcessingClaimRecord,
+    requested_sha256: str,
+) -> dict[str, object]:
+    authority = _require_set_authority(
+        claim.artifact_count,
+        claim.artifact_set_sha256,
+        requested_sha256,
+        "artifact",
+    )
+    authority["total_bytes"] = claim.artifact_bytes
+    return authority
+
+
+def _input_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, object]:
+    authority = (
+        {"count": claim.input_count, "sha256": claim.input_set_sha256}
+        if claim.input_set_sha256 is not None
+        else None
+    )
+    return {
+        "state": "sealed" if authority is not None else "receiving",
+        "count": claim.input_count,
+        "authority": authority,
+    }
+
+
+def _artifact_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, object]:
+    authority = (
+        {
+            "count": claim.artifact_count,
+            "total_bytes": claim.artifact_bytes,
+            "sha256": claim.artifact_set_sha256,
+        }
+        if claim.artifact_set_sha256 is not None
+        else None
+    )
+    return {
+        "state": "sealed" if authority is not None else "receiving",
+        "count": claim.artifact_count,
+        "total_bytes": claim.artifact_bytes,
+        "authority": authority,
+    }
+
+
+def _output_tag_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, object]:
+    authority = (
+        {"count": claim.output_tag_count, "sha256": claim.output_tag_set_sha256}
+        if claim.output_tag_set_sha256 is not None
+        else None
+    )
+    return {
+        "state": "sealed" if authority is not None else "receiving",
+        "count": claim.output_tag_count,
+        "authority": authority,
+    }
+
+
+def _outcome_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, object]:
+    authority = (
+        {"count": claim.outcome_count, "sha256": claim.outcome_set_sha256}
+        if claim.outcome_set_sha256 is not None
+        else None
+    )
+    return {
+        "state": claim.outcome_state,
+        "count": claim.outcome_count,
+        "authority": authority,
+        "failure": claim.outcome_failure,
+    }
 
 
 def _require_active_generation(
@@ -1166,6 +2273,316 @@ def _require_active_generation(
     _require_fence(claim, fence)
     if claim.state != "active":
         raise Conflict("collection processing claim is not active")
+
+
+def _claim_actor(
+    session: Session,
+    claim_id: str,
+    principal: ApplicationPrincipal,
+    *,
+    require_write: bool = False,
+) -> CollectionProcessingClaimRecord:
+    normalized_id = _sha256(claim_id, "claim id")
+    claim = session.get(CollectionProcessingClaimRecord, normalized_id)
+    if claim is None:
+        raise NotFound(f"collection processing claim not found: {claim_id}")
+    if claim.consumer_app == principal.app:
+        return claim
+    capability_id = principal.artifact_scope_capability_id
+    capability = (
+        session.get(CollectionTransformCapabilityRecord, capability_id)
+        if capability_id is not None
+        else None
+    )
+    if (
+        capability is None
+        or capability.claim_id != claim.id
+        or capability.fence != claim.fence
+        or capability.state != "active"
+        or _expired(capability.expires_at)
+    ):
+        raise NotFound(f"collection processing claim not found: {claim_id}")
+    actions = tuple(sorted(set(json.loads(capability.actions_json))))
+    if principal.app != _capability_app(claim, actions) or (
+        require_write and "write-output" not in actions
+    ):
+        raise NotFound(f"collection processing claim not found: {claim_id}")
+    return claim
+
+
+def _claim_execution_actor(
+    session: Session,
+    claim_id: str,
+    *,
+    fence: int,
+    principal: ApplicationPrincipal,
+) -> CollectionProcessingClaimRecord:
+    claim = _claim_actor(session, claim_id, principal, require_write=True)
+    _require_live_claim(claim, fence=fence)
+    _require_sealed_transform_plan(claim)
+    return claim
+
+
+def _receiving_disposition_set(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+) -> CollectionProcessingDispositionSetRecord:
+    current = session.scalar(
+        select(CollectionProcessingDispositionSetRecord)
+        .where(CollectionProcessingDispositionSetRecord.claim_id == claim.id)
+        .with_for_update()
+    )
+    if current is not None:
+        return current
+    now = utc_timestamp_now()
+    current = CollectionProcessingDispositionSetRecord(
+        claim_id=claim.id,
+        state="receiving",
+        disposition_count=0,
+        output_edge_count=0,
+        output_artifact_count=0,
+        transformed_count=0,
+        transformed_with_outputs_count=0,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(current)
+    session.flush()
+    return current
+
+
+def _claim_input_root(
+    session: Session,
+    claim_id: str,
+    collection_id: int,
+) -> CollectionRootIdentity:
+    root = session.get(CollectionProcessingClaimInputRecord, (claim_id, collection_id))
+    if root is None:
+        raise Conflict("disposition references an unknown input collection")
+    return CollectionRootIdentity(
+        collection_id=root.collection_id,
+        archive_root_sha256=root.archive_root_sha256,
+        content_identity=root.content_identity,
+    )
+
+
+def _require_disposition_input(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    disposition: ArtifactDisposition,
+) -> None:
+    root = _claim_input_root(session, claim.id, disposition.input_collection_id)
+    if root.archive_root_sha256 != disposition.input_archive_root_sha256:
+        raise Conflict("disposition input archive root differs from the sealed claim")
+    artifact = session.get(
+        CollectionProcessingClaimArtifactRecord,
+        (claim.id, disposition.input_collection_id, disposition.input_path),
+    )
+    if artifact is None:
+        raise Conflict("disposition references an artifact outside the sealed claim scope")
+
+
+def _disposition_record_identity(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    record: CollectionProcessingDispositionRecord,
+) -> ArtifactDisposition:
+    root = _claim_input_root(session, claim.id, record.collection_id)
+    return ArtifactDisposition(
+        input_collection_id=record.collection_id,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=record.path,
+        status=cast(DispositionState, record.status),
+        code=record.failure_code,
+        message=record.failure_message,
+    )
+
+
+def _require_disposition_output(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    output: ArtifactDispositionOutput,
+) -> None:
+    if output.output_path.startswith("riverhog/"):
+        raise BadRequest("transform output edges may not bind Riverhog control paths")
+    root = _claim_input_root(session, claim.id, output.input_collection_id)
+    if root.archive_root_sha256 != output.input_archive_root_sha256:
+        raise Conflict("disposition output input root differs from the sealed claim")
+    disposition = session.get(
+        CollectionProcessingDispositionRecord,
+        (claim.id, output.input_collection_id, output.input_path),
+    )
+    if disposition is None or disposition.status != "transformed":
+        raise Conflict("output edge requires a transformed input disposition")
+
+
+def _disposition_output_record_identity(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    record: CollectionProcessingDispositionOutputRecord,
+) -> ArtifactDispositionOutput:
+    root = _claim_input_root(session, claim.id, record.input_collection_id)
+    return ArtifactDispositionOutput(
+        input_collection_id=record.input_collection_id,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=record.input_path,
+        output_path=record.output_path,
+    )
+
+
+def _disposition_set_payload(
+    record: CollectionProcessingDispositionSetRecord,
+) -> dict[str, object]:
+    identity: dict[str, object] | None = None
+    if record.state == "sealed":
+        assert record.identity_sha256 is not None
+        identity = ArtifactDispositionSetIdentity(
+            disposition_count=record.disposition_count,
+            output_edge_count=record.output_edge_count,
+            output_artifact_count=record.output_artifact_count,
+            sha256=record.identity_sha256,
+        ).as_dict()
+    return {
+        "claim_id": record.claim_id,
+        "state": record.state,
+        "disposition_count": int(record.disposition_count),
+        "output_edge_count": int(record.output_edge_count),
+        "output_artifact_count": int(record.output_artifact_count),
+        "identity": identity,
+        "failure": record.failure,
+    }
+
+
+def _page_args(page: int, per_page: int) -> None:
+    if page < 1 or per_page < 1 or per_page > 100:
+        raise BadRequest("disposition pagination is invalid")
+
+
+def _disposition_set_identity(
+    record: CollectionProcessingDispositionSetRecord,
+) -> ArtifactDispositionSetIdentity:
+    if record.state != "sealed" or record.identity_sha256 is None:
+        raise Conflict("disposition authority is not sealed")
+    return ArtifactDispositionSetIdentity(
+        disposition_count=record.disposition_count,
+        output_edge_count=record.output_edge_count,
+        output_artifact_count=record.output_artifact_count,
+        sha256=record.identity_sha256,
+    )
+
+
+def _sealed_disposition_authority(
+    session: Session,
+    claim_id: str,
+    authority_sha256: str,
+) -> CollectionProcessingDispositionSetRecord:
+    record = session.get(CollectionProcessingDispositionSetRecord, claim_id)
+    if record is None or record.state != "sealed":
+        raise Conflict("disposition authority is not sealed")
+    if record.identity_sha256 != authority_sha256:
+        raise Conflict("disposition continuation is bound to another authority")
+    return record
+
+
+def _advance_disposition_hash(
+    session: Session,
+    disposition_set: CollectionProcessingDispositionSetRecord,
+) -> bool:
+    claim = session.get(CollectionProcessingClaimRecord, disposition_set.claim_id)
+    if claim is None or disposition_set.disposition_hash_state is None:
+        raise RuntimeError("disposition sealing authority is unavailable")
+    statement = select(CollectionProcessingDispositionRecord).where(
+        CollectionProcessingDispositionRecord.claim_id == disposition_set.claim_id
+    )
+    if disposition_set.validation_collection_id is not None:
+        assert disposition_set.validation_input_path is not None
+        statement = statement.where(
+            or_(
+                CollectionProcessingDispositionRecord.collection_id
+                > disposition_set.validation_collection_id,
+                and_(
+                    CollectionProcessingDispositionRecord.collection_id
+                    == disposition_set.validation_collection_id,
+                    CollectionProcessingDispositionRecord.path
+                    > disposition_set.validation_input_path,
+                ),
+            )
+        )
+    rows = list(
+        session.scalars(
+            statement.order_by(
+                CollectionProcessingDispositionRecord.collection_id,
+                CollectionProcessingDispositionRecord.path,
+            ).limit(_DISPOSITION_VALIDATION_BATCH)
+        )
+    )
+    if not rows:
+        return False
+    digest = CheckpointSHA256.from_state(disposition_set.disposition_hash_state)
+    for row in rows:
+        identity = _disposition_record_identity(session, claim, row)
+        digest.update(canonical_json_bytes(identity.as_dict()) + b"\n")
+        disposition_set.validation_collection_id = row.collection_id
+        disposition_set.validation_input_path = row.path
+    disposition_set.disposition_hash_state = digest.export_state()
+    disposition_set.updated_at = utc_timestamp_now()
+    return True
+
+
+def _advance_disposition_output_hash(
+    session: Session,
+    disposition_set: CollectionProcessingDispositionSetRecord,
+) -> bool:
+    claim = session.get(CollectionProcessingClaimRecord, disposition_set.claim_id)
+    if claim is None or disposition_set.output_hash_state is None:
+        raise RuntimeError("disposition output sealing authority is unavailable")
+    statement = select(CollectionProcessingDispositionOutputRecord).where(
+        CollectionProcessingDispositionOutputRecord.claim_id == disposition_set.claim_id
+    )
+    if disposition_set.validation_output_path is not None:
+        assert disposition_set.validation_output_collection_id is not None
+        assert disposition_set.validation_output_input_path is not None
+        statement = statement.where(
+            or_(
+                CollectionProcessingDispositionOutputRecord.output_path
+                > disposition_set.validation_output_path,
+                and_(
+                    CollectionProcessingDispositionOutputRecord.output_path
+                    == disposition_set.validation_output_path,
+                    CollectionProcessingDispositionOutputRecord.input_collection_id
+                    > disposition_set.validation_output_collection_id,
+                ),
+                and_(
+                    CollectionProcessingDispositionOutputRecord.output_path
+                    == disposition_set.validation_output_path,
+                    CollectionProcessingDispositionOutputRecord.input_collection_id
+                    == disposition_set.validation_output_collection_id,
+                    CollectionProcessingDispositionOutputRecord.input_path
+                    > disposition_set.validation_output_input_path,
+                ),
+            )
+        )
+    rows = list(
+        session.scalars(
+            statement.order_by(
+                CollectionProcessingDispositionOutputRecord.output_path,
+                CollectionProcessingDispositionOutputRecord.input_collection_id,
+                CollectionProcessingDispositionOutputRecord.input_path,
+            ).limit(_DISPOSITION_VALIDATION_BATCH)
+        )
+    )
+    if not rows:
+        return False
+    digest = CheckpointSHA256.from_state(disposition_set.output_hash_state)
+    for row in rows:
+        identity = _disposition_output_record_identity(session, claim, row)
+        digest.update(canonical_json_bytes(identity.as_dict()) + b"\n")
+        disposition_set.validation_output_path = row.output_path
+        disposition_set.validation_output_collection_id = row.input_collection_id
+        disposition_set.validation_output_input_path = row.input_path
+    disposition_set.output_hash_state = digest.export_state()
+    disposition_set.updated_at = utc_timestamp_now()
+    return True
 
 
 def _require_existing_settlement(
@@ -1251,6 +2668,8 @@ def _attach_processing_outcome(
         raise Conflict("an executed collection claim cannot retain delegated outcomes")
     if parent.output_collection_id is not None:
         raise InvalidState("outcome claim unexpectedly contains a direct output")
+    if parent.outcome_state != "receiving":
+        raise Conflict("processing outcome authority no longer accepts results")
     root = _collection_root(session, output_collection_id)
     try:
         identity = CollectionProcessingOutcomeIdentity(
@@ -1292,10 +2711,60 @@ def _attach_processing_outcome(
             archive_root_sha256=root.archive_root_sha256,
             content_identity=root.content_identity,
             derivation_sha256=identity.derivation_sha256,
+            outcome_order=None,
             created_at=utc_timestamp_now(),
         )
     )
+    parent.outcome_count += 1
     parent.updated_at = utc_timestamp_now()
+
+
+def _advance_outcome_set(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+) -> None:
+    if claim.outcome_hash_state is None or claim.outcome_state != "sealing":
+        raise RuntimeError("outcome sealing authority is unavailable")
+    statement = select(CollectionProcessingOutcomeRecord).where(
+        CollectionProcessingOutcomeRecord.claim_id == claim.id
+    )
+    if claim.outcome_validation_cursor is not None:
+        statement = statement.where(
+            CollectionProcessingOutcomeRecord.outcome_id > claim.outcome_validation_cursor
+        )
+    rows = list(
+        session.scalars(
+            statement.order_by(CollectionProcessingOutcomeRecord.outcome_id).limit(
+                _DISPOSITION_VALIDATION_BATCH
+            )
+        )
+    )
+    if not rows:
+        if claim.outcome_validation_count != claim.outcome_count:
+            raise RuntimeError("outcome authority changed while sealing")
+        claim.outcome_set_sha256 = CheckpointSHA256.from_state(claim.outcome_hash_state).hexdigest()
+        claim.outcome_state = "sealed"
+        claim.outcomes_sealed_at = utc_timestamp_now()
+        claim.updated_at = claim.outcomes_sealed_at
+        return
+    digest = CheckpointSHA256.from_state(claim.outcome_hash_state)
+    for row in rows:
+        identity = _outcome_identity(row)
+        if _collection_root(session, row.collection_id) != identity.output_collection:
+            raise Conflict("processing outcome collection root changed")
+        derivation = session.get(CollectionDerivationRecord, row.collection_id)
+        if (
+            derivation is None
+            or derivation.claim_id != row.source_claim_id
+            or derivation.document_sha256 != row.derivation_sha256
+        ):
+            raise Conflict("processing outcome derivation is unavailable")
+        row.outcome_order = claim.outcome_validation_count
+        _checkpoint_item(digest, identity.as_dict())
+        claim.outcome_validation_count += 1
+        claim.outcome_validation_cursor = row.outcome_id
+    claim.outcome_hash_state = digest.export_state()
+    claim.updated_at = utc_timestamp_now()
 
 
 def _require_existing_outcome_binding(
@@ -1385,82 +2854,110 @@ def _canonical_outcomes(
 def _verify_dispositions(
     session: Session,
     claim: CollectionProcessingClaimRecord,
-    document: CollectionDerivation,
-    output_collection_id: int,
+    disposition_set: CollectionProcessingDispositionSetRecord,
+    output: CollectionRecord,
 ) -> None:
-    expected_artifacts = {
-        (item.collection_id, item.path) for item in _claim_artifacts(session, claim.id)
-    }
-    if not expected_artifacts:
-        raise InvalidState("sealed collection work plan has no exact artifact scope")
-    actual_artifacts = {
-        (item.input_collection_id, item.input_path) for item in document.dispositions
-    }
-    if actual_artifacts != expected_artifacts or len(actual_artifacts) != len(
-        document.dispositions
-    ):
+    if disposition_set.disposition_count != claim.artifact_count:
         raise Conflict("derivation does not account for every input artifact exactly once")
-    output_artifacts = set(_collection_payload_paths(session, output_collection_id))
-    derived_artifacts = {path for item in document.dispositions for path in item.outputs}
-    if derived_artifacts != output_artifacts:
+    # A maintained derived-collection producer contributes exactly two Riverhog
+    # control files: producer evidence and this small derivation summary. Every
+    # other registered file was admitted only after its output-edge membership
+    # existed, so the scalar count proves exact output coverage without loading
+    # the collection or edge set.
+    if output.file_count != disposition_set.output_artifact_count + 2:
         raise Conflict("derivation output paths do not match the derived collection artifacts")
+
+
+def _verified_disposition_set(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    identity: ArtifactDispositionSetIdentity,
+) -> CollectionProcessingDispositionSetRecord:
+    record = session.get(CollectionProcessingDispositionSetRecord, claim.id)
+    if (
+        record is None
+        or record.state != "sealed"
+        or record.identity_sha256 != identity.sha256
+        or record.disposition_count != identity.disposition_count
+        or record.output_edge_count != identity.output_edge_count
+        or record.output_artifact_count != identity.output_artifact_count
+    ):
+        raise Conflict("derivation disposition authority differs from the sealed claim")
+    return record
 
 
 def _require_outcome_retirement_coverage(
     session: Session,
     claim: CollectionProcessingClaimRecord,
 ) -> None:
-    roots = {
-        item.collection_id: CollectionRootIdentity(
-            collection_id=item.collection_id,
-            archive_root_sha256=item.archive_root_sha256,
-            content_identity=item.content_identity,
+    if (
+        session.scalar(
+            select(CollectionProcessingOutcomeRecord.claim_id)
+            .where(CollectionProcessingOutcomeRecord.claim_id == claim.id)
+            .limit(1)
         )
-        for item in _claim_inputs(session, claim.id)
-    }
-    expected = {
-        (collection_id, path)
-        for collection_id in roots
-        for path in _collection_payload_paths(session, collection_id)
-    }
-    safely_disposed: set[tuple[int, str]] = set()
-    outcomes = _processing_outcomes(session, claim.id)
-    if not outcomes:
+        is None
+    ):
         raise InvalidState("settled collection work has no verified outcomes")
-    for outcome in outcomes:
-        if (
-            _collection_root(
-                session,
-                outcome.output_collection.collection_id,
-            )
-            != outcome.output_collection
-        ):
-            raise Conflict("processing outcome is no longer durably available")
-        stored = session.get(
-            CollectionDerivationRecord,
-            outcome.output_collection.collection_id,
+    parent_input = aliased(CollectionProcessingClaimInputRecord)
+    child_input = aliased(CollectionProcessingClaimInputRecord)
+    safe = (
+        select(CollectionProcessingDispositionRecord.claim_id)
+        .join(
+            CollectionProcessingOutcomeRecord,
+            and_(
+                CollectionProcessingOutcomeRecord.claim_id == claim.id,
+                CollectionProcessingOutcomeRecord.source_claim_id
+                == CollectionProcessingDispositionRecord.claim_id,
+            ),
         )
-        if (
-            stored is None
-            or stored.claim_id != outcome.source_claim_id
-            or stored.document_sha256 != outcome.derivation_sha256
-        ):
-            raise InvalidState("processing outcome derivation is unavailable")
-        derivation = CollectionDerivation.from_mapping(json.loads(stored.document_json))
-        derivation_roots = {item.collection_id: item for item in derivation.inputs}
-        for disposition in derivation.dispositions:
-            root = roots.get(disposition.input_collection_id)
-            if (
-                root is not None
-                and derivation_roots.get(disposition.input_collection_id) == root
-                and disposition.input_archive_root_sha256 == root.archive_root_sha256
-                and disposition.status in {"transformed", "preserved"}
-            ):
-                safely_disposed.add((disposition.input_collection_id, disposition.input_path))
-    missing = sorted(expected - safely_disposed)
-    if missing:
-        rendered = ", ".join(f"{collection_id}::{path}" for collection_id, path in missing[:10])
-        raise Conflict("source retirement lacks a verified safe disposition for: " + rendered)
+        .join(
+            child_input,
+            and_(
+                child_input.claim_id == CollectionProcessingDispositionRecord.claim_id,
+                child_input.collection_id == CollectionProcessingDispositionRecord.collection_id,
+            ),
+        )
+        .join(
+            CollectionProcessingDispositionSetRecord,
+            and_(
+                CollectionProcessingDispositionSetRecord.claim_id
+                == CollectionProcessingDispositionRecord.claim_id,
+                CollectionProcessingDispositionSetRecord.state == "sealed",
+            ),
+        )
+        .where(
+            CollectionProcessingDispositionRecord.collection_id
+            == CollectionFileRecord.collection_id,
+            CollectionProcessingDispositionRecord.path == CollectionFileRecord.path,
+            CollectionProcessingDispositionRecord.status.in_(("transformed", "preserved")),
+            child_input.archive_root_sha256 == parent_input.archive_root_sha256,
+            child_input.content_identity == parent_input.content_identity,
+        )
+        .correlate(CollectionFileRecord, parent_input)
+        .exists()
+    )
+    missing = session.execute(
+        select(CollectionFileRecord.collection_id, CollectionFileRecord.path)
+        .join(
+            parent_input,
+            and_(
+                parent_input.claim_id == claim.id,
+                parent_input.collection_id == CollectionFileRecord.collection_id,
+            ),
+        )
+        .where(
+            ~CollectionFileRecord.path.startswith("riverhog/"),
+            ~safe,
+        )
+        .order_by(CollectionFileRecord.collection_id, CollectionFileRecord.path_sort_key)
+        .limit(1)
+    ).first()
+    if missing is not None:
+        raise Conflict(
+            "source retirement lacks a verified safe disposition for: "
+            f"{missing.collection_id}::{missing.path}"
+        )
 
 
 def _canonical_artifacts(
@@ -1557,7 +3054,10 @@ def _collection_root(
     *,
     lock: bool = False,
 ) -> CollectionRootIdentity:
-    statement = select(CollectionRecord).where(CollectionRecord.id == int(collection_id))
+    statement = select(CollectionRecord).where(
+        CollectionRecord.id == int(collection_id),
+        CollectionRecord.is_published.is_(True),
+    )
     if lock:
         statement = statement.with_for_update()
     collection = session.scalar(statement)
@@ -1642,7 +3142,9 @@ def _claim_payload(
         assert claim.controller_evidence_sha256 is not None
         assert claim.operation_id is not None
         assert claim.operation_sha256 is not None
-        assert claim.output_tags_json is not None
+        assert claim.input_set_sha256 is not None
+        assert claim.artifact_set_sha256 is not None
+        assert claim.output_tag_set_sha256 is not None
         assert claim.retirement_policy is not None
         plan = {
             "execution_id": claim.execution_id,
@@ -1652,22 +3154,32 @@ def _claim_payload(
                 "id": claim.operation_id,
                 "sha256": claim.operation_sha256,
             },
-            "input_artifacts": [
-                item.as_dict() for item in _claim_artifact_identities(session, claim.id)
-            ],
-            "output_tags": json.loads(claim.output_tags_json),
+            "inputs": {
+                "count": claim.input_count,
+                "sha256": claim.input_set_sha256,
+            },
+            "artifacts": {
+                "count": claim.artifact_count,
+                "total_bytes": claim.artifact_bytes,
+                "sha256": claim.artifact_set_sha256,
+            },
+            "output_tags": {
+                "count": claim.output_tag_count,
+                "sha256": claim.output_tag_set_sha256,
+            },
             "retirement_policy": claim.retirement_policy,
             "retirement_grace_seconds": claim.retirement_grace_seconds,
             "sealed_at": claim.plan_sealed_at,
         }
-    outcomes = _processing_outcomes(session, claim.id)
     outcome_settlement = None
     if claim.plan_sealed_at is None and claim.settled_at is not None:
-        if claim.retirement_policy is None or not outcomes:
+        if claim.retirement_policy is None or claim.outcome_set_sha256 is None:
             raise InvalidState("settled collection work has no exact outcome settlement")
-        outcome_documents = [item.as_dict() for item in outcomes]
         outcome_settlement = {
-            "outcomes_sha256": canonical_json_sha256(outcome_documents),
+            "outcomes": {
+                "count": claim.outcome_count,
+                "sha256": claim.outcome_set_sha256,
+            },
             "retirement_policy": claim.retirement_policy,
             "retirement_grace_seconds": claim.retirement_grace_seconds,
         }
@@ -1689,16 +3201,9 @@ def _claim_payload(
         "output_collection_id": claim.output_collection_id,
         "work_document": json.loads(claim.work_document_json),
         "work_document_sha256": claim.work_document_sha256,
-        "inputs": [
-            CollectionRootIdentity(
-                collection_id=item.collection_id,
-                archive_root_sha256=item.archive_root_sha256,
-                content_identity=item.content_identity,
-            ).as_dict()
-            for item in _claim_inputs(session, claim.id)
-        ],
+        "inputs": _input_set_payload(claim),
         "plan": plan,
-        "outcomes": [item.as_dict() for item in outcomes],
+        "outcomes": _outcome_set_payload(claim),
         "outcome_settlement": outcome_settlement,
     }
 
@@ -1856,17 +3361,28 @@ def require_retirement_exemption(
         raise Forbidden("retirement claim does not authorize collection deletion")
     input_row = session.get(CollectionProcessingClaimInputRecord, (claim_id, collection_id))
     direct_output_ready = claim.output_collection_id is not None
-    outcomes = _processing_outcomes(session, claim.id)
-    if input_row is None or not (direct_output_ready or outcomes):
+    delegated_output_ready = (
+        claim.outcome_state == "sealed"
+        and claim.outcome_count > 0
+        and claim.outcome_set_sha256 is not None
+    )
+    if input_row is None or not (direct_output_ready or delegated_output_ready):
         raise Forbidden("retirement claim does not authorize this input collection")
-    outcome_documents = [item.as_dict() for item in outcomes]
+    outcome_set_sha256 = claim.outcome_set_sha256
     return RetirementClaimReferenceDocument(
         claim_id=claim.id,
         fence=claim.fence,
         work_id=claim.work_id,
         execution_id=claim.execution_id,
         output_collection_id=claim.output_collection_id,
-        outcomes_sha256=(canonical_json_sha256(outcome_documents) if outcome_documents else None),
+        outcomes=(
+            ExactSetAuthorityDocument(
+                count=claim.outcome_count,
+                sha256=cast(str, outcome_set_sha256),
+            )
+            if delegated_output_ready
+            else None
+        ),
     ).model_dump(mode="json")
 
 

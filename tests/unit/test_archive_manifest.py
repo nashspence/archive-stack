@@ -4,8 +4,11 @@ import hashlib
 import json
 
 import pytest
-from riverhog_archive_contracts import CollectionArchiveManifest
-from riverhog_core.archive_manifest import build_collection_archive_manifest
+from riverhog_archive_contracts import CollectionArchiveManifest, format_archive_sequence
+from riverhog_core.archive_manifest import (
+    build_collection_archive_authority,
+    build_collection_archive_manifest,
+)
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
@@ -14,13 +17,17 @@ from riverhog_core.domain.archive import (
     VerifiedRawFile,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
-from riverhog_core.raw_verification import raw_file_volume_set_sha256
+from riverhog_core.raw_verification import raw_file_ordered_volume_commitment
 
 from tests.fixtures.archive import age_state_json
 
 
 def _file(path: str, content: bytes) -> ArchiveFile:
     return ArchiveFile(path=path, bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
+
+
+def _segment_id(sequence: int) -> str:
+    return f"segment-{format_archive_sequence(sequence)}"
 
 
 def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
@@ -59,16 +66,17 @@ def test_manifest_is_small_immutable_volume_index_not_a_file_listing() -> None:
     contents = {"a.txt": b"alpha", "b.txt": b"beta"}
     files = [_file(path, content) for path, content in contents.items()]
     plan = plan_pack_volume(files, sequence=0)
-    manifest = build_collection_archive_manifest(
+    manifest, volumes = build_collection_archive_authority(
+        archive_generation="a" * 64,
         files=files,
         packs=((plan, _pack_receipt(plan, contents)),),
     )
     payload = json.loads(manifest)
 
     assert payload["schema"] == "collection-archive-manifest/v1"
-    assert len(payload["volumes"]) == 1
+    assert set(payload["volume_sequence"]) == {"sha256"}
     assert "files" not in payload or isinstance(payload.get("files"), int)
-    assert {"a.txt", "b.txt"}.isdisjoint(payload["volumes"][0])
+    assert {"a.txt", "b.txt"}.isdisjoint(volumes[0].to_mapping()["volume"])
     assert CollectionArchiveManifest.from_json_bytes(manifest).to_mapping() == payload
 
 
@@ -86,16 +94,17 @@ def test_v1_construction_vector_fixes_pack_manifest_and_root_identities() -> Non
         )
     )
     manifest = build_collection_archive_manifest(
+        archive_generation="a" * 64,
         files=files,
         packs=((plan, _pack_receipt(plan, contents)),),
     )
 
-    assert plan.plan_sha256 == "3f3160f21b2499d0bc375ab4fe35094e85729e83ce4822825b020997ca7326f0"
+    assert plan.plan_sha256 == "6037c2daf2fe30c5edc5250e678057363d8ea95b952b2cc13644136d1b9fe678"
     assert hashlib.sha256(plaintext).hexdigest() == (
-        "0089080eb161c4ba23be3e8cc1dc80fa475f6449bf43c64c4685e42504f4b159"
+        "e96fa53e1e9c7787171d51af47b7859e72278fe070628b5370513a4629b113bb"
     )
     assert hashlib.sha256(manifest).hexdigest() == (
-        "5d25368f0ef142d34c77268450a8812634621a84a651494eeb7df48b2f444717"
+        "e0b38cd631b675c5b1d8e0ec6d312e8c27de9f6cb4c05e0345de1aa0b2c3634a"
     )
 
 
@@ -110,9 +119,9 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
     second = large_content[4:]
     raw = (
         SealedRawVolume(
-            volume_id="segment-000000000001",
+            volume_id=_segment_id(1),
             sequence=1,
-            relative_path="volumes/segment-000000000001.bin.age",
+            relative_path=f"volumes/{_segment_id(1)}.bin.age",
             source_path=large.path,
             file_offset=0,
             plaintext_bytes=len(first),
@@ -133,9 +142,9 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
             completed_at="2026-08-03T00:00:00Z",
         ),
         SealedRawVolume(
-            volume_id="segment-000000000002",
+            volume_id=_segment_id(2),
             sequence=2,
-            relative_path="volumes/segment-000000000002.bin.age",
+            relative_path=f"volumes/{_segment_id(2)}.bin.age",
             source_path=large.path,
             file_offset=4,
             plaintext_bytes=len(second),
@@ -157,7 +166,8 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
         ),
     )
 
-    manifest = build_collection_archive_manifest(
+    manifest, volumes = build_collection_archive_authority(
+        archive_generation="a" * 64,
         files=(small, large),
         packs=((plan, pack_receipt),),
         raw_volumes=raw,
@@ -166,14 +176,14 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
                 path=large.path,
                 bytes=large.bytes,
                 sha256=large.sha256,
-                volume_set_sha256=raw_file_volume_set_sha256(file=large, volumes=raw),
+                ordered_volume_sha256=raw_file_ordered_volume_commitment(file=large, volumes=raw),
                 verified_at="2026-08-03T00:00:00Z",
             ),
         ),
     )
     payload = CollectionArchiveManifest.from_json_bytes(manifest).to_mapping()
 
-    assert [row["kind"] for row in payload["volumes"]] == ["pack", "segment", "segment"]
+    assert [row.volume.kind for row in volumes] == ["pack", "segment", "segment"]
     assert payload["tree"]["files"] == 2
     assert payload["tree"]["bytes"] == len(small_content) + len(large_content)
 
@@ -182,9 +192,9 @@ def test_manifest_rejects_gapped_raw_segments() -> None:
     content = b"abcdefgh"
     file = _file("large.bin", content)
     raw = SealedRawVolume(
-        volume_id="segment-000000000000",
+        volume_id=_segment_id(0),
         sequence=0,
-        relative_path="volumes/segment-000000000000.bin.age",
+        relative_path=f"volumes/{_segment_id(0)}.bin.age",
         source_path=file.path,
         file_offset=2,
         plaintext_bytes=6,
@@ -207,6 +217,7 @@ def test_manifest_rejects_gapped_raw_segments() -> None:
 
     with pytest.raises(ValueError, match="(contiguous|do not form)"):
         build_collection_archive_manifest(
+            archive_generation="a" * 64,
             files=(file,),
             packs=(),
             raw_volumes=(raw,),
@@ -215,7 +226,9 @@ def test_manifest_rejects_gapped_raw_segments() -> None:
                     path=file.path,
                     bytes=file.bytes,
                     sha256=file.sha256,
-                    volume_set_sha256=raw_file_volume_set_sha256(file=file, volumes=(raw,)),
+                    ordered_volume_sha256=raw_file_ordered_volume_commitment(
+                        file=file, volumes=(raw,)
+                    ),
                     verified_at="2026-08-03T00:00:00Z",
                 ),
             ),
@@ -228,6 +241,7 @@ def test_manifest_is_canonical_json() -> None:
     plan = plan_pack_volume((file,), sequence=0)
     payload = json.loads(
         build_collection_archive_manifest(
+            archive_generation="a" * 64,
             files=(file,),
             packs=((plan, _pack_receipt(plan, {file.path: content})),),
         )

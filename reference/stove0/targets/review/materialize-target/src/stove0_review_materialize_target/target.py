@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import JsonValue
-from riverhog_protocol import ArtifactDisposition
 from riverhog_transform_sdk import TransformWorkspace
 from stove0_review_target_contracts import REVIEW_MATERIALIZE_OPERATION
 from stove0_review_target_support import (
@@ -65,7 +64,6 @@ class ReviewMaterializeTargetService(ReviewTargetServiceBase):
         request: TargetJobRequest,
         publication: TargetCollectionPublication | None,
         artifacts: tuple[OutputArtifact, ...],
-        dispositions: tuple[ArtifactDisposition, ...],
         execution_sha256: str,
         attempt: int,
         runtime_evidence: dict[str, JsonValue],
@@ -76,7 +74,6 @@ class ReviewMaterializeTargetService(ReviewTargetServiceBase):
         return publication.finish_success(
             operation=REVIEW_MATERIALIZE_OPERATION,
             execution_sha256=execution_sha256,
-            dispositions=dispositions,
             attempt=attempt,
             runtime_evidence=runtime_evidence,
         )

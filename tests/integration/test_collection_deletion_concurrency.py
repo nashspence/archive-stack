@@ -63,7 +63,6 @@ from riverhog_protocol.errors import Conflict
 from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import select, text
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 
 pytestmark = pytest.mark.integration
@@ -178,7 +177,7 @@ class RetirementArchiveStore:
         manifest: bytes,
         passphrase_id: str,
     ) -> MutableManifestReceipt:
-        raise AssertionError("retirement proof does not publish mutable metadata")
+        raise AssertionError("retirement path does not publish mutable metadata")
 
     def verify_collection_archive(
         self,
@@ -186,7 +185,7 @@ class RetirementArchiveStore:
         collection_id: int,
         archive: CollectionArchiveIdentity,
     ) -> None:
-        raise AssertionError("retirement proof does not verify archives")
+        raise AssertionError("retirement path does not verify archives")
 
 
 def _archive_store_binding(store: BlockingArchiveStore) -> ArchiveStoreBinding:
@@ -273,7 +272,6 @@ def _seed(database_url: str) -> None:
                 ("segment-000000000000", "segment", "volumes/segment-000000000000.bin.age", 100),
                 ("manifest", "manifest", "manifest.json.age", 20),
                 ("recovery-descriptor", "recovery-descriptor", "recovery.json", 15),
-                ("proof", "proof", "manifest.json.ots.age", 10),
             )
         ):
             copy.objects.append(
@@ -354,7 +352,6 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                 ("segment-000000000000", "segment", "volumes/segment.bin.age"),
                 ("manifest", "manifest", "manifest.json.age"),
                 ("recovery-descriptor", "recovery-descriptor", "recovery.json"),
-                ("proof", "proof", "manifest.json.ots.age"),
             )
         ):
             copy.objects.append(
@@ -476,7 +473,6 @@ def _upload_service(database_url: str) -> SqlAlchemyCollectionUploadService:
     return SqlAlchemyCollectionUploadService(
         config,
         ArchiveStoreRegistry({"deep": archive_store_binding(MemoryArchiveStore())}),
-        proof_stamper=FixtureProofStamper(),
     )
 
 
@@ -801,7 +797,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
 
     assert not thread.is_alive()
     assert failures == []
-    assert store.deleted == [("segment-000000000000", "manifest", "recovery-descriptor", "proof")]
+    assert store.deleted == [("segment-000000000000", "manifest", "recovery-descriptor")]
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None

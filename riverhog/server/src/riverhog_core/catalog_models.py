@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import secrets
 
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
 from sqlalchemy import (
@@ -68,7 +69,11 @@ class CollectionRecord(Base):
     creation_idempotency_key: Mapped[str] = mapped_column(String)
     creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     creation_custody_mode: Mapped[str] = mapped_column(String, nullable=False)
+    archive_generation: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: secrets.token_hex(32)
+    )
     content_identity: Mapped[str] = mapped_column(String(64))
+    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     encryption_format: Mapped[str] = mapped_column(String, nullable=False)
     passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
@@ -80,6 +85,11 @@ class CollectionRecord(Base):
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
+    is_published: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=text("true"),
+    )
     file_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     file_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     files: Mapped[list[CollectionFileRecord]] = relationship(
@@ -278,6 +288,8 @@ class CollectionProvenanceJournalRecord(Base):
     agent_count: Mapped[int] = mapped_column(BigInteger)
     entity_counts_json: Mapped[str] = mapped_column(Text)
     current_state_id: Mapped[str] = mapped_column(String)
+    current_entry_id: Mapped[str] = mapped_column(String)
+    current_entry_json_sha256: Mapped[str] = mapped_column(String(64))
     current_path: Mapped[str] = mapped_column(String)
     current_bytes: Mapped[int] = mapped_column(BigInteger)
     current_sha256: Mapped[str] = mapped_column(String(64))
@@ -311,6 +323,7 @@ class CollectionProvenanceJournalChunkRecord(Base):
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    byte_offset: Mapped[int] = mapped_column(BigInteger)
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
     __table_args__ = (
@@ -323,6 +336,7 @@ class CollectionProvenanceJournalChunkRecord(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint("ordinal >= 0", name="ck_provenance_journal_chunks_ordinal"),
+        CheckConstraint("byte_offset >= 0", name="ck_provenance_journal_chunks_offset"),
         CheckConstraint("length(content) > 0", name="ck_provenance_journal_chunks_content"),
     )
 
@@ -366,6 +380,10 @@ class CollectionProvenanceVerificationRecord(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phase: Mapped[str] = mapped_column(
+        String, default="metadata", server_default=text("'metadata'")
+    )
+    checkpoint_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
 
     __table_args__ = (
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
@@ -374,7 +392,119 @@ class CollectionProvenanceVerificationRecord(Base):
             name="ck_collection_provenance_verifications_state",
         ),
         CheckConstraint("attempts >= 0", name="ck_collection_provenance_verifications_attempts"),
+        CheckConstraint(
+            "phase IN ('metadata','identity-tree','identity-bindings','identity-journals',"
+            "'journal-entries','references','reachability','cleanup','complete')",
+            name="ck_collection_provenance_verifications_phase",
+        ),
         Index("ix_collection_provenance_verifications_due", "state", "next_attempt_at"),
+    )
+
+
+class CollectionProvenanceVerificationReachabilityRecord(Base):
+    __tablename__ = "collection_provenance_verification_reachability"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    expanded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    after_to_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    after_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    after_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_provenance_verifications.collection_id"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_provenance_verification_reachability_work",
+            "collection_id",
+            "expanded",
+            "journal_id",
+        ),
+    )
+
+
+class CollectionProvenanceVerificationAgentRecord(Base):
+    __tablename__ = "collection_provenance_verification_agents"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_provenance_verifications.collection_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class CollectionProvenanceVerificationEntryRecord(Base):
+    __tablename__ = "collection_provenance_verification_entries"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True)
+    json_sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_provenance_verifications.collection_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class CollectionProvenanceVerificationEntityRecord(Base):
+    __tablename__ = "collection_provenance_verification_entities"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String)
+    document_json: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_provenance_verifications.collection_id"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_provenance_verification_entities_entry",
+            "collection_id",
+            "journal_id",
+            "entry_id",
+        ),
+    )
+
+
+class CollectionProvenanceVerificationExternalStateRecord(Base):
+    __tablename__ = "collection_provenance_verification_external_states"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    from_journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    to_journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True)
+    state_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_json_sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_provenance_verifications.collection_id"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_provenance_verification_external_states_target",
+            "collection_id",
+            "to_journal_id",
+        ),
     )
 
 
@@ -513,16 +643,6 @@ class CollectionArchiveCopyRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    proof_maturation: Mapped[CollectionProofMaturationRecord | None] = relationship(
-        back_populates="copy",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    attestation: Mapped[CollectionArchiveAttestationRecord | None] = relationship(
-        back_populates="copy",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
 
 
 class CollectionMetadataPublicationRecord(Base):
@@ -569,78 +689,6 @@ class CollectionMetadataPublicationRecord(Base):
     )
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="metadata_publication")
-
-
-class CollectionProofMaturationRecord(Base):
-    __tablename__ = "collection_proof_maturations"
-
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    store: Mapped[str] = mapped_column(String, primary_key=True)
-    state: Mapped[str] = mapped_column(String)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    next_attempt_at: Mapped[str] = mapped_column(String)
-    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    matured_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["collection_id", "store"],
-            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
-            ondelete="CASCADE",
-        ),
-        Index(
-            "ix_collection_proof_maturations_due",
-            "state",
-            "next_attempt_at",
-            "collection_id",
-            "store",
-        ),
-        CheckConstraint("attempt_count >= 0", name="ck_proof_maturations_attempt_count"),
-        CheckConstraint(
-            "state IN ('pending','upgrading','waiting','retry_wait','matured')",
-            name="ck_proof_maturations_state",
-        ),
-    )
-
-    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="proof_maturation")
-
-
-class CollectionArchiveAttestationRecord(Base):
-    __tablename__ = "collection_archive_attestations"
-
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    store: Mapped[str] = mapped_column(String, primary_key=True)
-    state: Mapped[str] = mapped_column(String)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    next_attempt_at: Mapped[str] = mapped_column(String)
-    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    matured_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["collection_id", "store"],
-            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
-            ondelete="CASCADE",
-        ),
-        Index(
-            "ix_collection_archive_attestations_due",
-            "state",
-            "next_attempt_at",
-            "collection_id",
-            "store",
-        ),
-        CheckConstraint("attempt_count >= 0", name="ck_archive_attestations_attempt_count"),
-        CheckConstraint(
-            "state IN ('pending','publishing','publish_retry','upgrading','upgrade_retry',"
-            "'waiting','matured')",
-            name="ck_archive_attestations_state",
-        ),
-    )
-
-    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="attestation")
 
 
 class CollectionArchiveObjectRecord(Base):
@@ -781,6 +829,9 @@ class ArchiveCopyJobRecord(Base):
     read_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    batch_start_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_end_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    destination_discarded_at: Mapped[str | None] = mapped_column(String, nullable=True)
     next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     failure: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -813,6 +864,11 @@ class ArchiveCopyJobRecord(Base):
             "state IN ('requested','waiting','checking','copying','canceling','completed',"
             "'failed','canceled')",
             name="ck_archive_copy_jobs_state",
+        ),
+        CheckConstraint(
+            "batch_start_order IS NULL AND batch_end_order IS NULL OR "
+            "batch_start_order IS NOT NULL AND batch_end_order >= batch_start_order",
+            name="ck_archive_copy_jobs_batch",
         ),
     )
 
@@ -1243,6 +1299,9 @@ class CollectionUploadRecord(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String)
     creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    archive_generation: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: secrets.token_hex(32)
+    )
     tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
@@ -1268,9 +1327,57 @@ class CollectionUploadRecord(Base):
     archive_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_failure: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_storage_prefix: Mapped[str] = mapped_column(String)
-    collection_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
-    collection_manifest_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
     planner_checkpoint_json: Mapped[str] = mapped_column(Text)
+    archive_tree_next_file_order: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    archive_tree_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archive_tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    archive_volume_next_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    archive_volume_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archive_ordered_volume_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    archive_terminal_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance_validation_next_file_order: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    provenance_closure_validated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    derivative_provenance_state: Mapped[str] = mapped_column(
+        String, default="not-required", server_default=text("'not-required'")
+    )
+    derivative_provenance_cursor_json: Mapped[str] = mapped_column(
+        Text, default="{}", server_default=text("'{}'")
+    )
+    provenance_archive_next_file_order: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    provenance_archive_last_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_archive_current_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance_archive_current_journal_offset: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    provenance_archive_next_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    provenance_archive_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance_archive_ordered_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance_archive_terminal_receipt_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    provenance_archive_root_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_authority_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalog_phase: Mapped[str] = mapped_column(
+        String, default="content-identity", server_default=text("'content-identity'")
+    )
+    catalog_cursor_json: Mapped[str] = mapped_column(
+        Text, default="{}", server_default=text("'{}'")
+    )
+    catalog_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalog_content_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    catalog_inventory_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     file_count: Mapped[int] = mapped_column(
         BigInteger,
         default=0,
@@ -1287,6 +1394,11 @@ class CollectionUploadRecord(Base):
         server_default=text("0"),
     )
     custodied_file_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    uploaded_payload_bytes: Mapped[int] = mapped_column(
         BigInteger,
         default=0,
         server_default=text("0"),
@@ -1315,6 +1427,13 @@ class CollectionUploadRecord(Base):
         back_populates="upload",
         cascade="all, delete-orphan",
     )
+    provenance_archive_volumes: Mapped[list[CollectionUploadProvenanceArchiveVolumeRecord]] = (
+        relationship(
+            back_populates="upload",
+            cascade="all, delete-orphan",
+            passive_deletes=True,
+        )
+    )
     __table_args__ = (
         Index(
             "ux_collection_uploads_application_idempotency_key",
@@ -1333,6 +1452,28 @@ class CollectionUploadRecord(Base):
             postgresql_ops={"search_text": "gin_trgm_ops"},
         ),
         CheckConstraint("file_count >= 0", name="ck_collection_uploads_file_count"),
+        CheckConstraint(
+            "archive_tree_next_file_order >= 0",
+            name="ck_collection_uploads_tree_progress",
+        ),
+        CheckConstraint(
+            "archive_volume_next_sequence >= 0",
+            name="ck_collection_uploads_volume_progress",
+        ),
+        CheckConstraint(
+            "provenance_validation_next_file_order >= 0 AND "
+            "provenance_archive_next_file_order >= 0 AND "
+            "provenance_archive_current_journal_offset >= 0 AND "
+            "provenance_archive_next_sequence >= 0",
+            name="ck_collection_uploads_provenance_progress",
+        ),
+        CheckConstraint(
+            "catalog_phase IN ("
+            "'content-identity','inventory-identity','collection','files','journals',"
+            "'provenance-relations','bindings','tags','archive-objects','file-objects',"
+            "'terminal','complete')",
+            name="ck_collection_uploads_catalog_phase",
+        ),
         CheckConstraint("file_bytes >= 0", name="ck_collection_uploads_file_bytes"),
         CheckConstraint(
             "custodied_file_count >= 0 AND custodied_file_count <= file_count",
@@ -1347,6 +1488,10 @@ class CollectionUploadRecord(Base):
             name="ck_collection_uploads_empty_custody",
         ),
         CheckConstraint(
+            "uploaded_payload_bytes >= 0",
+            name="ck_collection_uploads_uploaded_payload_bytes",
+        ),
+        CheckConstraint(
             "state IN ('open','closing','uploading','finalizing','orphaned','discarding')",
             name="ck_collection_uploads_state",
         ),
@@ -1357,6 +1502,11 @@ class CollectionUploadRecord(Base):
         CheckConstraint(
             "provenance_mode IN ('captured','omitted')",
             name="ck_collection_uploads_provenance_mode",
+        ),
+        CheckConstraint(
+            "derivative_provenance_state IN ("
+            "'not-required','discovering','copying','generating','complete','failed')",
+            name="ck_collection_uploads_derivative_provenance_state",
         ),
         CheckConstraint(
             "archive_phase IN ('planning','uploading','finalization_queued','finalizing',"
@@ -1406,7 +1556,14 @@ class CollectionUploadFileRecord(Base):
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     raw_part_plaintext_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    raw_digest_manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_part_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw_part_ordered_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_parts_accepted: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    raw_part_commitment_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provenance_status: Mapped[str] = mapped_column(String)
     provenance_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_current_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1434,10 +1591,30 @@ class CollectionUploadFileRecord(Base):
         ),
         CheckConstraint("file_order >= 0", name="ck_collection_upload_files_order"),
         CheckConstraint("bytes >= 0", name="ck_collection_upload_files_bytes"),
+        CheckConstraint("raw_parts_accepted >= 0", name="ck_collection_upload_files_raw_parts"),
         CheckConstraint("length(sha256) = 64", name="ck_collection_upload_files_sha256"),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
+
+
+class CollectionUploadRawPartDigestRecord(Base):
+    __tablename__ = "collection_upload_raw_part_digests"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    part_number: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "path"],
+            ["collection_upload_files.collection_id", "collection_upload_files.path"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("part_number >= 0", name="ck_upload_raw_part_digest_number"),
+        CheckConstraint("length(sha256) = 64", name="ck_upload_raw_part_digest_sha256"),
+    )
 
 
 class CollectionUploadProvenanceJournalRecord(Base):
@@ -1447,10 +1624,29 @@ class CollectionUploadProvenanceJournalRecord(Base):
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
-    current_state_id: Mapped[str] = mapped_column(String)
-    current_path: Mapped[str] = mapped_column(String)
-    current_bytes: Mapped[int] = mapped_column(BigInteger)
-    current_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String, default="accepting")
+    accepted_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    content_hash_state: Mapped[str] = mapped_column(Text)
+    validation_byte_offset: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    validation_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+    validation_previous_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    validation_previous_json_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    primary_lineage_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    entity_counts_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_entry_json_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    current_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generated_output_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    generation_after_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    generation_after_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -1459,7 +1655,26 @@ class CollectionUploadProvenanceJournalRecord(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint("bytes >= 0", name="ck_upload_provenance_journals_bytes"),
-        CheckConstraint("current_bytes >= 0", name="ck_upload_provenance_journals_current_bytes"),
+        CheckConstraint(
+            "accepted_bytes >= 0 AND accepted_bytes <= bytes",
+            name="ck_upload_provenance_journals_accepted_bytes",
+        ),
+        CheckConstraint(
+            "validation_byte_offset >= 0 AND validation_byte_offset <= accepted_bytes",
+            name="ck_upload_provenance_journals_validation_offset",
+        ),
+        CheckConstraint(
+            "validation_sequence >= 0",
+            name="ck_upload_provenance_journals_validation_sequence",
+        ),
+        CheckConstraint(
+            "state IN ('accepting','generating','validating','sealed','failed')",
+            name="ck_upload_provenance_journals_state",
+        ),
+        CheckConstraint(
+            "current_bytes IS NULL OR current_bytes >= 0",
+            name="ck_upload_provenance_journals_current_bytes",
+        ),
         CheckConstraint("length(sha256) = 64", name="ck_upload_provenance_journals_sha256"),
     )
 
@@ -1477,6 +1692,7 @@ class CollectionUploadProvenanceJournalChunkRecord(Base):
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    byte_offset: Mapped[int] = mapped_column(BigInteger)
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
     __table_args__ = (
@@ -1489,6 +1705,7 @@ class CollectionUploadProvenanceJournalChunkRecord(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint("ordinal >= 0", name="ck_upload_provenance_journal_chunks_ordinal"),
+        CheckConstraint("byte_offset >= 0", name="ck_upload_provenance_journal_chunks_offset"),
         CheckConstraint(
             "length(content) > 0",
             name="ck_upload_provenance_journal_chunks_content",
@@ -1496,6 +1713,126 @@ class CollectionUploadProvenanceJournalChunkRecord(Base):
     )
 
     journal: Mapped[CollectionUploadProvenanceJournalRecord] = relationship(back_populates="chunks")
+
+
+class CollectionUploadProvenanceSourceRecord(Base):
+    """One exact source journal in a server-generated derivative closure."""
+
+    __tablename__ = "collection_upload_provenance_sources"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    source_collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    expanded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    after_to_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    after_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    after_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    copied: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    copy_offset: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_uploads.collection_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_collection_id", "journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("copy_offset >= 0", name="ck_upload_provenance_sources_offset"),
+        Index(
+            "ix_collection_upload_provenance_sources_work",
+            "collection_id",
+            "expanded",
+            "copied",
+            "source_collection_id",
+            "journal_id",
+        ),
+    )
+
+
+class CollectionUploadProvenanceValidationFactRecord(Base):
+    __tablename__ = "collection_upload_provenance_validation_facts"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, primary_key=True)
+    fact_key: Mapped[str] = mapped_column(String, primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_upload_provenance_journals.collection_id",
+                "collection_upload_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('entry','agent','event','state','binding','entity','external-state')",
+            name="ck_upload_provenance_validation_fact_kind",
+        ),
+    )
+
+
+class CollectionUploadProvenanceReachabilityRecord(Base):
+    __tablename__ = "collection_upload_provenance_reachability"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    after_external_fact_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    expanded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_upload_provenance_journals.collection_id",
+                "collection_upload_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_upload_provenance_reachability_pending",
+            "collection_id",
+            "expanded",
+            "journal_id",
+        ),
+    )
+
+
+class CollectionUploadProvenanceArchiveVolumeRecord(Base):
+    __tablename__ = "collection_upload_provenance_archive_volumes"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)
+    document_json: Mapped[str] = mapped_column(Text)
+    payload_receipt_json: Mapped[str] = mapped_column(Text)
+    metadata_receipt_json: Mapped[str] = mapped_column(Text)
+
+    upload: Mapped[CollectionUploadRecord] = relationship(
+        back_populates="provenance_archive_volumes"
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"],
+            ["collection_uploads.collection_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("sequence >= 0", name="ck_upload_provenance_archive_volumes_sequence"),
+        CheckConstraint(
+            "kind IN ('bindings','journal')",
+            name="ck_upload_provenance_archive_volumes_kind",
+        ),
+    )
 
 
 class CollectionArchiveObjectUploadRecord(Base):
@@ -1509,12 +1846,16 @@ class CollectionArchiveObjectUploadRecord(Base):
     object_path: Mapped[str] = mapped_column(String)
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
     source_bytes: Mapped[int] = mapped_column(BigInteger)
+    source_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_first_part: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_part_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     unit_plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
     plan_json: Mapped[str] = mapped_column(Text)
     plan_sha256: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String, default="planned")
     checkpoint_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     sealed_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     uploaded_units: Mapped[int] = mapped_column(Integer, default=0)
@@ -1537,6 +1878,13 @@ class CollectionArchiveObjectUploadRecord(Base):
         CheckConstraint("sequence >= 0", name="ck_archive_object_uploads_sequence"),
         CheckConstraint("plaintext_bytes >= 0", name="ck_archive_object_uploads_plaintext"),
         CheckConstraint("source_bytes >= 0", name="ck_archive_object_uploads_source"),
+        CheckConstraint(
+            "(kind = 'pack' AND source_path IS NULL AND source_first_part IS NULL "
+            "AND source_part_count IS NULL) OR "
+            "(kind = 'segment' AND source_path IS NOT NULL AND source_first_part >= 0 "
+            "AND source_part_count > 0)",
+            name="ck_archive_object_uploads_source_parts",
+        ),
         CheckConstraint("unit_plaintext_bytes > 0", name="ck_archive_object_uploads_unit"),
         CheckConstraint(
             "state IN ('planned','uploading','sealed')",

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -16,29 +14,33 @@ runner = CliRunner()
 
 def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
     class FakeClient:
-        @contextmanager
-        def stream_apps(self, **kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
+        def list_apps(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs == {
+                "page": 1,
+                "per_page": 25,
                 "q": "review",
                 "sort": "name",
                 "order": "asc",
                 "active": True,
             }
-            yield iter(({"name": "review-station"},))
+            return {
+                "apps": [{"name": "review-station"}],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
     result = runner.invoke(
         app,
-        ["app", "list", "--query", "review", "--active", "--all", "--ids"],
+        ["app", "list", "--query", "review", "--active", "--ids"],
     )
 
     assert result.exit_code == 0
     assert result.stdout == "review-station\n"
-    human = runner.invoke(app, ["app", "list", "--query", "review", "--active", "--all"])
-    structured = runner.invoke(
-        app, ["app", "list", "--query", "review", "--active", "--all", "--json"]
-    )
+    human = runner.invoke(app, ["app", "list", "--query", "review", "--active"])
+    structured = runner.invoke(app, ["app", "list", "--query", "review", "--active", "--json"])
     assert human.exit_code == structured.exit_code == 0
     assert "review-station" in human.stdout
     assert json.loads(structured.stdout)["apps"][0]["name"] == "review-station"
@@ -114,27 +116,27 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
 
 def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
     class FakeClient:
-        @contextmanager
-        def stream_app_keys(
-            self, app_name: str, **kwargs: Any
-        ) -> Iterator[Iterator[dict[str, object]]]:
+        def list_app_keys(self, app_name: str, **kwargs: Any) -> dict[str, object]:
             assert app_name == "local"
             assert kwargs["active"] is False
-            yield iter(({"id": "0123456789abcdef", "status": "revoked"},))
+            return {
+                "keys": [{"id": "0123456789abcdef", "status": "revoked"}],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
     result = runner.invoke(
         app,
-        ["app", "key", "list", "local", "--inactive", "--all", "--ids"],
+        ["app", "key", "list", "local", "--inactive", "--ids"],
     )
 
     assert result.exit_code == 0
     assert result.stdout == "0123456789abcdef\n"
-    human = runner.invoke(app, ["app", "key", "list", "local", "--inactive", "--all"])
-    structured = runner.invoke(
-        app, ["app", "key", "list", "local", "--inactive", "--all", "--json"]
-    )
+    human = runner.invoke(app, ["app", "key", "list", "local", "--inactive"])
+    structured = runner.invoke(app, ["app", "key", "list", "local", "--inactive", "--json"])
     assert human.exit_code == structured.exit_code == 0
     assert "0123456789abcdef" in human.stdout
     assert json.loads(structured.stdout)["keys"][0]["id"] == "0123456789abcdef"
@@ -143,12 +145,13 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
 
 def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     class FakeClient:
-        @contextmanager
-        def stream_app_key_access(
+        def list_app_key_access(
             self,
             **kwargs: Any,
-        ) -> Iterator[Iterator[dict[str, object]]]:
+        ) -> dict[str, object]:
             assert kwargs == {
+                "page": 1,
+                "per_page": 25,
                 "q": "photos",
                 "sort": "permission",
                 "order": "asc",
@@ -158,8 +161,8 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "resource": "tag:photos",
                 "active": True,
             }
-            yield iter(
-                (
+            return {
+                "access": [
                     {
                         "app": "local",
                         "key_id": "key-one",
@@ -167,20 +170,24 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "permission": "catalog:read",
                         "resource": "tag:photos",
                     },
-                )
-            )
+                ],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
-        @contextmanager
-        def stream_download_quotas(self, **kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
+        def list_download_quotas(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs == {
+                "page": 1,
+                "per_page": 25,
                 "q": "review",
                 "sort": "remaining_bytes",
                 "order": "desc",
                 "app": "local",
                 "active": True,
             }
-            yield iter(
-                (
+            return {
+                "quotas": [
                     {
                         "id": "key-one",
                         "app": "local",
@@ -192,8 +199,11 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "remaining_bytes": 1024,
                         "resets_at": "2026-09-01T00:00:00Z",
                     },
-                )
-            )
+                ],
+                "page": 1,
+                "pages": 1,
+                "total": 1,
+            }
 
         def remove_app_key_access(
             self,
@@ -229,7 +239,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--active",
             "--query",
             "photos",
-            "--all",
         ],
     )
     quotas = runner.invoke(
@@ -248,7 +257,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "remaining_bytes",
             "--order",
             "desc",
-            "--all",
             "--ids",
         ],
     )
@@ -276,7 +284,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--active",
             "--query",
             "photos",
-            "--all",
             "--json",
         ],
     )
@@ -296,7 +303,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "remaining_bytes",
             "--order",
             "desc",
-            "--all",
         ],
     )
     quota_json = runner.invoke(
@@ -315,7 +321,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "remaining_bytes",
             "--order",
             "desc",
-            "--all",
             "--json",
         ],
     )
@@ -339,7 +344,6 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--active",
             "--query",
             "photos",
-            "--all",
             "--selectors",
         ],
     )

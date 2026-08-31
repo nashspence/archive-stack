@@ -28,7 +28,6 @@ from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 
-from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     archive_store_binding,
@@ -119,7 +118,6 @@ def test_postgres_upload_idempotency_is_independent_per_application(
         service = SqlAlchemyCollectionUploadService(
             RuntimeConfig(database_url=isolated_database_url),
             archive_stores,
-            proof_stamper=FixtureProofStamper(),
         )
         return service.create_or_resume(
             idempotency_key="shared-retry-key",

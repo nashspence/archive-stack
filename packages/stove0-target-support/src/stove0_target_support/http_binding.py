@@ -118,8 +118,8 @@ class TargetHttpBinding:
                     return _error(400, "bad_request", "GET /v1/target must not include a body")
                 return _model_response(self.target.contract())
             if normalized_method == "POST" and path == "/v1/preflight":
-                preflight_request = self._parse(body, TargetPreflightRequest)
-                return _model_response(self.target.preflight(preflight_request))
+                preflight = self._parse(body, TargetPreflightRequest)
+                return _model_response(self.target.preflight(preflight))
             job_match = _JOB_PATH.fullmatch(path)
             if job_match is not None and normalized_method == "PUT":
                 job_request = self._parse(body, TargetJobRequest)

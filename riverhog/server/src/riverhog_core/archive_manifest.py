@@ -10,9 +10,15 @@ from riverhog_age import UploadState
 from riverhog_archive_contracts import (
     ARCHIVE_ENCRYPTION_FORMAT,
     COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
+    COLLECTION_ARCHIVE_TERMINAL_SCHEMA,
+    COLLECTION_ARCHIVE_VOLUME_SCHEMA,
     PACK_INDEX_SCHEMA,
     SELECTIVE_READ_FORMAT,
     CollectionArchiveManifest,
+    CollectionArchiveTerminalDocument,
+    CollectionArchiveVolumeDocument,
+    format_archive_sequence,
+    ordered_archive_volume_commitment,
 )
 from riverhog_protocol.pack_ingress import RESERVED_ARCHIVE_PREFIX, canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
@@ -27,7 +33,7 @@ from riverhog_core.domain.archive import (
     StoredArchivePart,
     VerifiedRawFile,
 )
-from riverhog_core.raw_verification import raw_file_volume_set_sha256
+from riverhog_core.raw_verification import raw_file_ordered_volume_commitment
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -89,15 +95,16 @@ def validate_collection_archive_plan(
     return normalized_files
 
 
-def build_collection_archive_manifest(
+def build_collection_archive_authority(
     *,
+    archive_generation: str,
     files: Sequence[ArchiveFile],
     packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
     raw_volumes: Sequence[SealedRawVolume] = (),
     verified_raw_files: Sequence[VerifiedRawFile] = (),
     provenance_identity: str | None = None,
     provenance_objects: Sequence[SealedProvenanceObject] = (),
-) -> bytes:
+) -> tuple[bytes, tuple[CollectionArchiveVolumeDocument, ...]]:
     normalized_files = validate_collection_archive_plan(
         files=files,
         packs=tuple(plan for plan, _receipt in packs),
@@ -122,8 +129,8 @@ def build_collection_archive_manifest(
             expected is None
             or verified.bytes != expected.bytes
             or verified.sha256 != expected.sha256
-            or verified.volume_set_sha256
-            != raw_file_volume_set_sha256(file=expected, volumes=raw_by_path[path])
+            or verified.ordered_volume_sha256
+            != raw_file_ordered_volume_commitment(file=expected, volumes=raw_by_path[path])
         ):
             raise ValueError(f"raw file verification does not match sealed volumes: {path}")
 
@@ -155,8 +162,93 @@ def build_collection_archive_manifest(
         raise ValueError("archive volume paths must be unique")
 
     tree = collection_tree_identity(normalized_files)
-    payload = {
+    documents = tuple(
+        _archive_volume_document(
+            archive_generation=archive_generation,
+            tree_sha256=str(tree["sha256"]),
+            row=row,
+        )
+        for row in volume_rows
+    )
+    terminal = build_collection_archive_terminal_document(
+        archive_generation=archive_generation,
+        tree_sha256=str(tree["sha256"]),
+        sequence=len(documents),
+    )
+    manifest = build_collection_archive_root_manifest(
+        archive_generation=archive_generation,
+        tree=tree,
+        ordered_volume_sha256=ordered_archive_volume_commitment((*documents, terminal)),
+        provenance_identity=provenance_identity,
+        provenance_objects=provenance_objects,
+    )
+    return manifest, documents
+
+
+def build_collection_archive_terminal_document(
+    *,
+    archive_generation: str,
+    tree_sha256: str,
+    sequence: int,
+) -> CollectionArchiveTerminalDocument:
+    return CollectionArchiveTerminalDocument.from_mapping(
+        {
+            "schema": COLLECTION_ARCHIVE_TERMINAL_SCHEMA,
+            "archive_generation": archive_generation,
+            "archive_tree_sha256": tree_sha256,
+            "sequence": format_archive_sequence(sequence),
+            "kind": "terminal",
+        }
+    )
+
+
+def build_collection_archive_volume_document(
+    *,
+    archive_generation: str,
+    tree_sha256: str,
+    plan: PackVolumePlan | None,
+    receipt: SealedPackVolume | SealedRawVolume,
+) -> CollectionArchiveVolumeDocument:
+    """Build one independently bounded archive-volume authority document."""
+
+    if _SHA256_RE.fullmatch(tree_sha256) is None:
+        raise ValueError("archive tree identity is invalid")
+    if isinstance(receipt, SealedPackVolume):
+        if plan is None:
+            raise ValueError("sealed pack volume requires its canonical plan")
+        _validate_pack_receipt(plan, receipt)
+        row = _pack_volume_row(plan, receipt)
+    else:
+        if plan is not None:
+            raise ValueError("sealed raw volume does not accept a pack plan")
+        _validate_part_receipts(receipt.parts, plaintext_bytes=receipt.plaintext_bytes)
+        row = _raw_volume_row(receipt)
+    return _archive_volume_document(
+        archive_generation=archive_generation,
+        tree_sha256=tree_sha256,
+        row=row,
+    )
+
+
+def build_collection_archive_root_manifest(
+    *,
+    archive_generation: str,
+    tree: CollectionTreeIdentity,
+    ordered_volume_sha256: str,
+    provenance_identity: str | None = None,
+    provenance_objects: Sequence[SealedProvenanceObject] = (),
+) -> bytes:
+    """Build the small immutable root after every referenced object is durable."""
+
+    if _SHA256_RE.fullmatch(archive_generation) is None:
+        raise ValueError("archive generation is invalid")
+    if tree["files"] < 1 or tree["bytes"] < 0 or _SHA256_RE.fullmatch(tree["sha256"]) is None:
+        raise ValueError("archive tree identity is invalid")
+    if _SHA256_RE.fullmatch(ordered_volume_sha256) is None:
+        raise ValueError("archive ordered volume commitment is invalid")
+    payload: dict[str, object] = {
         "schema": COLLECTION_ARCHIVE_MANIFEST_SCHEMA,
+        "archive_generation": archive_generation,
         "format": {
             "encryption": ARCHIVE_ENCRYPTION_FORMAT,
             "pack_index": PACK_INDEX_SCHEMA,
@@ -164,23 +256,63 @@ def build_collection_archive_manifest(
             "selective_read": SELECTIVE_READ_FORMAT,
         },
         "tree": tree,
-        "volumes": volume_rows,
+        "volume_sequence": {
+            "sha256": ordered_volume_sha256,
+        },
     }
     if provenance_identity is not None:
         if _SHA256_RE.fullmatch(provenance_identity) is None:
             raise ValueError("archive provenance identity is invalid")
-        if not provenance_objects:
-            raise ValueError("archive provenance objects are required")
-        index = [item for item in provenance_objects if item.kind == "provenance-index"]
-        bundles = [item for item in provenance_objects if item.kind == "provenance-bundle"]
-        if len(index) != 1 or not bundles:
-            raise ValueError("archive provenance requires one index and at least one bundle")
+        roots = [item for item in provenance_objects if item.kind == "provenance-root"]
+        if len(provenance_objects) != 1 or len(roots) != 1:
+            raise ValueError("archive provenance requires exactly one small root")
         payload["provenance"] = {
             "identity": provenance_identity,
-            "index": _provenance_object_row(index[0]),
-            "bundles": [_provenance_object_row(item) for item in bundles],
+            "root": _provenance_object_row(roots[0]),
         }
     return CollectionArchiveManifest.from_mapping(payload).to_json_bytes()
+
+
+def _archive_volume_document(
+    *,
+    archive_generation: str,
+    tree_sha256: str,
+    row: Mapping[str, object],
+) -> CollectionArchiveVolumeDocument:
+    volume = dict(row)
+    volume["sequence"] = format_archive_sequence(
+        _stored_int(volume["sequence"], "archive volume sequence")
+    )
+    return CollectionArchiveVolumeDocument.from_mapping(
+        {
+            "schema": COLLECTION_ARCHIVE_VOLUME_SCHEMA,
+            "archive_generation": archive_generation,
+            "archive_tree_sha256": tree_sha256,
+            "volume": volume,
+        }
+    )
+
+
+def build_collection_archive_manifest(
+    *,
+    archive_generation: str,
+    files: Sequence[ArchiveFile],
+    packs: Sequence[tuple[PackVolumePlan, SealedPackVolume]],
+    raw_volumes: Sequence[SealedRawVolume] = (),
+    verified_raw_files: Sequence[VerifiedRawFile] = (),
+    provenance_identity: str | None = None,
+    provenance_objects: Sequence[SealedProvenanceObject] = (),
+) -> bytes:
+    manifest, _documents = build_collection_archive_authority(
+        archive_generation=archive_generation,
+        files=files,
+        packs=packs,
+        raw_volumes=raw_volumes,
+        verified_raw_files=verified_raw_files,
+        provenance_identity=provenance_identity,
+        provenance_objects=provenance_objects,
+    )
+    return manifest
 
 
 def _provenance_object_row(item: SealedProvenanceObject) -> dict[str, object]:
@@ -233,7 +365,7 @@ def _raw_volume_row(receipt: SealedRawVolume) -> dict[str, object]:
     expected_path = f"volumes/{receipt.volume_id}.bin.age"
     if normalize_relpath(receipt.relative_path) != expected_path:
         raise ValueError("sealed raw receipt path is not canonical")
-    if receipt.volume_id != f"segment-{receipt.sequence:012d}":
+    if receipt.sequence >= 1 << 256 or receipt.volume_id != f"segment-{receipt.sequence:064x}":
         raise ValueError("sealed raw receipt identity is not canonical")
     return {
         "id": receipt.volume_id,
@@ -307,7 +439,8 @@ def _validate_pack_receipt(plan: PackVolumePlan, receipt: SealedPackVolume) -> N
     if (
         receipt.volume_id != plan.volume_id
         or receipt.sequence != plan.sequence
-        or receipt.volume_id != f"pack-{receipt.sequence:012d}"
+        or receipt.sequence >= 1 << 256
+        or receipt.volume_id != f"pack-{receipt.sequence:064x}"
     ):
         raise ValueError("sealed pack receipt does not match its plan")
     if receipt.files != len(plan.members):
@@ -375,7 +508,7 @@ def _verified_raw_files(
         if (
             current.bytes < 0
             or _SHA256_RE.fullmatch(current.sha256) is None
-            or _SHA256_RE.fullmatch(current.volume_set_sha256) is None
+            or _SHA256_RE.fullmatch(current.ordered_volume_sha256) is None
             or not current.verified_at
         ):
             raise ValueError("raw file verification identity is invalid")
@@ -383,7 +516,7 @@ def _verified_raw_files(
             path=path,
             bytes=current.bytes,
             sha256=current.sha256,
-            volume_set_sha256=current.volume_set_sha256,
+            ordered_volume_sha256=current.ordered_volume_sha256,
             verified_at=current.verified_at,
         )
     return out

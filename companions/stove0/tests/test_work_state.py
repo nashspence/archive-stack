@@ -6,11 +6,14 @@ from unittest.mock import patch
 import pytest
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
 )
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import text
 from stove0_core import (
     ClaimBinding,
@@ -18,6 +21,7 @@ from stove0_core import (
     InMemoryWorkStore,
     Stove0StateError,
     Stove0WorkService,
+    TargetCallbackAuthority,
     WorkFailure,
     WorkInapplicable,
     WorkRecord,
@@ -56,8 +60,19 @@ from stove0_protocol import (
     WorkPayload,
     canonical_json_sha256,
 )
+from stove0_target_protocol import (
+    InputDispositionDeclaration,
+    OutputArtifactSetIdentity,
+    OutputSourceEdge,
+    TargetCallbackAccess,
+    TargetInputAuthority,
+    TargetOutputBindingSetIdentity,
+    TargetProductionAuthority,
+    TargetProductionAuthorityPayload,
+    TargetSettlementAuthority,
+    TargetSettlementAuthorityPayload,
+)
 from stove0_target_support import (
-    InputArtifact,
     InputArtifactContract,
     OperationContract,
     OperationContractPayload,
@@ -235,22 +250,25 @@ def _target_plan(
     *,
     observation_result_sha256s: tuple[str, ...] = (),
 ) -> TransformPlan:
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="source/input.bin",
+                bytes=12,
+                sha256=_sha("4"),
+            ),
+        )
+    )
     return TransformPlan.seal(
         TransformPlanPayload(
             target_implementation_id=target.implementation_id,
             target_contract_sha256=target.contract_sha256,
             operation_id=operation.id,
             operation_contract_sha256=operation.contract_sha256,
-            inputs=(
-                InputArtifact(
-                    id="source",
-                    role="fixture.source/v1",
-                    collection=_root(),
-                    path="source/input.bin",
-                    bytes=12,
-                    sha256=_sha("4"),
-                ),
-            ),
+            inputs=TargetInputAuthority.from_selection(selection),
             intent={"suffix": ".copy"},
             target_options={},
             observation_result_sha256s=observation_result_sha256s,
@@ -297,6 +315,194 @@ def _branch_decision(work: WorkIdentity) -> BranchSetDecision:
         ),
         selections=(selection,),
     )
+
+
+def _queued_target_callback_execution() -> tuple[
+    InMemoryWorkStore,
+    Stove0WorkService,
+    WorkRecord,
+    OperationContract,
+    TargetCallbackAuthority,
+    TargetCallbackAccess,
+]:
+    store = InMemoryWorkStore()
+    service = Stove0WorkService(store)
+    parent = _work()
+    parent_record = service.create_or_resume(parent)
+    parent_record = service.bind_claim(
+        parent.work_id,
+        claim_id=parent.work_id,
+        fence=1,
+        expected_revision=parent_record.revision,
+    )
+    parent_record = service.begin_planning(
+        parent.work_id,
+        expected_revision=parent_record.revision,
+    )
+    decision = _branch_decision(parent)
+    service.admit_branch_set(
+        parent.work_id,
+        decision,
+        expected_revision=parent_record.revision,
+    )
+    branch = decision.leaf_branches()[0]
+    child_id = branch.workflow_plan.work.work_id
+    record = store.load(child_id)
+    assert record is not None
+    record = service.bind_claim(
+        child_id,
+        claim_id=child_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.activate_preplanned(child_id, expected_revision=record.revision)
+    operation = _operation()
+    target = _target(operation)
+    record = service.seal_target_plan(
+        child_id,
+        target=target,
+        plan=_target_plan(operation, target),
+        expected_revision=record.revision,
+    )
+
+    class Operations:
+        def operation_contract(self, _operation: object) -> OperationContract:
+            return operation
+
+    class Projector:
+        def project_target_production(
+            self,
+            _record: WorkRecord,
+            dispositions: object,
+            edges: object,
+        ) -> ArtifactDispositionSetIdentity:
+            disposition_values = tuple(dispositions)  # type: ignore[arg-type]
+            edge_values = tuple(edges)  # type: ignore[arg-type]
+            assert all(isinstance(item, ArtifactDisposition) for item in disposition_values)
+            assert all(isinstance(item, ArtifactDispositionOutput) for item in edge_values)
+            return ArtifactDispositionSetIdentity(
+                disposition_count=len(disposition_values),
+                output_edge_count=len(edge_values),
+                output_artifact_count=len({item.output_path for item in edge_values}),
+                sha256=_sha("e"),
+            )
+
+    callbacks = TargetCallbackAuthority(
+        store,
+        signing_key="fixture target callback signing key",
+        base_url="https://stove0.invalid",
+        allow_insecure_http=False,
+        ttl_seconds=900,
+        operations=Operations(),
+        projector=Projector(),
+    )
+    access = callbacks.issue_access(record, "fixture-target")
+    assert record.controller_evidence is not None
+    declaration = TargetJobDeclaration(
+        job_id=record.controller_evidence.execution_envelope.execution_envelope_sha256,
+        claim_id=child_id,
+        fence=1,
+        controller_evidence=record.controller_evidence,
+        plan=record.target_plan,
+        workspace_assurance="ephemeral",
+    )
+    request = TargetJobRequest.seal(
+        declaration,
+        TargetRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret",
+        ),
+        access,
+    )
+    record = service.bind_target_request(
+        child_id,
+        request,
+        expected_revision=record.revision,
+    )
+    return store, service, record, operation, callbacks, access
+
+
+def test_target_callback_authority_seals_exact_production_and_is_idempotent() -> None:
+    _store, _service, record, _operation_contract, callbacks, access = (
+        _queued_target_callback_execution()
+    )
+    assert record.controller_evidence is not None
+    job_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    page = callbacks.input_page(
+        access.token,
+        job_id=job_id,
+        continuation=None,
+        limit=256,
+    )
+    assert page.complete is True
+    assert len(page.artifacts) == 1
+    source = page.artifacts[0]
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256=_sha("5"),
+    )
+    disposition = InputDispositionDeclaration(input_id=source.id, status="transformed")
+    edge = OutputSourceEdge(output_id=output.id, input_id=source.id)
+    for _ in range(2):
+        callbacks.declare_output(access.token, job_id=job_id, output=output)
+        callbacks.declare_disposition(access.token, job_id=job_id, disposition=disposition)
+        callbacks.declare_source_edge(access.token, job_id=job_id, edge=edge)
+    sealed = callbacks.seal_production(access.token, job_id=job_id).production
+    assert sealed.outputs == OutputArtifactSetIdentity.seal((output,))
+    assert sealed.disposition_count == 1
+    assert sealed.source_edge_count == 1
+
+
+def test_target_callback_authority_rejects_unpermitted_disposition_and_stale_fence() -> None:
+    _store, service, record, _operation_contract, callbacks, access = (
+        _queued_target_callback_execution()
+    )
+    assert record.controller_evidence is not None
+    job_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    source = callbacks.input_page(
+        access.token,
+        job_id=job_id,
+        continuation=None,
+        limit=256,
+    ).artifacts[0]
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256=_sha("5"),
+    )
+    callbacks.declare_output(access.token, job_id=job_id, output=output)
+    callbacks.declare_disposition(
+        access.token,
+        job_id=job_id,
+        disposition=InputDispositionDeclaration(input_id=source.id, status="preserved"),
+    )
+    callbacks.declare_source_edge(
+        access.token,
+        job_id=job_id,
+        edge=OutputSourceEdge(output_id=output.id, input_id=source.id),
+    )
+    with pytest.raises(ValueError, match="disposition is not permitted"):
+        callbacks.seal_production(access.token, job_id=job_id)
+
+    rebound = service.rebind_claim(
+        record.work_id,
+        claim_id=record.claim.claim_id,  # type: ignore[union-attr]
+        fence=2,
+        expected_revision=record.revision,
+    )
+    assert rebound.claim is not None and rebound.claim.fence == 2
+    with pytest.raises(PermissionError, match="stale"):
+        callbacks.input_page(
+            access.token,
+            job_id=job_id,
+            continuation=None,
+            limit=256,
+        )
 
 
 def _nested_branch_decision(work: WorkIdentity) -> BranchSetDecision:
@@ -434,6 +640,10 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
             riverhog_base_url="https://riverhog.invalid",
             capability_token="secret",
         ),
+        TargetCallbackAccess(
+            stove0_base_url="https://stove0.invalid",
+            token="callback-secret",
+        ),
     )
     record = service.bind_target_request(
         work.work_id,
@@ -460,18 +670,24 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         path="output/result.bin",
         bytes=12,
         sha256=_sha("5"),
-        derived_from=("source",),
     )
     assert record.controller_evidence is not None
     workflow = record.controller_evidence.execution_envelope.workflow_plan
+    disposition_set = ArtifactDispositionSetIdentity(
+        disposition_count=1,
+        output_edge_count=1,
+        output_artifact_count=1,
+        sha256=_sha("8"),
+    )
     derivation = CollectionDerivation(
         execution_id=declaration.job_id,
         claim_id=declaration.claim_id,
         fence=declaration.fence,
         recipe=workflow.work.recipe.to_identity(),
         operation=workflow.operation.to_identity(),
-        inputs=tuple(item.to_identity() for item in workflow.work.inputs),
-        output_tags=workflow.output_tags,
+        input_set_sha256=_sha("a"),
+        artifact_set_sha256=_sha("b"),
+        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256=_sha("9"),
         controller_evidence=record.controller_evidence.model_dump(
@@ -482,21 +698,25 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         controller_evidence_sha256=riverhog_canonical_json_sha256(
             record.controller_evidence.model_dump(mode="json", by_alias=True, exclude_none=True)
         ),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=_root().collection_id,
-                input_archive_root_sha256=_root().archive_root_sha256,
-                input_path=plan.inputs[0].path,
-                status="transformed",
-                outputs=(output.path,),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     output_collection = OutputCollectionRef(
         collection_id=7,
         archive_root_sha256=_sha("6"),
         content_identity=_sha("7"),
         derivation_sha256=derivation.sha256,
+    )
+    production = TargetProductionAuthority.seal(
+        TargetProductionAuthorityPayload(
+            job_id=declaration.job_id,
+            plan_sha256=plan.plan_sha256,
+            outputs=OutputArtifactSetIdentity.seal((output,)),
+            disposition_count=1,
+            disposition_sha256=_sha("c"),
+            source_edge_count=1,
+            source_edge_sha256=_sha("d"),
+            riverhog_disposition_set=disposition_set,
+        )
     )
     succeeded = TargetJobStatus(
         job_id=declaration.job_id,
@@ -505,7 +725,7 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         request_sha256=target_request.request_sha256,
         plan_sha256=plan.plan_sha256,
         progress=TargetProgress(phase="done", completed=2, total=2),
-        outputs=(output,),
+        production=production,
         output_collection=output_collection,
         execution_evidence=TargetExecutionEvidence(
             target_contract_sha256=target.contract_sha256,
@@ -522,9 +742,22 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         expected_revision=record.revision,
     )
     assert record.phase == "verifying"
+    settlement = TargetSettlementAuthority.seal(
+        TargetSettlementAuthorityPayload(
+            job_id=declaration.job_id,
+            production_sha256=production.production_sha256,
+            output_collection=output_collection,
+            output_bindings=TargetOutputBindingSetIdentity(
+                artifact_count=1,
+                total_bytes=output.bytes,
+                sha256=_sha("e"),
+            ),
+        )
+    )
     record = service.verify_output(
         work.work_id,
         output_collection,
+        settlement,
         expected_revision=record.revision,
     )
     assert record.phase == "settled"
@@ -703,6 +936,23 @@ def test_stale_revision_and_invalid_success_order_fail_closed() -> None:
                 archive_root_sha256=_sha("6"),
                 content_identity=_sha("7"),
                 derivation_sha256=_sha("8"),
+            ),
+            TargetSettlementAuthority.seal(
+                TargetSettlementAuthorityPayload(
+                    job_id=record.work_id,
+                    production_sha256=_sha("9"),
+                    output_collection=OutputCollectionRef(
+                        collection_id=7,
+                        archive_root_sha256=_sha("6"),
+                        content_identity=_sha("7"),
+                        derivation_sha256=_sha("8"),
+                    ),
+                    output_bindings=TargetOutputBindingSetIdentity(
+                        artifact_count=1,
+                        total_bytes=1,
+                        sha256=_sha("a"),
+                    ),
+                )
             ),
             expected_revision=claimed.revision,
         )

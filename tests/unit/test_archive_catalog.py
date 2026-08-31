@@ -4,8 +4,11 @@ import hashlib
 
 import pytest
 from riverhog_core.archive_catalog import build_archive_catalog_projection
-from riverhog_core.archive_manifest import build_collection_archive_manifest
-from riverhog_core.archive_root import SealedArchiveRoot
+from riverhog_core.archive_manifest import (
+    build_collection_archive_authority,
+    build_collection_archive_terminal_document,
+)
+from riverhog_core.archive_root import SealedArchiveRoot, SealedArchiveVolumeMetadata
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
@@ -65,7 +68,18 @@ def _fixture() -> tuple[
         revision="version-1",
         completed_at="2026-08-03T00:00:00Z",
     )
-    manifest = build_collection_archive_manifest(files=files, packs=((plan, receipt),))
+    manifest, volume_documents = build_collection_archive_authority(
+        archive_generation="a" * 64,
+        files=files,
+        packs=((plan, receipt),),
+    )
+    volume_metadata = volume_documents[0].to_json_bytes()
+    terminal = build_collection_archive_terminal_document(
+        archive_generation="a" * 64,
+        tree_sha256=str(__import__("json").loads(manifest)["tree"]["sha256"]),
+        sequence=1,
+    )
+    terminal_metadata = terminal.to_json_bytes()
     root = SealedArchiveRoot(
         object_path="archives/example/manifest.json.age",
         relative_path="manifest.json.age",
@@ -79,6 +93,30 @@ def _fixture() -> tuple[
         bytes=sum(current.bytes for current in files),
         completed_at="2026-08-03T00:00:01Z",
         manifest_bytes=manifest,
+        volume_metadata=(
+            SealedArchiveVolumeMetadata(
+                sequence=0,
+                object_path=("archives/example/metadata/volume-000000000000.json.age"),
+                relative_path="metadata/volume-000000000000.json.age",
+                revision="metadata-version",
+                plaintext_bytes=len(volume_metadata),
+                plaintext_sha256=hashlib.sha256(volume_metadata).hexdigest(),
+                stored_bytes=len(volume_metadata) + 100,
+                stored_sha256=hashlib.sha256(b"encrypted-metadata").hexdigest(),
+                completed_at="2026-08-03T00:00:00Z",
+            ),
+            SealedArchiveVolumeMetadata(
+                sequence=1,
+                object_path=("archives/example/metadata/volume-000000000001.json.age"),
+                relative_path="metadata/volume-000000000001.json.age",
+                revision="terminal-version",
+                plaintext_bytes=len(terminal_metadata),
+                plaintext_sha256=hashlib.sha256(terminal_metadata).hexdigest(),
+                stored_bytes=len(terminal_metadata) + 100,
+                stored_sha256=hashlib.sha256(b"encrypted-terminal").hexdigest(),
+                completed_at="2026-08-03T00:00:00Z",
+            ),
+        ),
     )
     return files, (plan, receipt), root
 
@@ -95,12 +133,10 @@ def test_catalog_projection_is_exactly_bound_to_root_and_volume_receipts() -> No
     )
 
     assert projection.root.manifest_plaintext_sha256 == root.plaintext_sha256
-    assert [current.volume_id for current in projection.volumes] == ["pack-000000000000"]
+    assert [current.volume_id for current in projection.volumes] == [f"pack-{0:064x}"]
     assert [current.path for current in projection.pack_members] == ["a.txt", "b.txt"]
     assert projection.segments == ()
-    assert projection.volumes[0].object_path == (
-        "archives/example/volumes/pack-000000000000.tar.age"
-    )
+    assert projection.volumes[0].object_path == (f"archives/example/volumes/pack-{0:064x}.tar.age")
 
 
 def test_catalog_projection_rejects_a_root_for_different_volume_set() -> None:
@@ -118,6 +154,7 @@ def test_catalog_projection_rejects_a_root_for_different_volume_set() -> None:
         bytes=root.bytes,
         completed_at=root.completed_at,
         manifest_bytes=root.manifest_bytes,
+        volume_metadata=root.volume_metadata,
     )
 
     with pytest.raises(ValueError, match="root receipt"):

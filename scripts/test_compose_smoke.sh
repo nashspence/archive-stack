@@ -333,13 +333,20 @@ adapter_compose exec -T \
   ftp-adapter python -c "${adapter_run_code}"
 
 cache_code="from riverhog_api_client import ApiClient
+def collect(method, key, **kwargs):
+    page = 1
+    rows = []
+    while True:
+        payload = method(page=page, per_page=100, **kwargs)
+        rows.extend(payload[key])
+        if page >= payload['pages']:
+            return rows
+        page += 1
 with ApiClient() as client:
-    with client.stream_collections(tag='stove0-audio-archive') as rows:
-        collections = list(rows)
+    collections = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
     assert len(collections) == 1, collections
     input_id = collections[0]['id']
-    with client.stream_retrieval_cache_objects(collection_id=input_id) as rows:
-        cached = list(rows)
+    cached = collect(client.list_retrieval_cache_objects, 'objects', collection_id=input_id)
     assert cached, cached
     assert all(row['state'] == 'ready' for row in cached), cached
     assert all('new_archive' in row['lease_categories'] for row in cached), cached"
@@ -413,16 +420,21 @@ scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 
 lineage_code="import json, os
 from riverhog_api_client import ApiClient
+def collect(method, key, **kwargs):
+    page = 1
+    rows = []
+    while True:
+        payload = method(page=page, per_page=100, **kwargs)
+        rows.extend(payload[key])
+        if page >= payload['pages']:
+            return rows
+        page += 1
 with ApiClient() as client:
-    with client.stream_collections(tag='stove0-audio-archive') as rows:
-        inputs = list(rows)
-    with client.stream_collections(tag='archive-audio') as rows:
-        outputs = list(rows)
+    inputs = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
+    outputs = collect(client.list_collections, 'collections', tag='archive-audio')
     assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
-    with client.stream_search(collection=inputs[0]['id']) as rows:
-        input_files = [row for row in rows if not row['path'].startswith('riverhog/')]
-    with client.stream_search(collection=outputs[0]['id']) as rows:
-        output_files = [row for row in rows if not row['path'].startswith('riverhog/')]
+    input_files = [row for row in collect(client.search, 'results', collection=inputs[0]['id']) if not row['path'].startswith('riverhog/')]
+    output_files = [row for row in collect(client.search, 'results', collection=outputs[0]['id']) if not row['path'].startswith('riverhog/')]
     audio_count = int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
     assert len(input_files) == audio_count + 1
     archive_outputs = [row for row in output_files if row['path'].endswith('.opus')]

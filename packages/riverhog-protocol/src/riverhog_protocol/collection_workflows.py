@@ -535,7 +535,6 @@ class ArtifactDisposition:
     input_archive_root_sha256: str
     input_path: str
     status: DispositionState
-    outputs: tuple[str, ...] = ()
     code: str | None = None
     message: str | None = None
 
@@ -555,14 +554,6 @@ class ArtifactDisposition:
         if state not in _DISPOSITION_STATES:
             raise ValueError("artifact disposition state is invalid")
         object.__setattr__(self, "status", cast(DispositionState, state))
-        outputs = tuple(sorted(normalize_relpath(item) for item in self.outputs))
-        if len(outputs) != len(set(outputs)):
-            raise ValueError("artifact disposition outputs must be unique")
-        object.__setattr__(self, "outputs", outputs)
-        if state == "transformed" and not outputs:
-            raise ValueError("transformed artifact disposition requires output paths")
-        if state != "transformed" and outputs:
-            raise ValueError("only transformed artifact dispositions may name outputs")
         if state in {"omitted", "rejected"}:
             object.__setattr__(self, "code", _semantic_id(self.code, "disposition code"))
             object.__setattr__(self, "message", _visible_text(self.message, "disposition message"))
@@ -578,8 +569,6 @@ class ArtifactDisposition:
             },
             "status": self.status,
         }
-        if self.outputs:
-            payload["outputs"] = list(self.outputs)
         if self.code is not None:
             payload["failure"] = {"code": self.code, "message": self.message}
         return payload
@@ -589,7 +578,6 @@ class ArtifactDisposition:
         if not {"input", "status"}.issubset(value) or set(value) - {
             "input",
             "status",
-            "outputs",
             "failure",
         }:
             raise ValueError("artifact disposition fields are invalid")
@@ -600,10 +588,7 @@ class ArtifactDisposition:
             "path",
         }:
             raise ValueError("artifact disposition input fields are invalid")
-        outputs = value.get("outputs", [])
         failure = value.get("failure")
-        if not isinstance(outputs, list):
-            raise ValueError("artifact disposition outputs are invalid")
         code: str | None = None
         message: str | None = None
         if failure is not None:
@@ -618,9 +603,118 @@ class ArtifactDisposition:
             input_archive_root_sha256=str(input_value.get("archive_root_sha256") or ""),
             input_path=str(input_value.get("path") or ""),
             status=cast(DispositionState, str(value.get("status") or "")),
-            outputs=tuple(str(item) for item in outputs),
             code=code,
             message=message,
+        )
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class ArtifactDispositionOutput:
+    """One exact source-to-output edge in a claim's disposition authority."""
+
+    input_collection_id: CollectionId
+    input_archive_root_sha256: str
+    input_path: str
+    output_path: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "input_collection_id",
+            validate_collection_id(self.input_collection_id),
+        )
+        object.__setattr__(
+            self,
+            "input_archive_root_sha256",
+            _sha256(self.input_archive_root_sha256, "input archive-root identity"),
+        )
+        object.__setattr__(self, "input_path", normalize_relpath(self.input_path))
+        object.__setattr__(self, "output_path", normalize_relpath(self.output_path))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "input": {
+                "collection_id": self.input_collection_id,
+                "archive_root_sha256": self.input_archive_root_sha256,
+                "path": self.input_path,
+            },
+            "output_path": self.output_path,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> ArtifactDispositionOutput:
+        if set(value) != {"input", "output_path"}:
+            raise ValueError("artifact disposition output fields are invalid")
+        input_value = value.get("input")
+        if not isinstance(input_value, Mapping) or set(input_value) != {
+            "collection_id",
+            "archive_root_sha256",
+            "path",
+        }:
+            raise ValueError("artifact disposition output input fields are invalid")
+        return cls(
+            input_collection_id=_positive_uint(
+                input_value.get("collection_id"), "input collection id"
+            ),
+            input_archive_root_sha256=str(input_value.get("archive_root_sha256") or ""),
+            input_path=str(input_value.get("path") or ""),
+            output_path=str(value.get("output_path") or ""),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDispositionSetIdentity:
+    """Small identity for one sealed claim-scoped relational disposition set."""
+
+    disposition_count: int
+    output_edge_count: int
+    output_artifact_count: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "disposition_count",
+            _positive_uint(self.disposition_count, "disposition count"),
+        )
+        object.__setattr__(
+            self,
+            "output_edge_count",
+            _positive_uint(self.output_edge_count, "output edge count"),
+        )
+        object.__setattr__(
+            self,
+            "output_artifact_count",
+            _positive_uint(self.output_artifact_count, "output artifact count"),
+        )
+        if self.output_artifact_count > self.output_edge_count:
+            raise ValueError("output artifact count exceeds output edge count")
+        object.__setattr__(self, "sha256", _sha256(self.sha256, "disposition set identity"))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "disposition_count": self.disposition_count,
+            "output_edge_count": self.output_edge_count,
+            "output_artifact_count": self.output_artifact_count,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> ArtifactDispositionSetIdentity:
+        if set(value) != {
+            "disposition_count",
+            "output_edge_count",
+            "output_artifact_count",
+            "sha256",
+        }:
+            raise ValueError("artifact disposition set fields are invalid")
+        return cls(
+            disposition_count=_positive_uint(value.get("disposition_count"), "disposition count"),
+            output_edge_count=_positive_uint(value.get("output_edge_count"), "output edge count"),
+            output_artifact_count=_positive_uint(
+                value.get("output_artifact_count"), "output artifact count"
+            ),
+            sha256=str(value.get("sha256") or ""),
         )
 
 
@@ -633,22 +727,34 @@ class CollectionDerivation:
     fence: int
     recipe: RecipeIdentity
     operation: OperationIdentity
-    inputs: tuple[CollectionRootIdentity, ...]
-    output_tags: tuple[str, ...]
+    input_set_sha256: str
+    artifact_set_sha256: str
+    output_tag_set_sha256: str
     execution_envelope_sha256: str
     execution_sha256: str
     controller_evidence: dict[str, JsonValue]
     controller_evidence_sha256: str
-    dispositions: tuple[ArtifactDisposition, ...]
+    disposition_set: ArtifactDispositionSetIdentity
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "execution_id", _sha256(self.execution_id, "execution id"))
         object.__setattr__(self, "claim_id", _visible_text(self.claim_id, "claim id", maximum=160))
         object.__setattr__(self, "fence", _positive_uint(self.fence, "claim fence"))
-        normalized_inputs = tuple(sorted(self.inputs))
-        if not normalized_inputs or normalized_inputs != self.inputs:
-            raise ValueError("derivation inputs must be nonempty and canonically ordered")
-        object.__setattr__(self, "output_tags", _canonical_tags(self.output_tags))
+        object.__setattr__(
+            self,
+            "input_set_sha256",
+            _sha256(self.input_set_sha256, "input set identity"),
+        )
+        object.__setattr__(
+            self,
+            "artifact_set_sha256",
+            _sha256(self.artifact_set_sha256, "artifact set identity"),
+        )
+        object.__setattr__(
+            self,
+            "output_tag_set_sha256",
+            _sha256(self.output_tag_set_sha256, "output tag set identity"),
+        )
         object.__setattr__(
             self,
             "execution_envelope_sha256",
@@ -675,21 +781,6 @@ class CollectionDerivation:
         if canonical_json_sha256(normalized_controller_evidence) != evidence_sha256:
             raise ValueError("controller evidence identity does not match its canonical document")
         object.__setattr__(self, "controller_evidence_sha256", evidence_sha256)
-        dispositions = tuple(sorted(self.dispositions))
-        if not dispositions or dispositions != self.dispositions:
-            raise ValueError("artifact dispositions must be nonempty and canonically ordered")
-        roots = {(item.collection_id, item.archive_root_sha256) for item in self.inputs}
-        if any(
-            (item.input_collection_id, item.input_archive_root_sha256) not in roots
-            for item in dispositions
-        ):
-            raise ValueError("artifact disposition references an unknown input root")
-        disposition_inputs = [
-            (item.input_collection_id, item.input_archive_root_sha256, item.input_path)
-            for item in dispositions
-        ]
-        if len(disposition_inputs) != len(set(disposition_inputs)):
-            raise ValueError("artifact dispositions must identify each input at most once")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -698,13 +789,14 @@ class CollectionDerivation:
             "claim": {"id": self.claim_id, "fence": self.fence},
             "recipe": self.recipe.as_dict(),
             "operation": self.operation.as_dict(),
-            "inputs": [item.as_dict() for item in self.inputs],
-            "output_tags": list(self.output_tags),
+            "input_set_sha256": self.input_set_sha256,
+            "artifact_set_sha256": self.artifact_set_sha256,
+            "output_tag_set_sha256": self.output_tag_set_sha256,
             "execution_envelope_sha256": self.execution_envelope_sha256,
             "execution_sha256": self.execution_sha256,
             "controller_evidence": self.controller_evidence,
             "controller_evidence_sha256": self.controller_evidence_sha256,
-            "dispositions": [item.as_dict() for item in self.dispositions],
+            "disposition_set": self.disposition_set.as_dict(),
         }
 
     def to_json_bytes(self) -> bytes:
@@ -724,13 +816,14 @@ class CollectionDerivation:
                 "claim",
                 "recipe",
                 "operation",
-                "inputs",
-                "output_tags",
+                "input_set_sha256",
+                "artifact_set_sha256",
+                "output_tag_set_sha256",
                 "execution_envelope_sha256",
                 "execution_sha256",
                 "controller_evidence",
                 "controller_evidence_sha256",
-                "dispositions",
+                "disposition_set",
             }
             or value.get("format") != DERIVATION_FORMAT
         ):
@@ -738,19 +831,13 @@ class CollectionDerivation:
         claim = value.get("claim")
         recipe = value.get("recipe")
         operation = value.get("operation")
-        inputs = value.get("inputs")
-        output_tags = value.get("output_tags")
-        dispositions = value.get("dispositions")
+        disposition_set = value.get("disposition_set")
         if (
             not isinstance(claim, Mapping)
             or set(claim) != {"id", "fence"}
             or not isinstance(recipe, Mapping)
             or not isinstance(operation, Mapping)
-            or not isinstance(inputs, list)
-            or not all(isinstance(item, Mapping) for item in inputs)
-            or not isinstance(output_tags, list)
-            or not isinstance(dispositions, list)
-            or not all(isinstance(item, Mapping) for item in dispositions)
+            or not isinstance(disposition_set, Mapping)
         ):
             raise ValueError("collection derivation nested fields are invalid")
         return cls(
@@ -759,8 +846,9 @@ class CollectionDerivation:
             fence=_positive_uint(claim.get("fence"), "claim fence"),
             recipe=RecipeIdentity.from_mapping(recipe),
             operation=OperationIdentity.from_mapping(operation),
-            inputs=tuple(CollectionRootIdentity.from_mapping(item) for item in inputs),
-            output_tags=tuple(str(item) for item in output_tags),
+            input_set_sha256=str(value.get("input_set_sha256") or ""),
+            artifact_set_sha256=str(value.get("artifact_set_sha256") or ""),
+            output_tag_set_sha256=str(value.get("output_tag_set_sha256") or ""),
             execution_envelope_sha256=str(value.get("execution_envelope_sha256") or ""),
             execution_sha256=str(value.get("execution_sha256") or ""),
             controller_evidence=_json_object(
@@ -768,12 +856,14 @@ class CollectionDerivation:
                 "controller evidence",
             ),
             controller_evidence_sha256=str(value.get("controller_evidence_sha256") or ""),
-            dispositions=tuple(ArtifactDisposition.from_mapping(item) for item in dispositions),
+            disposition_set=ArtifactDispositionSetIdentity.from_mapping(disposition_set),
         )
 
 
 __all__ = [
     "ArtifactDisposition",
+    "ArtifactDispositionOutput",
+    "ArtifactDispositionSetIdentity",
     "CollectionArtifactIdentity",
     "CollectionDerivation",
     "CollectionProcessingOutcomeIdentity",

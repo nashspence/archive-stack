@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -67,6 +68,12 @@ from stove0_protocol import (
     BranchSetDecision,
     JoinPlan,
     branch_work,
+    canonical_json_bytes,
+)
+from stove0_target_protocol import (
+    InputDispositionDeclaration,
+    OutputArtifact,
+    OutputSourceEdge,
 )
 from time_formats import utc_timestamp_now
 
@@ -206,13 +213,83 @@ class _ArtifactSelectionMemberRow(_Base):
         ForeignKey("stove0_artifact_selections.selection_sha256", ondelete="CASCADE"),
         primary_key=True,
     )
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    continuation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("ordinal >= 0", name="ck_stove0_selection_members_ordinal"),
+        CheckConstraint("length(artifact_id) >= 1", name="ck_stove0_selection_members_artifact_id"),
+        CheckConstraint(
+            "length(continuation_sha256) = 64",
+            name="ck_stove0_selection_members_continuation",
+        ),
+        Index(
+            "ix_stove0_selection_members_continuation",
+            "selection_sha256",
+            "continuation_sha256",
+            unique=True,
+        ),
         CheckConstraint("document_bytes >= 0", name="ck_stove0_selection_members_document_bytes"),
+    )
+
+
+class _TargetOutputRow(_Base):
+    __tablename__ = "stove0_target_outputs"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    output_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    output_path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("length(output_id) >= 1", name="ck_stove0_target_outputs_id"),
+        CheckConstraint("length(output_path) >= 1", name="ck_stove0_target_outputs_path"),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_target_outputs_document_bytes"),
+        Index("uq_stove0_target_outputs_path", "work_id", "output_path", unique=True),
+    )
+
+
+class _TargetDispositionRow(_Base):
+    __tablename__ = "stove0_target_input_dispositions"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    input_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("length(input_id) >= 1", name="ck_stove0_target_dispositions_id"),
+        CheckConstraint(
+            "status IN ('omitted','preserved','rejected','transformed')",
+            name="ck_stove0_target_dispositions_status",
+        ),
+    )
+
+
+class _TargetSourceEdgeRow(_Base):
+    __tablename__ = "stove0_target_source_edges"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    output_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    input_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+
+    __table_args__ = (
+        CheckConstraint("length(output_id) >= 1", name="ck_stove0_target_source_edges_output"),
+        CheckConstraint("length(input_id) >= 1", name="ck_stove0_target_source_edges_input"),
+        Index("ix_stove0_target_source_edges_input", "work_id", "input_id", "output_id"),
     )
 
 
@@ -632,9 +709,154 @@ class SqlAlchemyStateStore:
             members = session.scalars(
                 select(_ArtifactSelectionMemberRow)
                 .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
-                .order_by(_ArtifactSelectionMemberRow.ordinal)
+                .order_by(_ArtifactSelectionMemberRow.artifact_id)
             )
             return _selection_from_rows(row, members)
+
+    def retain_selection(self, selection: ArtifactSelection) -> None:
+        with self.sessions() as session, session.begin():
+            _insert_or_verify_selection(session, selection)
+
+    def load_selection_artifact(
+        self,
+        selection_sha256: str,
+        artifact_id: str,
+    ) -> ArtifactSubject | None:
+        with self.sessions() as session:
+            row = session.get(_ArtifactSelectionMemberRow, (selection_sha256, artifact_id))
+            return None if row is None else ArtifactSubject.model_validate_json(row.document_json)
+
+    def record_target_output(self, work_id: str, output: OutputArtifact) -> None:
+        encoded = _encode(output.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with self.sessions() as session, session.begin():
+            existing = session.get(_TargetOutputRow, (work_id, output.id))
+            if existing is None:
+                session.add(
+                    _TargetOutputRow(
+                        work_id=work_id,
+                        output_id=output.id,
+                        output_path=output.path,
+                        document_bytes=_encoded_bytes(encoded),
+                        document_json=encoded,
+                    )
+                )
+            elif existing.document_json != encoded:
+                raise ConcurrentWorkUpdate("target output declaration changed")
+
+    def record_target_disposition(
+        self,
+        work_id: str,
+        disposition: InputDispositionDeclaration,
+    ) -> None:
+        with self.sessions() as session, session.begin():
+            existing = session.get(_TargetDispositionRow, (work_id, disposition.input_id))
+            if existing is None:
+                session.add(
+                    _TargetDispositionRow(
+                        work_id=work_id,
+                        input_id=disposition.input_id,
+                        status=disposition.status,
+                    )
+                )
+            elif existing.status != disposition.status:
+                raise ConcurrentWorkUpdate("target input disposition changed")
+
+    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None:
+        with self.sessions() as session, session.begin():
+            if (
+                session.get(
+                    _TargetSourceEdgeRow,
+                    (work_id, edge.output_id, edge.input_id),
+                )
+                is None
+            ):
+                session.add(
+                    _TargetSourceEdgeRow(
+                        work_id=work_id,
+                        output_id=edge.output_id,
+                        input_id=edge.input_id,
+                    )
+                )
+
+    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None:
+        with self.sessions() as session:
+            row = session.get(_TargetOutputRow, (work_id, output_id))
+            return None if row is None else OutputArtifact.model_validate_json(row.document_json)
+
+    def load_target_disposition(
+        self,
+        work_id: str,
+        input_id: str,
+    ) -> InputDispositionDeclaration | None:
+        with self.sessions() as session:
+            row = session.get(_TargetDispositionRow, (work_id, input_id))
+            return (
+                None
+                if row is None
+                else InputDispositionDeclaration(
+                    input_id=row.input_id, status=cast(Any, row.status)
+                )
+            )
+
+    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]:
+        statement = (
+            select(_TargetOutputRow)
+            .where(_TargetOutputRow.work_id == work_id)
+            .order_by(_TargetOutputRow.output_id)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield OutputArtifact.model_validate_json(row.document_json)
+
+    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]:
+        statement = (
+            select(_TargetOutputRow)
+            .where(_TargetOutputRow.work_id == work_id)
+            .order_by(_TargetOutputRow.output_path)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield OutputArtifact.model_validate_json(row.document_json)
+
+    def iter_target_dispositions(
+        self,
+        work_id: str,
+    ) -> Iterator[InputDispositionDeclaration]:
+        statement = (
+            select(_TargetDispositionRow)
+            .where(_TargetDispositionRow.work_id == work_id)
+            .order_by(_TargetDispositionRow.input_id)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield InputDispositionDeclaration(
+                    input_id=row.input_id, status=cast(Any, row.status)
+                )
+
+    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]:
+        statement = (
+            select(_TargetSourceEdgeRow)
+            .where(_TargetSourceEdgeRow.work_id == work_id)
+            .order_by(_TargetSourceEdgeRow.output_id, _TargetSourceEdgeRow.input_id)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield OutputSourceEdge(output_id=row.output_id, input_id=row.input_id)
+
+    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]:
+        statement = (
+            select(_TargetSourceEdgeRow)
+            .where(_TargetSourceEdgeRow.work_id == work_id)
+            .order_by(_TargetSourceEdgeRow.input_id, _TargetSourceEdgeRow.output_id)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield OutputSourceEdge(output_id=row.output_id, input_id=row.input_id)
 
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
         with self.sessions() as session:
@@ -645,26 +867,47 @@ class SqlAlchemyStateStore:
         self,
         selection_sha256: str,
         *,
-        offset: int,
+        continuation: str | None,
         limit: int,
-    ) -> tuple[ArtifactSubject, ...]:
-        if offset < 0 or limit < 1 or limit > 1000:
+    ) -> tuple[tuple[ArtifactSubject, ...], str | None, bool]:
+        if limit < 1 or limit > 1000:
             raise ValueError("artifact selection page is invalid")
         with self.sessions() as session:
+            after = ""
+            if continuation is not None:
+                prior = session.scalar(
+                    select(_ArtifactSelectionMemberRow).where(
+                        _ArtifactSelectionMemberRow.selection_sha256 == selection_sha256,
+                        _ArtifactSelectionMemberRow.continuation_sha256 == continuation,
+                    )
+                )
+                if prior is None:
+                    raise ValueError("artifact selection continuation is invalid")
+                after = prior.artifact_id
             rows = session.scalars(
                 select(_ArtifactSelectionMemberRow)
-                .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
-                .order_by(_ArtifactSelectionMemberRow.ordinal)
-                .offset(offset)
-                .limit(limit)
+                .where(
+                    _ArtifactSelectionMemberRow.selection_sha256 == selection_sha256,
+                    _ArtifactSelectionMemberRow.artifact_id > after,
+                )
+                .order_by(_ArtifactSelectionMemberRow.artifact_id)
+                .limit(limit + 1)
             )
-            return tuple(ArtifactSubject.model_validate_json(row.document_json) for row in rows)
+            selected = list(rows)
+            complete = len(selected) <= limit
+            page = selected[:limit]
+            next_continuation = None if complete or not page else page[-1].continuation_sha256
+            return (
+                tuple(ArtifactSubject.model_validate_json(row.document_json) for row in page),
+                next_continuation,
+                complete,
+            )
 
     def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]:
         statement = (
             select(_ArtifactSelectionMemberRow)
             .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
-            .order_by(_ArtifactSelectionMemberRow.ordinal)
+            .order_by(_ArtifactSelectionMemberRow.artifact_id)
             .execution_options(yield_per=100)
         )
         with read_snapshot(self.sessions) as session:
@@ -789,7 +1032,7 @@ class SqlAlchemyStateStore:
             if orphan_ids:
                 selection_count, selection_bytes = session.execute(
                     select(
-                        func.count(_ArtifactSelectionMemberRow.ordinal),
+                        func.count(_ArtifactSelectionMemberRow.artifact_id),
                         func.coalesce(func.sum(_ArtifactSelectionMemberRow.document_bytes), 0),
                     ).where(_ArtifactSelectionMemberRow.selection_sha256.in_(orphan_ids))
                 ).one()
@@ -1288,8 +1531,8 @@ def _insert_or_verify_selection(
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
     if inserted is not None:
         session.add_all(
-            _selection_member_row(selection.selection_sha256, ordinal, artifact)
-            for ordinal, artifact in enumerate(selection.artifacts)
+            _selection_member_row(selection.selection_sha256, artifact)
+            for artifact in selection.artifacts
         )
         session.flush()
     existing = session.get(_ArtifactSelectionRow, selection.selection_sha256)
@@ -1298,7 +1541,7 @@ def _insert_or_verify_selection(
     members = session.scalars(
         select(_ArtifactSelectionMemberRow)
         .where(_ArtifactSelectionMemberRow.selection_sha256 == selection.selection_sha256)
-        .order_by(_ArtifactSelectionMemberRow.ordinal)
+        .order_by(_ArtifactSelectionMemberRow.artifact_id)
     )
     if _selection_from_rows(existing, members) != selection:
         raise ConcurrentWorkUpdate("artifact selection identity was reused")
@@ -1314,13 +1557,18 @@ def _selection_ref(row: _ArtifactSelectionRow) -> ArtifactSelectionRef:
 
 def _selection_member_row(
     selection_sha256: str,
-    ordinal: int,
     artifact: ArtifactSubject,
 ) -> _ArtifactSelectionMemberRow:
     encoded = _encode(artifact.model_dump(mode="json", by_alias=True, exclude_none=True))
     return _ArtifactSelectionMemberRow(
         selection_sha256=selection_sha256,
-        ordinal=ordinal,
+        artifact_id=artifact.id,
+        continuation_sha256=hashlib.sha256(
+            b"stove0-artifact-selection-continuation/v1\x00"
+            + selection_sha256.encode("ascii")
+            + b"\x00"
+            + canonical_json_bytes(artifact.model_dump(mode="json", exclude_none=True))
+        ).hexdigest(),
         document_bytes=_encoded_bytes(encoded),
         document_json=encoded,
     )

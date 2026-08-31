@@ -59,8 +59,6 @@ def mapping_items(
 
 
 def page_line(payload: Mapping[str, object], noun: str) -> str:
-    if payload.get("_complete_enumeration") is True:
-        return f"{noun}: complete enumeration"
     return (
         f"{noun}: {payload.get('total', 0)} "
         f"(page {payload.get('page', 1)}/{payload.get('pages', 0)})"

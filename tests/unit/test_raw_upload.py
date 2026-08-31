@@ -147,7 +147,7 @@ class MemoryResumableStore:
 
 def _plan(content: bytes) -> RawVolumePlan:
     return RawVolumePlan(
-        volume_id="segment-000000000000",
+        volume_id="segment-" + "0" * 64,
         sequence=0,
         source_path="large.bin",
         file_offset=0,
@@ -178,8 +178,8 @@ def test_raw_upload_resumes_on_server_defined_age_part_boundaries() -> None:
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/segment-000000000000.bin.age",
-        relative_path="volumes/segment-000000000000.bin.age",
+        object_path="archives/opaque/volumes/segment-" + "0" * 64 + ".bin.age",
+        relative_path="volumes/segment-" + "0" * 64 + ".bin.age",
         target_part_plaintext_bytes=ARCHIVE_UNIT_BYTES,
     )
     session = ResumableAgeScryptSession.from_state("archive passphrase", checkpoint.age_state_json)
@@ -233,8 +233,8 @@ def test_raw_upload_revalidates_the_registered_part_identity() -> None:
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/segment-000000000000.bin.age",
-        relative_path="volumes/segment-000000000000.bin.age",
+        object_path="archives/opaque/volumes/segment-" + "0" * 64 + ".bin.age",
+        relative_path="volumes/segment-" + "0" * 64 + ".bin.age",
         target_part_plaintext_bytes=ARCHIVE_UNIT_BYTES,
         expected_part_sha256s=(hashlib.sha256(content).hexdigest(),),
     )
@@ -256,8 +256,8 @@ def test_raw_checkpoint_round_trips_and_rejects_unaligned_part_target() -> None:
     checkpoint = uploader.open(
         collection_id=1,
         plan=plan,
-        object_path="archives/opaque/volumes/segment-000000000000.bin.age",
-        relative_path="volumes/segment-000000000000.bin.age",
+        object_path="archives/opaque/volumes/segment-" + "0" * 64 + ".bin.age",
+        relative_path="volumes/segment-" + "0" * 64 + ".bin.age",
         target_part_plaintext_bytes=ARCHIVE_UNIT_BYTES,
     )
 

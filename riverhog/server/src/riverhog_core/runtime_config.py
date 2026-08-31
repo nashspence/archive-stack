@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
@@ -113,13 +112,6 @@ def _archive_store_environment_name(name: str, setting: str) -> str:
     )
 
 
-def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
-    command = tuple(shlex.split(value.strip()))
-    if not command:
-        raise ValueError(f"{name} must not be empty")
-    return command
-
-
 def _database_url_driver(database_url: str) -> str:
     return database_url.strip().split(":", 1)[0].split("+", 1)[0]
 
@@ -175,17 +167,6 @@ class RuntimeConfig:
     collection_upload_custody_lease: timedelta = field(default_factory=lambda: timedelta(hours=1))
     retrieval_restore_poll_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
-    ots_stamp_command: tuple[str, ...] = ("ots",)
-    ots_verify_command: tuple[str, ...] = (
-        "ots",
-        "--no-bitcoin",
-        "--no-default-whitelist",
-    )
-    ots_upgrade_command: tuple[str, ...] = ("ots",)
-    attestation_secret_key_file: Path | None = None
-    attestation_public_key_file: Path | None = None
-    proof_maturation_retry_delay: timedelta = field(default_factory=lambda: timedelta(hours=6))
-    proof_maturation_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
     public_base_url: str | None = None
     event_source: str = "urn:riverhog"
     event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
@@ -195,14 +176,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
         if self.event_context_retention.total_seconds() <= 0:
             raise ValueError("RIVERHOG_EVENT_CONTEXT_RETENTION must be > 0")
-        if self.proof_maturation_retry_delay.total_seconds() <= 0:
-            raise ValueError("RIVERHOG_PROOF_MATURATION_RETRY_DELAY must be > 0")
-        if self.proof_maturation_sweep_interval.total_seconds() <= 0:
-            raise ValueError("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL must be > 0")
         if self.collection_upload_custody_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE must be > 0")
-        if bool(self.attestation_secret_key_file) != bool(self.attestation_public_key_file):
-            raise ValueError("Riverhog attestation key configuration is incomplete")
         if not self.database_url:
             object.__setattr__(self, "database_url", DEFAULT_DATABASE_URL)
         log_level = self.log_level.strip().upper()
@@ -556,31 +531,6 @@ def load_runtime_config() -> RuntimeConfig:
         else None
     )
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
-    ots_stamp_command = _parse_command(
-        os.getenv("RIVERHOG_OTS_STAMP_COMMAND", "ots"),
-        name="RIVERHOG_OTS_STAMP_COMMAND",
-    )
-    ots_verify_command = _parse_command(
-        os.getenv(
-            "RIVERHOG_OTS_VERIFY_COMMAND",
-            "ots --no-bitcoin --no-default-whitelist",
-        ),
-        name="RIVERHOG_OTS_VERIFY_COMMAND",
-    )
-    ots_upgrade_command = _parse_command(
-        os.getenv("RIVERHOG_OTS_UPGRADE_COMMAND", "ots"),
-        name="RIVERHOG_OTS_UPGRADE_COMMAND",
-    )
-    attestation_secret_key_file = (
-        Path(value)
-        if (value := os.getenv("RIVERHOG_ATTESTATION_SECRET_KEY_FILE", "").strip())
-        else None
-    )
-    attestation_public_key_file = (
-        Path(value)
-        if (value := os.getenv("RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE", "").strip())
-        else None
-    )
     configured_archive_passphrases = os.getenv("RIVERHOG_ARCHIVE_PASSPHRASES_JSON", "").strip()
     archive_passphrases_supplied = bool(configured_archive_passphrases)
     archive_passphrases_raw = configured_archive_passphrases or json.dumps(
@@ -657,16 +607,5 @@ def load_runtime_config() -> RuntimeConfig:
         ),
         retrieval_restore_poll_interval=retrieval_restore_poll_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,
-        ots_stamp_command=ots_stamp_command,
-        ots_verify_command=ots_verify_command,
-        ots_upgrade_command=ots_upgrade_command,
-        attestation_secret_key_file=attestation_secret_key_file,
-        attestation_public_key_file=attestation_public_key_file,
-        proof_maturation_retry_delay=parse_duration(
-            os.getenv("RIVERHOG_PROOF_MATURATION_RETRY_DELAY", "6h")
-        ),
-        proof_maturation_sweep_interval=parse_duration(
-            os.getenv("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL", "1h")
-        ),
         public_base_url=public_base_url,
     )

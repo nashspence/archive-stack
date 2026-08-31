@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json",
+  "title": "Riverhog v1 bounded provenance volume",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "archive_generation", "archive_tree_sha256", "sequence", "payload"],
+  "properties": {
+    "schema": {"const": "riverhog-provenance-volume/v1"},
+    "archive_generation": {"$ref": "#/$defs/sha256"},
+    "archive_tree_sha256": {"$ref": "#/$defs/sha256"},
+    "sequence": {"$ref": "#/$defs/sequence"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "bytes", "sha256"],
+      "properties": {
+        "kind": {"enum": ["bindings", "journal"]},
+        "path": {"type": "string", "pattern": "^provenance/payloads/volume-[0-9a-f]{64}\\.bin\\.age$"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "binding_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first_file_order", "file_count"],
+      "properties": {
+        "first_file_order": {"type": "integer", "minimum": 0},
+        "file_count": {"type": "integer", "minimum": 1, "maximum": 512}
+      }
+    },
+    "journal_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["journal_id", "offset", "bytes", "sha256"],
+      "properties": {
+        "journal_id": {"type": "string", "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+        "offset": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "oneOf": [
+    {"required": ["binding_range"], "not": {"required": ["journal_range"]}},
+    {"required": ["journal_range"], "not": {"required": ["binding_range"]}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sequence": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

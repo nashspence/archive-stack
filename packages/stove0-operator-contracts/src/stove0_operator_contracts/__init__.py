@@ -18,7 +18,7 @@ from pydantic import (
 )
 from stove0_observer_protocol import ObservationRequest, ObservationResult
 from stove0_protocol import (
-    ArtifactSubject,
+    ArtifactSelectionPage,
     BranchSetPlan,
     ControllerEvidence,
     CoordinationSettlement,
@@ -35,6 +35,7 @@ from stove0_target_protocol import (
     OutputCollectionRef,
     TargetJobStatus,
     TargetPlan,
+    TargetSettlementAuthority,
 )
 
 WorkPhase = Literal[
@@ -494,6 +495,7 @@ class WorkView(OperatorModel):
     target_request: AcceptedTargetJob | None = None
     target_status: TargetJobStatus | None = None
     output: OutputCollectionRef | None = None
+    target_settlement: TargetSettlementAuthority | None = None
     retirement_remaining: tuple[int, ...] = ()
     failure: WorkFailureView | None = None
     inapplicable: WorkInapplicableView | None = None
@@ -638,19 +640,6 @@ class RecipeView(OperatorModel):
 class RecipeCatalogView(OperatorModel):
     catalog_sha256: Sha256
     recipes: tuple[RecipeView, ...]
-
-
-class ArtifactSelectionPage(OperatorModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
-    sort: Literal["id"] = "id"
-    order: Literal["asc"] = "asc"
-    filters: dict[str, JsonValue]
-    selection_sha256: Sha256
-    total_bytes: int = Field(ge=0)
-    artifacts: tuple[ArtifactSubject, ...]
 
 
 class SchedulerStatus(OperatorModel):

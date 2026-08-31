@@ -32,7 +32,7 @@ BILLING_MODE_RETURNED_BYTES = "returned_bytes"
 BILLING_MODE_WHOLE_OBJECT = "whole_object"
 DEFAULT_MAX_RANGE_REQUEST_BYTES = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
+_VOLUME_ID_RE = re.compile(r"pack-[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from riverhog_protocol import canonical_json_sha256
 from riverhog_transform_sdk import TransformWorkspace
 from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSubject,
     CollectionRootRef,
     ControllerEvidence,
     ControllerEvidencePayload,
@@ -54,6 +56,7 @@ from stove0_review_target_contracts import (
 )
 from stove0_review_target_support import ReviewTargetConfig, SamplerConfig, SamplerRegistration
 from stove0_review_target_support import target as review_support
+from stove0_target_protocol import TargetCallbackAccess, TargetInputAuthority
 from stove0_target_support import (
     InputArtifact,
     OutputArtifact,
@@ -72,6 +75,14 @@ from stove0_target_support import (
 
 def _sha(character: str) -> str:
     return character * 64
+
+
+def _input_authority(*inputs: InputArtifact) -> TargetInputAuthority:
+    return TargetInputAuthority.from_selection(
+        ArtifactSelection.seal(
+            tuple(ArtifactSubject.model_validate(item.model_dump(mode="json")) for item in inputs)
+        )
+    )
 
 
 def _sample_plan() -> ReviewSamplePlan:
@@ -152,7 +163,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
         request = TargetPreflightRequest(
             operation_id=REVIEW_MATERIALIZE_OPERATION.id,
             operation_contract_sha256=REVIEW_MATERIALIZE_OPERATION.contract_sha256,
-            inputs=(
+            inputs=_input_authority(
                 InputArtifact(
                     id="source",
                     role=REVIEW_SOURCE_ROLE,
@@ -165,7 +176,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
                     bytes=12,
                     sha256=_sha("3"),
                     media_type="audio/wav",
-                ),
+                )
             ),
             intent={
                 "sample_plan": _sample_plan().model_dump(mode="json"),
@@ -282,7 +293,6 @@ def test_review_execution_identity_is_the_canonical_semantic_result() -> None:
         bytes=12,
         sha256=_sha("4"),
         media_type="application/json",
-        derived_from=("source",),
     )
     expected = canonical_json_sha256(
         {
@@ -405,7 +415,7 @@ def test_review_effect_deployment_has_one_fixed_effect_contract(tmp_path: Path) 
             protocol="stove0-effect-target/v1",
             operation_id=REVIEW_RCLONE_DELIVER_OPERATION.id,
             operation_contract_sha256=REVIEW_RCLONE_DELIVER_OPERATION.contract_sha256,
-            inputs=(
+            inputs=_input_authority(
                 InputArtifact(
                     id="source",
                     role=REVIEW_SOURCE_ROLE,
@@ -418,7 +428,7 @@ def test_review_effect_deployment_has_one_fixed_effect_contract(tmp_path: Path) 
                     bytes=12,
                     sha256=_sha("3"),
                     media_type="audio/wav",
-                ),
+                )
             ),
             intent={
                 "sample_plan": _sample_plan().model_dump(mode="json"),
@@ -466,7 +476,6 @@ def test_rclone_review_destination_commits_manifest_last_and_returns_opaque_rece
                 path="sample.opus",
                 bytes=6,
                 sha256=canonical_json_sha256("sample"),
-                derived_from=("source",),
             ),
         ),
         manifest_path=manifest,
@@ -579,7 +588,7 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
             protocol="stove0-effect-target/v1",
             operation_id=REVIEW_RCLONE_DELIVER_OPERATION.id,
             operation_contract_sha256=REVIEW_RCLONE_DELIVER_OPERATION.contract_sha256,
-            inputs=(source,),
+            inputs=_input_authority(source),
             intent={
                 "sample_plan": sample_plan.model_dump(mode="json"),
                 "variant": {"id": "opus-96", "portable_intent": {"bitrate_kbps": 96}},
@@ -636,6 +645,10 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
             riverhog_base_url="https://riverhog.invalid",
             capability_token="fixture-secret",
         ),
+        TargetCallbackAccess(
+            stove0_base_url="https://stove0.invalid",
+            token="callback-secret",
+        ),
     )
 
     class Retrieval(AbstractContextManager["Retrieval"]):
@@ -664,7 +677,7 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
                 assurance="ephemeral",
             )
 
-        def inputs(self) -> tuple[tuple[InputArtifact, object], ...]:
+        def iter_inputs(self) -> tuple[tuple[InputArtifact, object], ...]:
             return ((source, object()),)
 
         def prepare_inputs(self, _inputs: object) -> Retrieval:
@@ -700,7 +713,9 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
 
     assert status.state == "succeeded"
     assert status.protocol == "stove0-effect-target/v1"
-    assert status.output_collection is None and status.outputs == () and status.derivation is None
+    assert (
+        status.output_collection is None and status.production is None and status.derivation is None
+    )
     assert status.effect_receipt is not None
     assert status.effect_receipt.result["destination_identity"] == _sha("d")
     assert status.effect_receipt.result["delivery_id"] == request.declaration.job_id

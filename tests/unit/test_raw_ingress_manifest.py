@@ -1,42 +1,51 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
+from riverhog_api_client.source_hashing import hash_raw_source_chunks
 from riverhog_protocol.raw_ingress import (
-    RawSourceDigestManifest,
-    hash_raw_source,
-    raw_volume_part_sha256s,
+    RawSourceDigestSummary,
+    ordered_raw_part_commitment,
+    raw_volume_part_span,
 )
 
 
-def test_raw_source_is_hashed_once_for_whole_file_and_upload_parts() -> None:
+def test_raw_source_is_hashed_once_into_small_authority_and_bounded_batches() -> None:
     content = b"abcdefgh" * 20000
-    manifest = hash_raw_source(
+    result = hash_raw_source_chunks(
         path="large.bin",
         chunks=(content[:1234], content[1234:]),
         expected_bytes=len(content),
         part_plaintext_bytes=65536,
     )
-
-    assert manifest.sha256 == hashlib.sha256(content).hexdigest()
-    assert manifest.part_sha256s[0] == hashlib.sha256(content[:65536]).hexdigest()
-    assert (
-        raw_volume_part_sha256s(
-            manifest,
+    try:
+        parts = tuple(value for _first, batch in result.iter_batches() for value in batch)
+        assert result.summary.sha256 == hashlib.sha256(content).hexdigest()
+        assert parts[0] == hashlib.sha256(content[:65536]).hexdigest()
+        assert raw_volume_part_span(
+            result.summary,
             file_offset=0,
             plaintext_bytes=len(content),
+        ) == (0, len(parts))
+        assert ordered_raw_part_commitment(parts) == (
+            result.summary.part_count,
+            result.summary.ordered_part_sha256,
         )
-        == manifest.part_sha256s
-    )
-    assert RawSourceDigestManifest.from_json_bytes(manifest.to_json_bytes()) == manifest
+    finally:
+        result.close()
 
 
-def test_raw_source_digest_manifest_has_canonical_identity() -> None:
-    manifest = hash_raw_source(
+def test_raw_source_digest_summary_has_no_resource_growing_member_list() -> None:
+    digest = hashlib.sha256(b"content").hexdigest()
+    count, commitment = ordered_raw_part_commitment((digest,))
+    summary = RawSourceDigestSummary(
         path="large.bin",
-        chunks=(b"content",),
-        expected_bytes=7,
+        bytes=7,
+        sha256=digest,
         part_plaintext_bytes=65536,
+        part_count=count,
+        ordered_part_sha256=commitment,
     )
-    assert json.loads(manifest.to_json_bytes())["schema"] == "raw-source-digest-manifest/v1"
+
+    assert summary.schema == "raw-source-digest-summary/v1"
+    assert not hasattr(summary, "part_sha256s")

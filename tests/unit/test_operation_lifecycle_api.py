@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -14,10 +14,8 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionUploadRecord
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
-from riverhog_core.proofs import ProofUpgradeResult
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
-from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
@@ -32,18 +30,22 @@ from riverhog_core.services.collection_workflows import (
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
-from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
-from riverhog_protocol import CollectionUploadUnitWorkDocument, PortableCollectionInventoryReader
+from riverhog_protocol import CollectionUploadUnitWorkDocument
+from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    PRODUCER_EVIDENCE_PATH,
     ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
     CollectionRootIdentity,
     OperationIdentity,
+    ProducerEvidence,
     RecipeIdentity,
     canonical_json_sha256,
 )
@@ -51,23 +53,15 @@ from riverhog_protocol.errors import Forbidden
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_provenance import (
     FileProvenanceBinding,
-    build_provenance_archive,
     create_derivative_journal_from_identity,
     create_observation_journal,
     validate_journal,
 )
 
-from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 from tests.provenance_observer import native_provenance_observer
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
-
-
-@dataclass(frozen=True, slots=True)
-class _FixtureProofUpgrader:
-    def upgrade(self, proof_bytes: bytes) -> ProofUpgradeResult:
-        return ProofUpgradeResult(proof_bytes=proof_bytes, complete=True)
 
 
 def _container(tmp_path: Path) -> ServiceContainer:
@@ -97,9 +91,6 @@ def _container(tmp_path: Path) -> ServiceContainer:
             "secondary": archive_store_binding(MemoryArchiveStore()),
         }
     )
-    stamper = FixtureProofStamper()
-    verifier = FixtureProofVerifier()
-    upgrader = _FixtureProofUpgrader()
     allowances = SqlAlchemyDownloadAllowance(config, session_factory=session_factory)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config, session_factory=session_factory),
@@ -111,7 +102,6 @@ def _container(tmp_path: Path) -> ServiceContainer:
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             stores,
-            proof_stamper=stamper,
             session_factory=session_factory,
         ),
         collection_workflows=SqlAlchemyCollectionWorkflowService(
@@ -133,21 +123,6 @@ def _container(tmp_path: Path) -> ServiceContainer:
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             stores,
-            session_factory=session_factory,
-        ),
-        proof_maturations=SqlAlchemyProofMaturationService(
-            config,
-            stores,
-            proof_upgrader=upgrader,
-            proof_verifier=verifier,
-            session_factory=session_factory,
-        ),
-        archive_attestations=SqlAlchemyArchiveAttestationService(
-            config,
-            stores,
-            proof_stamper=stamper,
-            proof_upgrader=upgrader,
-            proof_verifier=verifier,
             session_factory=session_factory,
         ),
         archive_copy_retirements=SqlAlchemyArchiveCopyRetirementService(
@@ -206,6 +181,33 @@ def _unit_content(root: Path, unit: CollectionUploadUnitWorkDocument) -> bytes:
     return bytes(content)
 
 
+def _finalize_upload(
+    container: ServiceContainer,
+    api: ApiClient,
+    collection_id: int,
+) -> None:
+    for _ in range(256):
+        if api.get_collection_upload_session(collection_id)["state"] == "finalized":
+            return
+        assert container.collection_uploads.process_due_finalizations() == 1
+    raise AssertionError("bounded collection finalization did not terminate")
+
+
+def _complete_provenance_verification(
+    container: ServiceContainer,
+    api: ApiClient,
+    collection_id: int,
+) -> dict[str, object]:
+    for _ in range(256):
+        current = api.get_collection_provenance_verification(collection_id)
+        if current["state"] == "succeeded":
+            return current
+        if current["state"] in {"failed", "canceled"}:
+            raise AssertionError(f"provenance verification terminated unsuccessfully: {current}")
+        assert container.provenance.process_due_verifications() == 1
+    raise AssertionError("bounded provenance verification did not terminate")
+
+
 def test_riverhog_official_client_positive_disposable_lifecycle(
     tmp_path: Path,
     monkeypatch,
@@ -257,14 +259,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     delegated_id = str(delegated["id"])
     assert operator.list_apps(q="qualification", page=1, per_page=100)["total"] == 2
-    with operator.stream_apps(q="qualification") as items:
-        assert len(list(items)) == 2
     assert operator.list_app_keys("qualification-reader", page=1, per_page=100)["total"] == 1
-    with operator.stream_app_keys("qualification-reader") as items:
-        assert len(list(items)) == 1
     assert operator.list_app_key_access(key_id=delegated_id, page=1, per_page=100)["total"] == 1
-    with operator.stream_app_key_access(key_id=delegated_id) as items:
-        assert len(list(items)) == 1
     operator.replace_app_key_access(
         "qualification-reader",
         delegated_id,
@@ -293,8 +289,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ]["monthly_bytes"]
         == 1024
     )
-    with operator.stream_download_quotas(app="qualification-reader") as items:
-        assert list(items)[0]["monthly_bytes"] == 1024
     assert operator.get_download_quota()["app"] == "qualification-operator"
     rotated = operator.rotate_app_key("qualification-reader", delegated_id)
     operator.revoke_app_key("qualification-reader", str(rotated["id"]))
@@ -303,8 +297,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.create_tag("temporary")
     assert operator.get_tag("docs")["id"] == "docs"
     assert operator.list_tags(q="doc", page=1, per_page=100)["total"] == 1
-    with operator.stream_tags(q="doc") as items:
-        assert len(list(items)) == 1
     tag_plan = operator.plan_tag_deletion("temporary")
     operator.delete_tag("temporary", challenge=str(tag_plan["challenge"]))
 
@@ -330,10 +322,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journal_id=journal_summary.journal_id,
         current_state_id=journal_summary.current_state_id,
     )
-    provenance = build_provenance_archive(
-        bindings=(binding,),
-        journals={journal_summary.journal_id: journal},
-    )
     opened = operator.create_or_resume_collection_upload_session(
         "qualification-upload",
         ["docs"],
@@ -345,20 +333,22 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.create_tag("staged")
     operator.add_collection_upload_session_tag(collection_id, "staged")
     operator.remove_collection_upload_session_tag(collection_id, "staged")
-    with operator.stream_collection_upload_sessions() as items:
-        assert len(list(items)) == 1
-    operator.put_collection_upload_session_provenance_journal(
+    assert operator.list_collection_upload_sessions(page=1, per_page=100)["total"] == 1
+    staged = operator.upload_collection_upload_session_provenance_journal(
         collection_id,
         journal_summary.journal_id,
         content=(journal,),
         byte_count=len(journal),
         sha256=journal_summary.journal_sha256,
     )
-    with operator.stream_collection_upload_session_provenance_journal(
-        collection_id,
-        journal_summary.journal_id,
-    ) as chunks:
-        assert b"".join(chunks) == journal
+    while staged.state != "sealed":
+        assert staged.state == "validating"
+        assert container.collection_uploads.process_due_provenance_journal_validations() == 1
+        staged = operator.get_collection_upload_session_provenance_journal(
+            collection_id, journal_summary.journal_id
+        )
+    assert staged.accepted_bytes == len(journal)
+    assert staged.sha256 == journal_summary.journal_sha256
     operator.register_collection_upload_session_files(
         collection_id,
         [
@@ -375,62 +365,46 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ],
         registration_constraints=opened["registration_constraints"],
     )
-    with operator.stream_collection_upload_session_files(collection_id) as items:
-        assert len(list(items)) == 1
+    assert (
+        operator.list_collection_upload_session_files(collection_id, page=1, per_page=100)["total"]
+        == 1
+    )
     operator.complete_collection_upload_session(
         collection_id,
         files_total=1,
         content_identity=collection_content_identity(
             [(binding.path, binding.bytes, binding.sha256)]
         ),
-        provenance_identity=provenance.identity,
     )
-    volume_page = operator.list_collection_upload_session_volumes(collection_id)
-    for volume in volume_page.volumes:
-        shown = operator.get_collection_upload_session_volume(
-            collection_id,
-            volume.volume_id,
-        )
-        for unit in shown.units:
-            current = operator.get_collection_upload_session_unit(
-                collection_id,
-                volume.volume_id,
-                unit.unit,
-            )
+    while work := operator.acquire_collection_upload_session_work(collection_id).work:
+        for assignment in work:
             operator.put_collection_upload_session_unit(
                 collection_id,
-                volume.volume_id,
-                unit.unit,
-                plan_sha256=volume.plan_sha256,
-                content=_unit_content(source_root, current),
+                assignment.volume.volume_id,
+                assignment.unit.unit,
+                plan_sha256=assignment.plan_sha256,
+                content=_unit_content(source_root, assignment.unit),
             )
-    with operator.stream_collection_upload_session_files(collection_id) as items:
-        assert len(list(items)) == 1
-    assert container.collection_uploads.process_due_finalizations() == 1
+    assert (
+        operator.list_collection_upload_session_files(collection_id, page=1, per_page=100)["total"]
+        == 1
+    )
+    _finalize_upload(container, operator, collection_id)
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
     assert operator.get_collection_tags(collection_id, page=1, per_page=100)["tag_count"] == 1
     assert (
         operator.list_collection_archive_copies(collection_id, page=1, per_page=100)["total"] == 1
     )
-    with operator.stream_collection_archive_copies(collection_id) as copies:
-        assert len(list(copies)) == 1
     assert operator.list_collections(tag="docs", page=1, per_page=100)["total"] == 1
-    with operator.stream_collections(tag="docs") as items:
-        assert len(list(items)) == 1
     assert operator.search("document", collection=collection_id, page=1, per_page=100)["total"] == 1
-    with operator.stream_search("document", collection=collection_id) as items:
-        assert len(list(items)) == 1
-    with operator.stream_collection_tags(collection_id) as tags:
-        assert list(tags) == [{"tag": "docs"}]
+    assert operator.get_collection_tags(collection_id, page=1, per_page=100)["tags"] == ["docs"]
     operator.create_tag("reviewed")
     operator.add_collection_tag(collection_id, "reviewed")
     operator.remove_collection_tag(collection_id, "docs")
     operator.replace_collection_tags(collection_id, ["docs", "reviewed"])
 
     assert operator.list_collection_provenance(collection_id, page=1, per_page=100)["total"] == 1
-    with operator.stream_collection_provenance(collection_id) as items:
-        assert len(list(items)) == 1
     assert (
         operator.get_collection_file_provenance(collection_id, "document.txt")["journal"][
             "journal_id"
@@ -438,11 +412,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         == journal_summary.journal_id
     )
     assert operator.trace_collection_file_provenance(collection_id, "document.txt")["items"]
-    with operator.stream_collection_file_provenance_trace(
-        collection_id,
-        "document.txt",
-    ) as items:
-        assert len(list(items)) == 1
     assert (
         operator.list_collection_provenance_journal_agents(
             collection_id,
@@ -452,19 +421,13 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )["total"]
         >= 1
     )
-    with operator.stream_collection_provenance_journal_agents(
-        collection_id,
-        journal_summary.journal_id,
-    ) as agents:
-        assert len(list(agents)) >= 1
     with operator.stream_collection_provenance_journal(
         collection_id,
         journal_summary.journal_id,
     ) as chunks:
         assert b"".join(chunks) == journal
     assert operator.request_collection_provenance_verification(collection_id)["state"] == "queued"
-    assert container.provenance.process_due_verifications() == 1
-    verification = operator.get_collection_provenance_verification(collection_id)
+    verification = _complete_provenance_verification(container, operator, collection_id)
     assert verification["state"] == "succeeded"
     assert verification["result"]["valid"] is True
     assert operator.cancel_collection_provenance_verification(collection_id)["state"] == "succeeded"
@@ -495,25 +458,17 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         f"http://testserver/v1/catalog/collections/{collection_id}/inventory"
     ]
     assert int(roots[4].attrib["data-cursor"]) > 0
-    manifest = transport.get(
-        f"/v1/catalog/collections/{collection_id}/inventory",
-        headers=operator_headers,
-    )
-    assert manifest.status_code == 200
-    inventory = PortableCollectionInventoryReader((manifest.content,))
-    assert inventory.begin.header.collection == collection_id
-    assert len(list(inventory)) == 1
-    inventory.require_complete()
+    inventory = operator.get_portable_collection_inventory(collection_id)
+    assert inventory.authority.header.collection == collection_id
+    assert len(inventory.files) == 1
+    assert inventory.complete is True
 
     assert {
         item["store"] for item in operator.list_archive_stores(page=1, per_page=100)["stores"]
     } == {"primary", "secondary"}
-    with operator.stream_archive_stores() as items:
-        assert {item["store"] for item in items} == {"primary", "secondary"}
     assert operator.get_archive_store("primary")["store"] == "primary"
     assert operator.retrieval_cache_status()["configured"] is False
-    with operator.stream_retrieval_cache_objects() as items:
-        assert list(items) == []
+    assert operator.list_retrieval_cache_objects(page=1, per_page=100)["objects"] == []
 
     plan = operator.plan_retrieval([(collection_id, "document.txt")], restore_policy="never")
     job = operator.create_retrieval_job(
@@ -594,8 +549,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operator.get_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "requested"
     )
-    with operator.stream_archive_copy_jobs() as items:
-        assert len(list(items)) == 1
+    assert operator.list_archive_copy_jobs(page=1, per_page=100)["total"] == 1
     assert (
         operator.cancel_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "canceled"
@@ -707,8 +661,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     claim_fence = int(claim["fence"])
     assert operator.get_processing_claim(claim_id)["work_id"] == work_id
     assert operator.list_processing_claims(page=1, per_page=100).total == 3
-    with operator.stream_processing_claims() as items:
-        assert len(list(items)) == 3
     assert (
         operator.renew_processing_claim(
             claim_id,
@@ -739,6 +691,29 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         retirement_policy="retain",
     )
     assert sealed["plan"]["execution_id"] == execution_id
+    sealed_plan = sealed["plan"]
+    assert (
+        operator.list_processing_claim_inputs(
+            claim_id,
+            authority_sha256=str(sealed["inputs"]["authority"]["sha256"]),
+        )
+        .inputs[0]
+        .collection_id
+        == collection_id
+    )
+    assert (
+        operator.list_processing_claim_artifacts(
+            claim_id,
+            authority_sha256=str(sealed_plan["artifacts"]["sha256"]),
+        )
+        .artifacts[0]
+        .path
+        == "document.txt"
+    )
+    assert operator.list_processing_claim_output_tags(
+        claim_id,
+        authority_sha256=str(sealed_plan["output_tags"]["sha256"]),
+    ).tags == ["reviewed"]
     output_capability = operator.create_transform_capability(
         claim_id,
         fence=claim_fence,
@@ -752,33 +727,87 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     output_payload_path.parent.mkdir(parents=True)
     output_payload_path.write_bytes(source.read_bytes().upper())
     output_relative_path = "derived/document.txt"
+    disposition = ArtifactDisposition(
+        input_collection_id=collection_id,
+        input_archive_root_sha256=source_identity.archive_root_sha256,
+        input_path="document.txt",
+        status="transformed",
+    )
+    disposition_output = ArtifactDispositionOutput(
+        input_collection_id=collection_id,
+        input_archive_root_sha256=source_identity.archive_root_sha256,
+        input_path="document.txt",
+        output_path=output_relative_path,
+    )
+    operator.record_processing_claim_dispositions(
+        claim_id,
+        fence=claim_fence,
+        dispositions=(disposition.as_dict(),),
+    )
+    operator.record_processing_claim_disposition_outputs(
+        claim_id,
+        fence=claim_fence,
+        outputs=(disposition_output.as_dict(),),
+    )
+    disposition_state = operator.seal_processing_claim_dispositions(
+        claim_id,
+        fence=claim_fence,
+    )
+    while disposition_state.state != "sealed":
+        assert disposition_state.state == "sealing"
+        assert container.collection_workflows.process_due_disposition_sets() == 1
+        disposition_state = operator.get_processing_claim_dispositions(claim_id)
+    assert disposition_state.identity is not None
+    disposition_identity = ArtifactDispositionSetIdentity.from_mapping(
+        disposition_state.identity.model_dump(mode="json")
+    )
+    assert (
+        operator.list_processing_claim_dispositions(
+            claim_id,
+            authority_sha256=disposition_identity.sha256,
+        ).total
+        == 1
+    )
+    assert (
+        operator.list_processing_claim_disposition_outputs(
+            claim_id,
+            authority_sha256=disposition_identity.sha256,
+        ).total
+        == 1
+    )
+    plan = sealed["plan"]
     derivation = CollectionDerivation(
         execution_id=execution_id,
         claim_id=claim_id,
         fence=claim_fence,
         recipe=recipe_identity,
         operation=operation_identity,
-        inputs=(source_identity,),
-        output_tags=("reviewed",),
+        input_set_sha256=str(plan["inputs"]["sha256"]),
+        artifact_set_sha256=str(plan["artifacts"]["sha256"]),
+        output_tag_set_sha256=str(plan["output_tags"]["sha256"]),
         execution_envelope_sha256=execution_id,
         execution_sha256=hashlib.sha256(b"qualification-execution-result").hexdigest(),
         controller_evidence=controller_evidence,
         controller_evidence_sha256=controller_evidence_sha256,
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=collection_id,
-                input_archive_root_sha256=source_identity.archive_root_sha256,
-                input_path="document.txt",
-                status="transformed",
-                outputs=(output_relative_path,),
-            ),
-        ),
+        disposition_set=disposition_identity,
     )
     derivation_path = output_root / DERIVATION_EVIDENCE_PATH
     derivation_path.parent.mkdir(parents=True)
     derivation_path.write_bytes(derivation.to_json_bytes())
+    producer_evidence = ProducerEvidence(
+        producer_app="qualification.target/v1",
+        adapter_id="qualification.target/v1",
+        adapter_version="1.0.0",
+        source_event_id=execution_id,
+        ingest_source=f"transform:{execution_id}",
+        source_context={"execution_id": execution_id},
+    )
+    producer_evidence_path = output_root / PRODUCER_EVIDENCE_PATH
+    producer_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    producer_evidence_path.write_bytes(producer_evidence.to_json_bytes())
     output_files = {
         output_relative_path: output_payload_path,
+        PRODUCER_EVIDENCE_PATH: producer_evidence_path,
         DERIVATION_EVIDENCE_PATH: derivation_path,
     }
     output_entries = [
@@ -807,29 +836,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journal_summary.journal_id: journal,
         output_journal_summary.journal_id: output_journal,
     }
-    output_provenance = build_provenance_archive(
-        bindings=(
-            FileProvenanceBinding(
-                path=output_relative_path,
-                bytes=output_payload_bytes,
-                sha256=output_payload_sha256,
-                status="captured",
-                journal_id=output_journal_summary.journal_id,
-                current_state_id=output_journal_summary.current_state_id,
-            ),
-            FileProvenanceBinding(
-                path=DERIVATION_EVIDENCE_PATH,
-                bytes=derivation_path.stat().st_size,
-                sha256=hashlib.sha256(derivation_path.read_bytes()).hexdigest(),
-                status="omitted",
-                omission_reason="Riverhog control evidence has no host provenance",
-            ),
-        ),
-        journals=output_provenance_journals,
-    )
     target = _api(transport, str(output_capability["token"]), observer=observer)
-    with target.stream_collection_provenance(collection_id) as items:
-        assert len(list(items)) == 1
+    assert target.list_collection_provenance(collection_id, page=1, per_page=100)["total"] == 1
     with target.stream_collection_provenance_journal(
         collection_id,
         journal_summary.journal_id,
@@ -887,13 +895,19 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert replayed_target_session["resumed"] is True
     assert int(replayed_target_session["collection_id"]) == output_collection_id
     for journal_id, content in output_provenance_journals.items():
-        target.put_collection_upload_session_provenance_journal(
+        staged_output = target.upload_collection_upload_session_provenance_journal(
             output_collection_id,
             journal_id,
             content=(content,),
             byte_count=len(content),
             sha256=hashlib.sha256(content).hexdigest(),
         )
+        while staged_output.state != "sealed":
+            assert staged_output.state == "validating"
+            assert container.collection_uploads.process_due_provenance_journal_validations() == 1
+            staged_output = target.get_collection_upload_session_provenance_journal(
+                output_collection_id, journal_id
+            )
     target.register_collection_upload_session_files(
         output_collection_id,
         [
@@ -914,7 +928,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                     }
                 ),
             }
-            for path, byte_count, sha256 in sorted(output_entries)
+            for path, byte_count, sha256 in sorted(
+                output_entries, key=lambda item: collection_upload_path_order_key(item[0])
+            )
         ],
         registration_constraints=target_session["registration_constraints"],
     )
@@ -922,27 +938,17 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         output_collection_id,
         files_total=len(output_entries),
         content_identity=collection_content_identity(output_entries),
-        provenance_identity=output_provenance.identity,
     )
-    for volume in target.list_collection_upload_session_volumes(output_collection_id).volumes:
-        shown = target.get_collection_upload_session_volume(
-            output_collection_id,
-            volume.volume_id,
-        )
-        for unit in shown.units:
-            current = target.get_collection_upload_session_unit(
-                output_collection_id,
-                volume.volume_id,
-                unit.unit,
-            )
+    while work := target.acquire_collection_upload_session_work(output_collection_id).work:
+        for assignment in work:
             target.put_collection_upload_session_unit(
                 output_collection_id,
-                volume.volume_id,
-                unit.unit,
-                plan_sha256=volume.plan_sha256,
-                content=_unit_content(output_root, current),
+                assignment.volume.volume_id,
+                assignment.unit.unit,
+                plan_sha256=assignment.plan_sha256,
+                content=_unit_content(output_root, assignment.unit),
             )
-    assert container.collection_uploads.process_due_finalizations() == 1
+    _finalize_upload(container, target, output_collection_id)
     assert target.get_collection_upload_session(output_collection_id)["state"] == "finalized"
     replayed_output = target.create_or_resume_collection_upload_session(
         execution_id,
@@ -981,8 +987,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operator.request_collection_provenance_verification(output_collection_id)["state"]
         == "queued"
     )
-    assert container.provenance.process_due_verifications() == 1
-    output_verification = operator.get_collection_provenance_verification(output_collection_id)
+    output_verification = _complete_provenance_verification(
+        container, operator, output_collection_id
+    )
     assert output_verification["state"] == "succeeded"
     assert output_verification["result"]["valid"] is True
 
@@ -1012,13 +1019,32 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     assert operator.release_processing_claim(claim_id, fence=claim_fence)["state"] == "released"
     outcomes = operator.get_processing_claim(outcome_claim_id)["outcomes"]
+    assert outcomes["count"] == 1
+    assert outcomes["authority"] is None
     settled_outcomes = operator.settle_processing_claim_outcomes(
         outcome_claim_id,
         fence=outcome_fence,
-        outcomes=outcomes,
         retirement_policy="retire-after-verified-output",
     )
+    while settled_outcomes["state"] == "active":
+        assert container.collection_workflows.process_due_outcome_sets() == 1
+        settled_outcomes = operator.settle_processing_claim_outcomes(
+            outcome_claim_id,
+            fence=outcome_fence,
+            retirement_policy="retire-after-verified-output",
+        )
     assert settled_outcomes["state"] == "settled"
+    assert settled_outcomes["outcomes"]["authority"] is not None
+    outcome_authority = settled_outcomes["outcomes"]["authority"]
+    assert (
+        operator.list_processing_claim_outcomes(
+            outcome_claim_id,
+            authority_sha256=str(outcome_authority["sha256"]),
+        )
+        .outcomes[0]
+        .outcome_id
+        == "qualification-output"
+    )
     retiring = operator.begin_processing_claim_retirement(
         outcome_claim_id,
         fence=outcome_fence,
@@ -1027,7 +1053,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     replayed_outcomes = operator.settle_processing_claim_outcomes(
         outcome_claim_id,
         fence=outcome_fence,
-        outcomes=outcomes,
         retirement_policy="retire-after-verified-output",
     )
     assert replayed_outcomes["state"] == "retiring"
@@ -1066,7 +1091,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     replayed_released_settlement = operator.settle_processing_claim_outcomes(
         outcome_claim_id,
         fence=outcome_fence,
-        outcomes=outcomes,
         retirement_policy="retire-after-verified-output",
     )
     assert replayed_released_settlement["state"] == "released"

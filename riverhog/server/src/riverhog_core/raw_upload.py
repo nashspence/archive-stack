@@ -52,7 +52,7 @@ from riverhog_core.write_segments import WriteSegmentPlan, plan_write_segments
 
 RAW_UPLOAD_CHECKPOINT_SCHEMA = "raw-upload-checkpoint/v1"
 RAW_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.raw-segment+age"
-_SEGMENT_ID_RE = re.compile(r"segment-[0-9]{12}")
+_SEGMENT_ID_RE = re.compile(r"segment-[0-9a-f]{64}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 TransferTimingObserver = Callable[[TransferTiming], None]
 
@@ -489,7 +489,7 @@ class RawVolumeUploader:
             raise RuntimeError("raw volume is not sealed")
         return SealedRawVolume(
             volume_id=checkpoint.volume_id,
-            sequence=int(checkpoint.volume_id.removeprefix("segment-")),
+            sequence=int(checkpoint.volume_id.removeprefix("segment-"), 16),
             relative_path=checkpoint.relative_path,
             source_path=checkpoint.source_path,
             file_offset=checkpoint.file_offset,
@@ -854,7 +854,7 @@ def _metadata(
 def _checkpoint_plan(checkpoint: RawUploadCheckpoint) -> RawVolumePlan:
     return RawVolumePlan(
         volume_id=checkpoint.volume_id,
-        sequence=int(checkpoint.volume_id.removeprefix("segment-")),
+        sequence=int(checkpoint.volume_id.removeprefix("segment-"), 16),
         source_path=checkpoint.source_path,
         file_offset=checkpoint.file_offset,
         plaintext_bytes=checkpoint.plaintext_bytes,
