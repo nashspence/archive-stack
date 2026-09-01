@@ -30,6 +30,8 @@ from riverhog_core.catalog_models import (
     CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
     CollectionRecord,
+    CollectionUploadProvenanceJournalChunkRecord,
+    CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
@@ -207,6 +209,76 @@ def _upload_provenance_journal(
             return status
         assert service.process_due_provenance_journal_validations() == 1
     raise AssertionError("bounded provenance validation did not terminate")
+
+
+def test_provenance_append_persists_next_ordinal_across_retry_and_restart(
+    tmp_path: Path,
+) -> None:
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000077"
+    service, config = _service(tmp_path)
+    opened = service.create_or_resume(
+        idempotency_key="bounded-provenance-append",
+        initial_tag="docs",
+        tag_set_identity_sha256=tag_set_identity(("docs",)),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="captured",
+        provenance_omission_reason=None,
+    )
+    collection_id = int(opened["collection_id"])
+    chunks = (b"a" * COLLECTION_UPLOAD_PROVENANCE_APPEND_BYTES_MAX, b"terminal")
+    content = b"".join(chunks)
+    service.create_provenance_journal(
+        collection_id,
+        journal_id,
+        CollectionUploadProvenanceJournalCreateDocument(
+            bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        ),
+    )
+    service.append_provenance_journal(
+        collection_id,
+        journal_id,
+        offset=0,
+        content=chunks[0],
+    )
+    service.append_provenance_journal(
+        collection_id,
+        journal_id,
+        offset=len(chunks[0]),
+        content=chunks[1],
+    )
+
+    restarted = SqlAlchemyCollectionUploadService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(MemoryArchiveStore())}),
+    )
+    replay = restarted.append_provenance_journal(
+        collection_id,
+        journal_id,
+        offset=len(chunks[0]),
+        content=chunks[1],
+    )
+    assert replay["accepted_bytes"] == len(content)
+    with session_scope(make_session_factory(config.database_url)) as session:
+        journal = session.get(
+            CollectionUploadProvenanceJournalRecord,
+            (collection_id, journal_id),
+        )
+        assert journal is not None
+        assert journal.next_chunk_ordinal == 2
+        assert list(
+            session.scalars(
+                select(CollectionUploadProvenanceJournalChunkRecord.ordinal)
+                .where(
+                    CollectionUploadProvenanceJournalChunkRecord.collection_id == collection_id,
+                    CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
+                )
+                .order_by(CollectionUploadProvenanceJournalChunkRecord.ordinal)
+            )
+        ) == [0, 1]
 
 
 def _verify_provenance(

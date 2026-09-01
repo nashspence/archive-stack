@@ -232,11 +232,13 @@ def test_load_runtime_config_parses_lifecycle_event_settings(
 ) -> None:
     monkeypatch.setenv("RIVERHOG_EVENT_SOURCE", "urn:test:riverhog")
     monkeypatch.setenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "14d")
+    monkeypatch.setenv("RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE", "37")
 
     config = load_runtime_config()
 
     assert config.event_source == "urn:test:riverhog"
     assert config.event_context_retention == timedelta(days=14)
+    assert config.event_context_reap_batch_size == 37
 
 
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:

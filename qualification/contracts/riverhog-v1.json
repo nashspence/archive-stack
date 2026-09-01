@@ -10641,6 +10641,12 @@
         "consumers": [
           "riverhog-server"
         ],
+        "name": "RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
         "name": "RIVERHOG_EVENT_CONTEXT_RETENTION"
       },
       {
@@ -11178,7 +11184,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "6c8a71ff9888e94c739dc5c0bc190c78837d7295e42e9807eb3ce43ffda7ec31"
+            "490ba5da36b7920fe9d1e28b29cfb11b92f5cccfaf1e190a7f3fc5526b7abcd1"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11256,8 +11262,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1841,
-        "discovered": 1841,
+        "classified": 1842,
+        "discovered": 1842,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11298,7 +11304,7 @@
           "riverhog-ftp-adapter": 21,
           "riverhog-ftp-adapter-api-client": 1,
           "riverhog-recover": 1,
-          "riverhog-server": 32,
+          "riverhog-server": 33,
           "riverhog-storage-adapter-protocol": 63,
           "stove0": 374,
           "stove0-api-client": 1,
@@ -11315,7 +11321,7 @@
           "contract_max": 377,
           "extension_owned": 55,
           "fixed": 835,
-          "operational_policy": 497,
+          "operational_policy": 498,
           "segmented_no_total_max": 77
         },
         "stale": 0,
@@ -17663,6 +17669,18 @@
           "unit": "configured-value"
         },
         {
+          "configuration": "RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE",
+          "dimension": "value",
+          "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE:value",
+          "maximum": null,
+          "owner": "riverhog-server",
+          "policy": "operational_policy",
+          "reason": "operator-configured-capacity",
+          "rule": "configured-capacity/v1",
+          "source_pointer": "/external_contract/configuration_environment/30",
+          "unit": "configured-value"
+        },
+        {
           "configuration": "RIVERHOG_EVENT_CONTEXT_RETENTION",
           "dimension": "value",
           "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_RETENTION:value",
@@ -17671,7 +17689,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/30",
+          "source_pointer": "/external_contract/configuration_environment/31",
           "unit": "configured-value"
         },
         {
@@ -17683,7 +17701,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/36",
+          "source_pointer": "/external_contract/configuration_environment/37",
           "unit": "configured-value"
         },
         {
@@ -17695,7 +17713,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/40",
+          "source_pointer": "/external_contract/configuration_environment/41",
           "unit": "configured-value"
         },
         {
@@ -17707,7 +17725,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/41",
+          "source_pointer": "/external_contract/configuration_environment/42",
           "unit": "configured-value"
         },
         {
@@ -17719,7 +17737,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/42",
+          "source_pointer": "/external_contract/configuration_environment/43",
           "unit": "configured-value"
         },
         {
@@ -17731,7 +17749,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/47",
+          "source_pointer": "/external_contract/configuration_environment/48",
           "unit": "configured-value"
         },
         {
@@ -17743,7 +17761,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/48",
+          "source_pointer": "/external_contract/configuration_environment/49",
           "unit": "configured-value"
         },
         {
@@ -17755,7 +17773,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/52",
+          "source_pointer": "/external_contract/configuration_environment/53",
           "unit": "configured-value"
         },
         {
@@ -17767,7 +17785,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/54",
+          "source_pointer": "/external_contract/configuration_environment/55",
           "unit": "configured-value"
         },
         {
@@ -17779,7 +17797,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/56",
+          "source_pointer": "/external_contract/configuration_environment/57",
           "unit": "configured-value"
         },
         {
@@ -17791,7 +17809,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/57",
+          "source_pointer": "/external_contract/configuration_environment/58",
           "unit": "configured-value"
         },
         {
@@ -17803,7 +17821,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/58",
+          "source_pointer": "/external_contract/configuration_environment/59",
           "unit": "configured-value"
         },
         {
@@ -17815,7 +17833,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/60",
+          "source_pointer": "/external_contract/configuration_environment/61",
           "unit": "configured-value"
         },
         {
@@ -17827,7 +17845,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/61",
+          "source_pointer": "/external_contract/configuration_environment/62",
           "unit": "configured-value"
         },
         {
@@ -17839,7 +17857,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/62",
+          "source_pointer": "/external_contract/configuration_environment/63",
           "unit": "configured-value"
         },
         {
@@ -17851,7 +17869,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/63",
+          "source_pointer": "/external_contract/configuration_environment/64",
           "unit": "configured-value"
         },
         {
@@ -17863,7 +17881,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/65",
+          "source_pointer": "/external_contract/configuration_environment/66",
           "unit": "configured-value"
         },
         {
@@ -17875,7 +17893,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/66",
+          "source_pointer": "/external_contract/configuration_environment/67",
           "unit": "configured-value"
         },
         {
@@ -17887,7 +17905,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/67",
+          "source_pointer": "/external_contract/configuration_environment/68",
           "unit": "configured-value"
         },
         {
@@ -17899,7 +17917,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/68",
+          "source_pointer": "/external_contract/configuration_environment/69",
           "unit": "configured-value"
         },
         {
@@ -17911,7 +17929,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/70",
+          "source_pointer": "/external_contract/configuration_environment/71",
           "unit": "configured-value"
         },
         {
@@ -17923,7 +17941,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/71",
+          "source_pointer": "/external_contract/configuration_environment/72",
           "unit": "configured-value"
         },
         {
@@ -17935,7 +17953,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/72",
+          "source_pointer": "/external_contract/configuration_environment/73",
           "unit": "configured-value"
         },
         {
@@ -17947,7 +17965,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/73",
+          "source_pointer": "/external_contract/configuration_environment/74",
           "unit": "configured-value"
         },
         {
@@ -17959,7 +17977,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/74",
+          "source_pointer": "/external_contract/configuration_environment/75",
           "unit": "configured-value"
         },
         {
@@ -17971,7 +17989,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/75",
+          "source_pointer": "/external_contract/configuration_environment/76",
           "unit": "configured-value"
         },
         {
@@ -17983,7 +18001,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/79",
+          "source_pointer": "/external_contract/configuration_environment/80",
           "unit": "configured-value"
         },
         {
@@ -17995,7 +18013,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/81",
+          "source_pointer": "/external_contract/configuration_environment/82",
           "unit": "configured-value"
         },
         {
@@ -18007,7 +18025,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/82",
+          "source_pointer": "/external_contract/configuration_environment/83",
           "unit": "configured-value"
         },
         {
@@ -18019,7 +18037,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/102",
+          "source_pointer": "/external_contract/configuration_environment/103",
           "unit": "configured-value"
         },
         {
@@ -18031,7 +18049,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/105",
+          "source_pointer": "/external_contract/configuration_environment/106",
           "unit": "configured-value"
         },
         {
@@ -18043,7 +18061,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/107",
+          "source_pointer": "/external_contract/configuration_environment/108",
           "unit": "configured-value"
         },
         {
@@ -18055,7 +18073,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/112",
+          "source_pointer": "/external_contract/configuration_environment/113",
           "unit": "configured-value"
         },
         {
@@ -38232,7 +38250,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "51aa27dade5af125b2715fe14f86455ecff04939d52b8a5461c1a80dd91ad53d"
+      "sha256": "8b8a3d10d56188e09824e046f0e3b1622cdf7e380d482c858ec505abdf3e8c4d"
     },
     "http_openapi": {
       "riverhog": {

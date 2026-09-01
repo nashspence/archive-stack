@@ -885,6 +885,7 @@ class SqlAlchemyCollectionUploadService:
                 sha256=authority.sha256,
                 state="accepting",
                 accepted_bytes=0,
+                next_chunk_ordinal=0,
                 content_hash_state=CheckpointSHA256().export_state(),
                 validation_byte_offset=0,
                 validation_sequence=0,
@@ -922,6 +923,8 @@ class SqlAlchemyCollectionUploadService:
             )
             if upload is None or record is None:
                 raise NotFound(f"collection upload provenance journal not found: {journal_id}")
+            if upload.state != "open":
+                raise Conflict(f"collection upload session is not open: {normalized_id}")
             if record.state != "accepting":
                 raise Conflict(f"provenance journal is {record.state}")
             if offset < record.accepted_bytes:
@@ -949,15 +952,7 @@ class SqlAlchemyCollectionUploadService:
                 raise BadRequest(
                     "every non-final provenance append must fill one transport segment"
                 )
-            ordinal = int(
-                session.scalar(
-                    select(func.count(CollectionUploadProvenanceJournalChunkRecord.ordinal)).where(
-                        CollectionUploadProvenanceJournalChunkRecord.collection_id == normalized_id,
-                        CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
-                    )
-                )
-                or 0
-            )
+            ordinal = record.next_chunk_ordinal
             digest = CheckpointSHA256.from_state(record.content_hash_state)
             digest.update(chunk)
             session.add(
@@ -970,6 +965,7 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             record.accepted_bytes += len(chunk)
+            record.next_chunk_ordinal += 1
             record.content_hash_state = digest.export_state()
             _touch_upload(upload, config=self._config)
             return _journal_payload(record)
@@ -4459,6 +4455,7 @@ def _advance_derivative_source_closure(
             sha256=authoritative.sha256,
             state="accepting",
             accepted_bytes=0,
+            next_chunk_ordinal=0,
             content_hash_state=CheckpointSHA256().export_state(),
         )
         session.add(staged)
@@ -4485,18 +4482,7 @@ def _advance_derivative_source_closure(
         content = bytes(chunk.content)
         digest = CheckpointSHA256.from_state(staged.content_hash_state)
         digest.update(content)
-        next_ordinal = int(
-            session.scalar(
-                select(func.count())
-                .select_from(CollectionUploadProvenanceJournalChunkRecord)
-                .where(
-                    CollectionUploadProvenanceJournalChunkRecord.collection_id
-                    == upload.collection_id,
-                    CollectionUploadProvenanceJournalChunkRecord.journal_id == source.journal_id,
-                )
-            )
-            or 0
-        )
+        next_ordinal = staged.next_chunk_ordinal
         session.add(
             CollectionUploadProvenanceJournalChunkRecord(
                 collection_id=upload.collection_id,
@@ -4508,6 +4494,7 @@ def _advance_derivative_source_closure(
         )
         source.copy_offset += len(content)
         staged.accepted_bytes = source.copy_offset
+        staged.next_chunk_ordinal += 1
         staged.content_hash_state = digest.export_state()
         if source.copy_offset == staged.bytes:
             if digest.hexdigest() != staged.sha256:
@@ -4666,6 +4653,7 @@ def _advance_derivative_output_journal(
             sha256="0" * 64,
             state="generating",
             accepted_bytes=len(content),
+            next_chunk_ordinal=1,
             content_hash_state=digest.export_state(),
             generated_output_path=file.path,
         )
@@ -4723,18 +4711,7 @@ def _advance_derivative_output_journal(
             )
             digest = CheckpointSHA256.from_state(journal.content_hash_state)
             digest.update(content)
-            ordinal = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionUploadProvenanceJournalChunkRecord)
-                    .where(
-                        CollectionUploadProvenanceJournalChunkRecord.collection_id
-                        == upload.collection_id,
-                        CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
-                    )
-                )
-                or 0
-            )
+            ordinal = journal.next_chunk_ordinal
             session.add(
                 CollectionUploadProvenanceJournalChunkRecord(
                     collection_id=upload.collection_id,
@@ -4746,6 +4723,7 @@ def _advance_derivative_output_journal(
             )
             journal.bytes += len(content)
             journal.accepted_bytes = journal.bytes
+            journal.next_chunk_ordinal += 1
             journal.content_hash_state = digest.export_state()
             last = rows[-1]
             journal.generation_after_journal_id = str(last.journal_id)

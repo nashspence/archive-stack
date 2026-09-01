@@ -22,10 +22,15 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_base import Base
-from riverhog_core.catalog_types import archive_object_order_type, archive_sequence_type
+from riverhog_core.catalog_types import (
+    archive_object_order_type,
+    archive_sequence_type,
+    authority_ordinal_type,
+)
 
 COLLECTION_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
 _ARCHIVE_SEQUENCE_ZERO = "0" * 64
+_AUTHORITY_ORDINAL_ZERO = "0" * 64
 
 
 def _fixed_lowercase_integer_check(column: str, width: int) -> str:
@@ -331,7 +336,7 @@ class CollectionProvenanceJournalChunkRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ordinal: Mapped[int] = mapped_column(authority_ordinal_type(), primary_key=True)
     byte_offset: Mapped[int] = mapped_column(BigInteger)
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
@@ -344,7 +349,10 @@ class CollectionProvenanceJournalChunkRecord(Base):
             ],
             ondelete="CASCADE",
         ),
-        CheckConstraint("ordinal >= 0", name="ck_provenance_journal_chunks_ordinal"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("ordinal", 64),
+            name="ck_provenance_journal_chunks_ordinal",
+        ),
         CheckConstraint("byte_offset >= 0", name="ck_provenance_journal_chunks_offset"),
         CheckConstraint("length(content) > 0", name="ck_provenance_journal_chunks_content"),
     )
@@ -976,7 +984,11 @@ class LifecycleEventRecord(Base):
             "subject",
             "context_expires_at",
         ),
-        Index("ix_lifecycle_events_context_expiry", "context_expires_at"),
+        Index(
+            "ix_lifecycle_events_context_expiry",
+            "context_expires_at",
+            "sequence",
+        ),
     )
 
 
@@ -1758,6 +1770,11 @@ class CollectionUploadProvenanceJournalRecord(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String, default="accepting")
     accepted_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    next_chunk_ordinal: Mapped[int] = mapped_column(
+        authority_ordinal_type(),
+        default=0,
+        server_default=text(f"'{_AUTHORITY_ORDINAL_ZERO}'"),
+    )
     content_hash_state: Mapped[str] = mapped_column(Text)
     validation_byte_offset: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default=text("0")
@@ -1792,6 +1809,10 @@ class CollectionUploadProvenanceJournalRecord(Base):
             name="ck_upload_provenance_journals_accepted_bytes",
         ),
         CheckConstraint(
+            _fixed_lowercase_integer_check("next_chunk_ordinal", 64),
+            name="ck_upload_provenance_journals_next_chunk_ordinal",
+        ),
+        CheckConstraint(
             "validation_byte_offset >= 0 AND validation_byte_offset <= accepted_bytes",
             name="ck_upload_provenance_journals_validation_offset",
         ),
@@ -1823,7 +1844,7 @@ class CollectionUploadProvenanceJournalChunkRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ordinal: Mapped[int] = mapped_column(authority_ordinal_type(), primary_key=True)
     byte_offset: Mapped[int] = mapped_column(BigInteger)
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
@@ -1836,7 +1857,10 @@ class CollectionUploadProvenanceJournalChunkRecord(Base):
             ],
             ondelete="CASCADE",
         ),
-        CheckConstraint("ordinal >= 0", name="ck_upload_provenance_journal_chunks_ordinal"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("ordinal", 64),
+            name="ck_upload_provenance_journal_chunks_ordinal",
+        ),
         CheckConstraint("byte_offset >= 0", name="ck_upload_provenance_journal_chunks_offset"),
         CheckConstraint(
             "length(content) > 0",
