@@ -1,15 +1,15 @@
 {
-  "contract_canonical_sha256": "684ebd8e3311415c95f62da37daf797e39300000977be1acd8374ebdb0c284f3",
-  "contract_projection_sha256": "c6354138d790c079481b42a9d5f3882c244dc8f0ff7872fbc99ebb5e21f9ebbe",
+  "contract_canonical_sha256": "28b48086fd375c3bc094629e7cbacfd1dc510e939ad76875eb419c1d640c372f",
+  "contract_projection_sha256": "fdb7d32ddbf5663ae29a02dc69eeb8e8ede5e219d09d50e318f2752292538509",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1841,
-    "extent_source_links": 1841,
-    "source_authorities": 197,
+    "extent_decisions": 1842,
+    "extent_source_links": 1842,
+    "source_authorities": 198,
     "source_kinds": {
       "cli": 5,
       "configuration": 6,
-      "configuration-environment": 115,
+      "configuration-environment": 116,
       "openapi": 3,
       "protocol": 34,
       "python": 25,
@@ -2144,169 +2144,174 @@
       "source_pointer": "/external_contract/configuration_environment/29"
     },
     {
-      "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_RETENTION:value",
+      "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE:value",
       "owner": "riverhog-server",
       "source_pointer": "/external_contract/configuration_environment/30"
     },
     {
+      "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_RETENTION:value",
+      "owner": "riverhog-server",
+      "source_pointer": "/external_contract/configuration_environment/31"
+    },
+    {
       "id": "configuration-environment:RIVERHOG_FTP_ADAPTER_HTTP_TIMEOUT_SECONDS:value",
       "owner": "riverhog-ftp-adapter-api-client",
-      "source_pointer": "/external_contract/configuration_environment/36"
+      "source_pointer": "/external_contract/configuration_environment/37"
     },
     {
       "id": "configuration-environment:RIVERHOG_HTTP_TIMEOUT_SECONDS:value",
       "owner": "riverhog-api-client",
-      "source_pointer": "/external_contract/configuration_environment/40"
+      "source_pointer": "/external_contract/configuration_environment/41"
     },
     {
       "id": "configuration-environment:RIVERHOG_INGRESS_MAX_INFLIGHT_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/41"
+      "source_pointer": "/external_contract/configuration_environment/42"
     },
     {
       "id": "configuration-environment:RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/42"
+      "source_pointer": "/external_contract/configuration_environment/43"
     },
     {
       "id": "configuration-environment:RIVERHOG_PACK_MEMBER_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/47"
+      "source_pointer": "/external_contract/configuration_environment/48"
     },
     {
       "id": "configuration-environment:RIVERHOG_PACK_SOURCE_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/48"
+      "source_pointer": "/external_contract/configuration_environment/49"
     },
     {
       "id": "configuration-environment:RIVERHOG_RAW_VOLUME_PLAINTEXT_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/52"
+      "source_pointer": "/external_contract/configuration_environment/53"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/54"
+      "source_pointer": "/external_contract/configuration_environment/55"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/56"
+      "source_pointer": "/external_contract/configuration_environment/57"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/57"
+      "source_pointer": "/external_contract/configuration_environment/58"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_DEFAULT_LEASE:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/58"
+      "source_pointer": "/external_contract/configuration_environment/59"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_MAX_INFLIGHT_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/60"
+      "source_pointer": "/external_contract/configuration_environment/61"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_MAX_LEASE:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/61"
+      "source_pointer": "/external_contract/configuration_environment/62"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_MAX_RANGE_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/62"
+      "source_pointer": "/external_contract/configuration_environment/63"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_PENDING_TIMEOUT:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/63"
+      "source_pointer": "/external_contract/configuration_environment/64"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_RANGE_MERGE_GAP_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/65"
+      "source_pointer": "/external_contract/configuration_environment/66"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/66"
+      "source_pointer": "/external_contract/configuration_environment/67"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_REQUEST_CONCURRENCY:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/67"
+      "source_pointer": "/external_contract/configuration_environment/68"
     },
     {
       "id": "configuration-environment:RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL:value",
       "owner": "riverhog-server",
-      "source_pointer": "/external_contract/configuration_environment/68"
+      "source_pointer": "/external_contract/configuration_environment/69"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_FILE_CONCURRENCY:value",
       "owner": "riverhog-api-client",
-      "source_pointer": "/external_contract/configuration_environment/70"
+      "source_pointer": "/external_contract/configuration_environment/71"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_FILE_LOG_BYTES:value",
       "owner": "riverhog-client",
-      "source_pointer": "/external_contract/configuration_environment/71"
+      "source_pointer": "/external_contract/configuration_environment/72"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_FILE_WINDOW:value",
       "owner": "riverhog-api-client",
-      "source_pointer": "/external_contract/configuration_environment/72"
+      "source_pointer": "/external_contract/configuration_environment/73"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_FINALIZE_POLL_SECONDS:value",
       "owner": "riverhog-client",
-      "source_pointer": "/external_contract/configuration_environment/73"
+      "source_pointer": "/external_contract/configuration_environment/74"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_FINALIZE_TIMEOUT_SECONDS:value",
       "owner": "riverhog-client",
-      "source_pointer": "/external_contract/configuration_environment/74"
+      "source_pointer": "/external_contract/configuration_environment/75"
     },
     {
       "id": "configuration-environment:RIVERHOG_UPLOAD_TIMEOUT_SECONDS:value",
       "owner": "riverhog-api-client",
-      "source_pointer": "/external_contract/configuration_environment/75"
+      "source_pointer": "/external_contract/configuration_environment/76"
     },
     {
       "id": "configuration-environment:STOVE0_BROWSE_TOKEN_LIFETIME_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/79"
+      "source_pointer": "/external_contract/configuration_environment/80"
     },
     {
       "id": "configuration-environment:STOVE0_CAPABILITY_TTL_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/81"
+      "source_pointer": "/external_contract/configuration_environment/82"
     },
     {
       "id": "configuration-environment:STOVE0_CLAIM_LEASE_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/82"
+      "source_pointer": "/external_contract/configuration_environment/83"
     },
     {
       "id": "configuration-environment:STOVE0_HTTP_TIMEOUT_SECONDS:value",
       "owner": "stove0-api-client",
-      "source_pointer": "/external_contract/configuration_environment/102"
+      "source_pointer": "/external_contract/configuration_environment/103"
     },
     {
       "id": "configuration-environment:STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/105"
+      "source_pointer": "/external_contract/configuration_environment/106"
     },
     {
       "id": "configuration-environment:STOVE0_SCHEDULER_INTERVAL_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/107"
+      "source_pointer": "/external_contract/configuration_environment/108"
     },
     {
       "id": "configuration-environment:STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:value",
       "owner": "stove0-target-support",
-      "source_pointer": "/external_contract/configuration_environment/112"
+      "source_pointer": "/external_contract/configuration_environment/113"
     },
     {
       "id": "configuration-pattern:RIVERHOG_ARCHIVE_STORE_{store}_{setting}:ADAPTER_MAX_CONNECTIONS:value",
@@ -11472,6 +11477,21 @@
       "bindings": [
         {
           "consumer": "riverhog-server",
+          "expression": "_parse_int(os.getenv('RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE', '100'), name='RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE', minimum=1)",
+          "path": "riverhog/server/src/riverhog_core/runtime_config.py"
+        },
+        {
+          "consumer": "riverhog-server",
+          "expression": "os.getenv('RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE', '100')",
+          "path": "riverhog/server/src/riverhog_core/runtime_config.py"
+        }
+      ],
+      "id": "configuration-environment:RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE"
+    },
+    {
+      "bindings": [
+        {
+          "consumer": "riverhog-server",
           "expression": "os.getenv('RIVERHOG_EVENT_CONTEXT_RETENTION', '30d')",
           "path": "riverhog/server/src/riverhog_core/runtime_config.py"
         }
@@ -12784,7 +12804,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "6c8a71ff9888e94c739dc5c0bc190c78837d7295e42e9807eb3ce43ffda7ec31"
+          "sha256": "490ba5da36b7920fe9d1e28b29cfb11b92f5cccfaf1e190a7f3fc5526b7abcd1"
         }
       ],
       "id": "state:riverhog-catalog"

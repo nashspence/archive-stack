@@ -105,17 +105,8 @@ class SqlAlchemyLifecycleEventService:
         cursor = int(validate_lifecycle_event_cursor("0" if after is None else after))
         if limit < 1 or limit > 100:
             raise ValueError("limit must be between 1 and 100")
+        current_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
-            current_text = format_utc_timestamp(utc_now())
-            session.execute(
-                update(LifecycleEventRecord)
-                .where(
-                    LifecycleEventRecord.context_json.is_not(None),
-                    LifecycleEventRecord.context_expires_at.is_not(None),
-                    LifecycleEventRecord.context_expires_at <= current_text,
-                )
-                .values(context_json=None, context_expires_at=None)
-            )
             statement = select(LifecycleEventRecord).where(LifecycleEventRecord.sequence > cursor)
             if owner_app is not None:
                 statement = statement.where(LifecycleEventRecord.owner_app == owner_app)
@@ -129,7 +120,9 @@ class SqlAlchemyLifecycleEventService:
         events: list[RiverhogLifecycleEvent] = []
         for row in selected:
             event = CloudEvent.model_validate_json(row.event_json)
-            if row.context_json is not None:
+            if row.context_json is not None and (
+                row.context_expires_at is None or row.context_expires_at > current_text
+            ):
                 data = dict(event.data)
                 data["context"] = decode_event_context(row.context_json)
                 event = event.model_copy(update={"data": data})
@@ -139,6 +132,36 @@ class SqlAlchemyLifecycleEventService:
             next_cursor=str(selected[-1].sequence if selected else cursor),
             has_more=has_more,
         )
+
+    def reap_expired_contexts(self) -> int:
+        """Reclaim one configured, restartable batch of expired context payloads."""
+
+        current_text = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            sequences = list(
+                session.scalars(
+                    select(LifecycleEventRecord.sequence)
+                    .where(
+                        LifecycleEventRecord.context_json.is_not(None),
+                        LifecycleEventRecord.context_expires_at.is_not(None),
+                        LifecycleEventRecord.context_expires_at <= current_text,
+                    )
+                    .order_by(
+                        LifecycleEventRecord.context_expires_at,
+                        LifecycleEventRecord.sequence,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(self._config.event_context_reap_batch_size)
+                )
+            )
+            if not sequences:
+                return 0
+            session.execute(
+                update(LifecycleEventRecord)
+                .where(LifecycleEventRecord.sequence.in_(sequences))
+                .values(context_json=None, context_expires_at=None)
+            )
+            return len(sequences)
 
     def emit_collection(
         self,

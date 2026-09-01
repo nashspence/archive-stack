@@ -161,6 +161,7 @@ def _process_archive_maintenance(
     progressed += container.archive_copies.process_due(limit=1)
     progressed += container.archive_maintenance.process_due_metadata_publications(limit=10)
     progressed += container.provenance.process_due_verifications(limit=1)
+    progressed += container.lifecycle_events.reap_expired_contexts()
     return progressed > 0
 
 

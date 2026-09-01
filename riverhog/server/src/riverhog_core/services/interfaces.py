@@ -545,6 +545,7 @@ class LifecycleEventService(Protocol):
         after: str | None,
         limit: int,
     ) -> RiverhogEventPage: ...
+    def reap_expired_contexts(self) -> int: ...
 
 
 class SearchService(Protocol):
