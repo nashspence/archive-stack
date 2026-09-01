@@ -46,6 +46,7 @@ from riverhog_core.incremental_plan import (
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import collection_uploads as collection_uploads_module
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
@@ -1010,14 +1011,29 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         assert upload is not None
         assert (upload.file_count, upload.file_bytes) == (1, len(content))
 
+    completion_identity = collection_content_identity((("document.txt", len(content), sha256),))
     closed = service.complete(
         collection_id,
         files_total=1,
-        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
+        content_identity=completion_identity,
     )
     assert closed["state"] == ("closing" if custody_mode == "custody-transfer" else "uploading")
     assert (closed["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     assert closed["orphaned_at"] is None
+    assert (
+        service.complete(
+            collection_id,
+            files_total=1,
+            content_identity=completion_identity,
+        )["state"]
+        == closed["state"]
+    )
+    with pytest.raises(Conflict, match="completion identity changed"):
+        service.complete(
+            collection_id,
+            files_total=2,
+            content_identity=completion_identity,
+        )
     volume = service.list_volumes(collection_id)["volumes"][0]
     assert volume["kind"] == "pack"
     unit = volume["units"][0]
@@ -1050,6 +1066,20 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert finalized["tag_count"] == len(tags)
     assert finalized["custody"] == {"state": "complete"}
     assert finalized["custody_mode"] == custody_mode
+    assert (
+        service.complete(
+            collection_id,
+            files_total=1,
+            content_identity=completion_identity,
+        )["state"]
+        == "finalized"
+    )
+    with pytest.raises(Conflict, match="completion identity changed"):
+        service.complete(
+            collection_id,
+            files_total=2,
+            content_identity=completion_identity,
+        )
 
     with session_scope(make_session_factory(config.database_url)) as session:
         collection = session.get(CollectionRecord, collection_id)
@@ -1497,6 +1527,59 @@ def test_failed_orphan_cleanup_remains_visible_and_exactly_retryable(
         service.discard_orphan(collection_id, challenge=str(retry["challenge"]))["status"]
         == "discarded"
     )
+
+
+def test_completion_uses_the_incremental_commitment_without_inventory_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, config = _service(tmp_path)
+    files = tuple(
+        {
+            "path": f"many/file-{index:04d}.txt",
+            "bytes": index,
+            "sha256": hashlib.sha256(f"payload-{index}".encode()).hexdigest(),
+        }
+        for index in range(513)
+    )
+    opened = service.create_or_resume(
+        idempotency_key="bounded-completion",
+        initial_tag=None,
+        tag_set_identity_sha256=tag_set_identity(()),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+    )
+    collection_id = int(opened["collection_id"])
+    for start in range(0, len(files), 64):
+        service.register_files(collection_id, files[start : start + 64])
+    identity = collection_content_identity(
+        (str(row["path"]), int(row["bytes"]), str(row["sha256"])) for row in files
+    )
+
+    def fail_inventory_scan(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("synchronous completion rescanned the registered inventory")
+
+    monkeypatch.setattr(collection_uploads_module, "_upload_file_batches", fail_inventory_scan)
+    result = service.complete(
+        collection_id,
+        files_total=len(files),
+        content_identity=identity,
+    )
+
+    assert result["state"] == "uploading"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        checkpoint = parse_incremental_volume_planner_checkpoint(upload.planner_checkpoint_json)
+        assert checkpoint.closed is True
+        assert checkpoint.files_seen == len(files)
+        assert checkpoint.content_identity == identity
+        assert upload.catalog_content_identity == identity
+        assert upload.catalog_phase == "inventory-identity"
 
 
 def test_completion_requires_volume_plans_to_match_registered_file_identities(

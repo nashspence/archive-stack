@@ -9,7 +9,6 @@ import secrets
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
-from itertools import zip_longest
 from typing import Any, Literal, TypedDict, cast
 
 from http_api_contracts import BrowseScalar, closed_literal_values
@@ -46,7 +45,6 @@ from riverhog_protocol.collection_workflows import (
     PRODUCER_EVIDENCE_PATH,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
-from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import (
     normalize_collection_id,
@@ -1061,7 +1059,10 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             if collection is not None:
-                if collection.content_identity != content_identity:
+                if (
+                    collection.file_count != files_total
+                    or collection.content_identity != content_identity
+                ):
                     raise Conflict("collection upload completion identity changed")
                 return _finalized_payload(
                     session,
@@ -1077,97 +1078,23 @@ class SqlAlchemyCollectionUploadService:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
             if upload.state not in {"open", "closing", "uploading", "finalizing"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
-            if upload.state == "finalizing":
-                return _upload_payload(session, upload)
-            if _upload_tag_set_identity(session, normalized_id) != upload.tag_set_identity:
-                raise Conflict("collection upload tag set differs from creation identity")
-            incomplete_raw = session.scalar(
-                select(CollectionUploadFileRecord.path)
-                .where(
-                    CollectionUploadFileRecord.collection_id == normalized_id,
-                    CollectionUploadFileRecord.raw_part_count.is_not(None),
-                    or_(
-                        CollectionUploadFileRecord.raw_parts_accepted
-                        != CollectionUploadFileRecord.raw_part_count,
-                        CollectionUploadFileRecord.raw_part_commitment_sha256
-                        != CollectionUploadFileRecord.raw_part_ordered_sha256,
-                    ),
-                )
-                .limit(1)
-            )
-            if incomplete_raw is not None:
-                raise Conflict(f"raw source digest sequence is incomplete: {incomplete_raw}")
-            incomplete_provenance = session.scalar(
-                select(CollectionUploadProvenanceJournalRecord.journal_id)
-                .where(
-                    CollectionUploadProvenanceJournalRecord.collection_id == normalized_id,
-                    CollectionUploadProvenanceJournalRecord.state != "sealed",
-                )
-                .limit(1)
-            )
-            if incomplete_provenance is not None:
-                raise Conflict(f"provenance journal is not sealed: {incomplete_provenance}")
-            _require_transform_output_authority(session, upload)
-            actual_etag = collection_content_identity_ordered(
-                (row.path, row.bytes, row.sha256)
-                for batch in _upload_file_batches(session, normalized_id)
-                for row in batch
-            )
-            if upload.file_count != files_total or actual_etag != content_identity:
-                raise Conflict("collection upload registered manifest differs from completion")
             checkpoint = _planner_checkpoint(upload)
-            if not checkpoint.closed:
-                batch = advance_incremental_volume_plan(checkpoint, (), final=True)
-                _persist_plan_batch(session, upload=upload, batch=batch)
-                upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
-                    batch.checkpoint
-                ).decode("utf-8")
-                session.flush()
-            checkpoint = _planner_checkpoint(upload)
-            if (
-                not checkpoint.closed
-                or checkpoint.files_seen != upload.file_count
-                or checkpoint.bytes_seen != upload.file_bytes
-            ):
-                raise Conflict("collection upload planner differs from registered files")
-            registered = (
-                (row.path, row.bytes, row.sha256)
-                for batch in _upload_file_batches(session, normalized_id)
-                for row in batch
-            )
-            sentinel = object()
-            try:
-                plans_differ = any(
-                    expected is sentinel or planned is sentinel or expected != planned
-                    for expected, planned in zip_longest(
-                        registered,
-                        _iter_planned_file_identities(session, normalized_id),
-                        fillvalue=sentinel,
-                    )
-                )
-            except ValueError as exc:
-                raise Conflict(
-                    "collection upload volume plans differ from registered files"
-                ) from exc
-            if plans_differ:
-                raise Conflict("collection upload volume plans differ from registered files")
-            custody_pending = (
-                upload.custody_mode == "custody-transfer"
-                and not _has_complete_artifact_custody(upload)
-            )
-            upload.state = "closing" if custody_pending else "uploading"
-            if custody_pending:
-                _touch_upload(upload, config=self._config)
+            if upload.state != "open":
+                if (
+                    not checkpoint.closed
+                    or checkpoint.files_seen != files_total
+                    or checkpoint.content_identity != content_identity
+                ):
+                    raise Conflict("collection upload completion identity changed")
             else:
-                upload.lease_expires_at = None
-            upload.provenance_identity = None
-            upload.closed_at = utc_timestamp_now()
-            upload.last_activity_at = upload.closed_at
-            upload.archive_phase = "uploading"
-            upload.archive_phase_updated_at = upload.closed_at
-            upload.archive_next_attempt_at = None
-            upload.archive_failure = None
-            session.flush()
+                _seal_open_collection_upload(
+                    session,
+                    upload,
+                    checkpoint=checkpoint,
+                    files_total=files_total,
+                    content_identity=content_identity,
+                    config=self._config,
+                )
         self._schedule_finalization_if_ready(normalized_id)
         return self.get(normalized_id)
 
@@ -4753,6 +4680,84 @@ def _planner_checkpoint(upload: CollectionUploadRecord) -> Any:
     return parse_incremental_volume_planner_checkpoint(upload.planner_checkpoint_json)
 
 
+def _seal_open_collection_upload(
+    session: Session,
+    upload: CollectionUploadRecord,
+    *,
+    checkpoint: Any,
+    files_total: int,
+    content_identity: str,
+    config: RuntimeConfig,
+) -> None:
+    collection_id = upload.collection_id
+    if _upload_tag_set_identity(session, collection_id) != upload.tag_set_identity:
+        raise Conflict("collection upload tag set differs from creation identity")
+    incomplete_raw = session.scalar(
+        select(CollectionUploadFileRecord.path)
+        .where(
+            CollectionUploadFileRecord.collection_id == collection_id,
+            CollectionUploadFileRecord.raw_part_count.is_not(None),
+            or_(
+                CollectionUploadFileRecord.raw_parts_accepted
+                != CollectionUploadFileRecord.raw_part_count,
+                CollectionUploadFileRecord.raw_part_commitment_sha256
+                != CollectionUploadFileRecord.raw_part_ordered_sha256,
+            ),
+        )
+        .limit(1)
+    )
+    if incomplete_raw is not None:
+        raise Conflict(f"raw source digest sequence is incomplete: {incomplete_raw}")
+    incomplete_provenance = session.scalar(
+        select(CollectionUploadProvenanceJournalRecord.journal_id)
+        .where(
+            CollectionUploadProvenanceJournalRecord.collection_id == collection_id,
+            CollectionUploadProvenanceJournalRecord.state != "sealed",
+        )
+        .limit(1)
+    )
+    if incomplete_provenance is not None:
+        raise Conflict(f"provenance journal is not sealed: {incomplete_provenance}")
+    _require_transform_output_authority(session, upload)
+    if upload.file_count != files_total:
+        raise Conflict("collection upload registered manifest differs from completion")
+    _require_pending_pack_matches_registration(session, upload, checkpoint)
+    batch = advance_incremental_volume_plan(checkpoint, (), final=True)
+    sealed = batch.checkpoint
+    if (
+        not sealed.closed
+        or sealed.files_seen != upload.file_count
+        or sealed.bytes_seen != upload.file_bytes
+    ):
+        raise Conflict("collection upload planner differs from registered files")
+    if sealed.content_identity != content_identity:
+        raise Conflict("collection upload registered manifest differs from completion")
+    _persist_plan_batch(session, upload=upload, batch=batch)
+    upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(sealed).decode(
+        "utf-8"
+    )
+    upload.catalog_content_identity = sealed.content_identity
+    upload.catalog_phase = "inventory-identity"
+    upload.catalog_cursor_json = "{}"
+    upload.catalog_hash_state = None
+    custody_pending = (
+        upload.custody_mode == "custody-transfer" and not _has_complete_artifact_custody(upload)
+    )
+    upload.state = "closing" if custody_pending else "uploading"
+    if custody_pending:
+        _touch_upload(upload, config=config)
+    else:
+        upload.lease_expires_at = None
+    upload.provenance_identity = None
+    upload.closed_at = utc_timestamp_now()
+    upload.last_activity_at = upload.closed_at
+    upload.archive_phase = "uploading"
+    upload.archive_phase_updated_at = upload.closed_at
+    upload.archive_next_attempt_at = None
+    upload.archive_failure = None
+    session.flush()
+
+
 def _persist_plan_batch(session: Session, *, upload: CollectionUploadRecord, batch: Any) -> None:
     if not upload.archive_storage_prefix:
         raise RuntimeError("collection archive storage prefix is missing")
@@ -4938,71 +4943,36 @@ def _upload_file_path_batches(
         after = bytes(rows[-1].path_sort_key)
 
 
-def _iter_planned_file_identities(
+def _require_pending_pack_matches_registration(
     session: Session,
-    collection_id: int,
-) -> Iterator[tuple[str, int, str]]:
-    """Project the persisted volume plan back to its ordered file identities."""
+    upload: CollectionUploadRecord,
+    checkpoint: Any,
+) -> None:
+    """Verify the only planner state not yet sealed into immutable volume plans."""
 
-    rows = session.scalars(
-        select(CollectionArchiveObjectUploadRecord)
-        .where(CollectionArchiveObjectUploadRecord.collection_id == collection_id)
-        .order_by(CollectionArchiveObjectUploadRecord.sequence)
-    ).yield_per(1)
-    raw_path: str | None = None
-    raw_bytes = 0
-    raw_file_bytes = 0
-    raw_sha256 = ""
-
-    def finish_raw() -> tuple[str, int, str] | None:
-        nonlocal raw_path, raw_bytes, raw_file_bytes, raw_sha256
-        if raw_path is None:
-            return None
-        if raw_bytes != raw_file_bytes:
-            raise ValueError(f"raw volume plan does not cover its file: {raw_path}")
-        result = (raw_path, raw_file_bytes, raw_sha256)
-        raw_path = None
-        raw_bytes = 0
-        raw_file_bytes = 0
-        raw_sha256 = ""
-        return result
-
-    for record in rows:
-        if record.kind == "pack":
-            completed_raw = finish_raw()
-            if completed_raw is not None:
-                yield completed_raw
-            # Pack layout owns bytewise tar-member ordering.  Upload registration
-            # additionally keeps terminal derivation evidence last, so reconstruct
-            # that collection-level order within each bounded pack before comparing
-            # it with the append-only inventory.
-            members = sorted(
-                parse_pack_volume_plan(record.plan_json).members,
-                key=lambda member: collection_upload_path_order_key(member.path),
+    pending = checkpoint.pending_pack_files
+    if not pending:
+        return
+    first_order = checkpoint.files_seen - len(pending)
+    rows = list(
+        session.execute(
+            select(
+                CollectionUploadFileRecord.path,
+                CollectionUploadFileRecord.bytes,
+                CollectionUploadFileRecord.sha256,
             )
-            for member in members:
-                yield member.path, member.bytes, member.sha256
-            continue
-        plan = parse_raw_volume_plan(record.plan_json)
-        if raw_path != plan.source_path:
-            completed_raw = finish_raw()
-            if completed_raw is not None:
-                yield completed_raw
-            if plan.file_offset != 0:
-                raise ValueError("raw volume plan does not begin at file offset zero")
-            raw_path = plan.source_path
-            raw_file_bytes = plan.file_bytes
-            raw_sha256 = plan.file_sha256
-        elif (
-            plan.file_offset != raw_bytes
-            or plan.file_bytes != raw_file_bytes
-            or plan.file_sha256 != raw_sha256
-        ):
-            raise ValueError(f"raw volume plan is not contiguous: {plan.source_path}")
-        raw_bytes += plan.plaintext_bytes
-    completed_raw = finish_raw()
-    if completed_raw is not None:
-        yield completed_raw
+            .where(
+                CollectionUploadFileRecord.collection_id == upload.collection_id,
+                CollectionUploadFileRecord.file_order >= first_order,
+            )
+            .order_by(CollectionUploadFileRecord.file_order)
+            .limit(len(pending) + 1)
+        )
+    )
+    expected = [(current.path, current.bytes, current.sha256) for current in pending]
+    actual = [(row.path, row.bytes, row.sha256) for row in rows]
+    if actual != expected:
+        raise Conflict("collection upload volume plans differ from registered files")
 
 
 def _upload_tag_count(session: Session, collection_id: int) -> int:
