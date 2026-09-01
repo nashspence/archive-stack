@@ -55,6 +55,10 @@ class PreconditionRequired(RiverhogError):
     code = "precondition_required"
 
 
+class InvalidRange(RiverhogError):
+    code = "invalid_range"
+
+
 class InvalidState(RiverhogError):
     code = "invalid_state"
 
@@ -82,6 +86,7 @@ RIVERHOG_ERROR_TYPES_BY_CODE: dict[str, type[RiverhogError]] = {
         Conflict,
         PreconditionFailed,
         PreconditionRequired,
+        InvalidRange,
         InvalidState,
         HashMismatch,
         ServiceUnavailable,

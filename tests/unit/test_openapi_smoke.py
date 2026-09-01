@@ -81,18 +81,32 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
 
     assert set(schemas["RetrievalPlanOut"]["required"]) == {
         "format",
+        "id",
+        "state",
+        "created_at",
+        "ready_at",
+        "expires_at",
+        "failure",
         "lease_seconds",
         "restore_policy",
         "requires_restore",
-        "files",
-        "objects",
+        "file_count",
         "etag",
     }
-    assert {"id", "state", "plan_etag", "restore_requested_at", "files", "objects"} <= set(
+    assert {"id", "plan_id", "state", "plan_etag", "restore_requested_at"} <= set(
         schemas["RetrievalJobOut"]["required"]
     )
     assert {"lease_seconds", "restore_policy", "requires_restore"} <= set(
         schemas["RetrievalJobOut"]["required"]
+    )
+    assert schemas["RetrievalPlanFilePageOut"]["properties"]["files"]["maxItems"] == 100
+    assert (
+        schemas["RetrievalPlanOut"]["properties"]["file_count"]["maximum"]
+        == RETRIEVAL_FILE_BATCH_MAX
+    )
+    assert (
+        schemas["RetrievalPlanFilePageOut"]["properties"]["start_ordinal"]["maximum"]
+        == RETRIEVAL_FILE_BATCH_MAX
     )
 
 
@@ -192,6 +206,8 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
         schemas["RetrievalPlanRequest"]["properties"]["files"]["maxItems"]
         == RETRIEVAL_FILE_BATCH_MAX
     )
+    assert "idempotency_key" in schemas["RetrievalPlanRequest"]["required"]
+    assert schemas["RetrievalPlanRequest"]["properties"]["idempotency_key"]["maxLength"] == 200
 
     work_document = {"format": "fixture-work/v1"}
     claim = ProcessingClaimCreateIn(

@@ -12,7 +12,7 @@ from riverhog_protocol.errors import (
     NotFound,
     ServiceUnavailable,
 )
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
@@ -26,8 +26,12 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionMetadataPublicationRecord,
     CollectionRecord,
-    RetrievalJobObjectRecord,
+    RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
+    RetrievalPlanFileRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanPlacementRecord,
+    RetrievalPlanRecord,
 )
 from riverhog_core.ports.archive_store import ArchiveVerificationError
 from riverhog_core.runtime_config import RuntimeConfig
@@ -49,6 +53,7 @@ from riverhog_core.services.operation_plans import (
 _CHALLENGE_PREFIX = "retire-copy"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _BLOCKER_SAMPLE_LIMIT = 10
+_RETRIEVAL_CLEANUP_BATCH = 100
 _RETIREMENT_WARNING = (
     f"{ARCHIVE_DATA_LOSS_WARNING}\n\n"
     "This operation permanently removes one collection archive copy. Riverhog will "
@@ -191,6 +196,10 @@ class SqlAlchemyArchiveCopyRetirementService:
             collection_id=normalized_id,
             objects=target_objects,
         )
+        self._purge_terminal_retrieval_plans(
+            normalized_id,
+            normalized_store,
+        )
         return self._finish(
             normalized_id,
             normalized_store,
@@ -264,6 +273,7 @@ class SqlAlchemyArchiveCopyRetirementService:
         *,
         verified_store: str,
     ) -> dict[str, object]:
+        now_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             active = session.scalar(
                 select(ArchiveCopyRetirementRecord)
@@ -277,12 +287,32 @@ class SqlAlchemyArchiveCopyRetirementService:
                 return _result(plan, status="already_absent", verified_store=verified_store)
             if not secrets.compare_digest(active.challenge, challenge):
                 raise Conflict("archive copy retirement challenge does not match active retirement")
+            active_plans = session.scalars(
+                select(RetrievalPlanRecord.id)
+                .join(RetrievalPlanObjectRecord)
+                .where(
+                    RetrievalPlanObjectRecord.collection_id == collection_id,
+                    RetrievalPlanObjectRecord.source_store == store,
+                    RetrievalPlanRecord.state.in_({"planning", "ready"}),
+                    RetrievalPlanRecord.expires_at > now_text,
+                )
+                .order_by(RetrievalPlanRecord.id)
+                .limit(_BLOCKER_SAMPLE_LIMIT + 1)
+            ).all()
+            if active_plans:
+                raise Conflict(
+                    "retrieval plan became active during archive copy retirement: "
+                    + ", ".join(active_plans)
+                )
             active_retrievals = session.scalars(
                 select(RetrievalJobRecord.id)
-                .join(RetrievalJobObjectRecord)
+                .join(
+                    RetrievalPlanObjectRecord,
+                    RetrievalPlanObjectRecord.plan_id == RetrievalJobRecord.plan_id,
+                )
                 .where(
-                    RetrievalJobObjectRecord.collection_id == collection_id,
-                    RetrievalJobObjectRecord.source_store == store,
+                    RetrievalPlanObjectRecord.collection_id == collection_id,
+                    RetrievalPlanObjectRecord.source_store == store,
                     RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
                 )
                 .order_by(RetrievalJobRecord.id)
@@ -310,18 +340,22 @@ class SqlAlchemyArchiveCopyRetirementService:
                         for source_store, destination_store in copy_jobs
                     )
                 )
-            terminal_retrieval_ids = (
-                select(RetrievalJobRecord.id)
-                .join(RetrievalJobObjectRecord)
+            terminal_plan = session.scalar(
+                select(RetrievalPlanRecord.id)
+                .join(RetrievalPlanObjectRecord)
                 .where(
-                    RetrievalJobObjectRecord.collection_id == collection_id,
-                    RetrievalJobObjectRecord.source_store == store,
-                    ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
+                    RetrievalPlanObjectRecord.collection_id == collection_id,
+                    RetrievalPlanObjectRecord.source_store == store,
+                    (
+                        ~RetrievalPlanRecord.state.in_({"planning", "ready"})
+                        | (RetrievalPlanRecord.expires_at <= now_text)
+                    ),
                 )
+                .order_by(RetrievalPlanRecord.id)
+                .limit(1)
             )
-            session.execute(
-                delete(RetrievalJobRecord).where(RetrievalJobRecord.id.in_(terminal_retrieval_ids))
-            )
+            if terminal_plan is not None:
+                raise Conflict("terminal retrieval plan cleanup is incomplete; retry retirement")
             session.delete(active)
             session.flush()
             target = session.get(CollectionArchiveCopyRecord, (collection_id, store))
@@ -329,6 +363,121 @@ class SqlAlchemyArchiveCopyRetirementService:
                 session.delete(target)
                 session.flush()
         return _result(plan, status="retired", verified_store=verified_store)
+
+    def _purge_terminal_retrieval_plans(self, collection_id: int, store: str) -> None:
+        """Reclaim exact plan authorities in bounded, restartable catalog steps."""
+
+        while True:
+            now_text = format_utc_timestamp(utc_now())
+            with session_scope(self._session_factory) as session:
+                plan_id = session.scalar(
+                    select(RetrievalPlanRecord.id)
+                    .join(RetrievalPlanObjectRecord)
+                    .where(
+                        RetrievalPlanObjectRecord.collection_id == collection_id,
+                        RetrievalPlanObjectRecord.source_store == store,
+                        (
+                            ~RetrievalPlanRecord.state.in_({"planning", "ready"})
+                            | (RetrievalPlanRecord.expires_at <= now_text)
+                        ),
+                    )
+                    .order_by(RetrievalPlanRecord.id)
+                    .limit(1)
+                )
+                if plan_id is None:
+                    return
+                active_job = session.scalar(
+                    select(RetrievalJobRecord.id)
+                    .where(
+                        RetrievalJobRecord.plan_id == plan_id,
+                        RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
+                    )
+                    .limit(1)
+                )
+                if active_job is not None:
+                    raise Conflict(
+                        f"retrieval became active during archive copy retirement: {active_job}"
+                    )
+                progress = list(
+                    session.scalars(
+                        select(RetrievalJobObjectProgressRecord)
+                        .where(RetrievalJobObjectProgressRecord.plan_id == plan_id)
+                        .order_by(
+                            RetrievalJobObjectProgressRecord.job_id,
+                            RetrievalJobObjectProgressRecord.object_order,
+                        )
+                        .limit(_RETRIEVAL_CLEANUP_BATCH)
+                    )
+                )
+                if progress:
+                    for progress_row in progress:
+                        session.delete(progress_row)
+                    continue
+                placements = list(
+                    session.scalars(
+                        select(RetrievalPlanPlacementRecord)
+                        .where(RetrievalPlanPlacementRecord.plan_id == plan_id)
+                        .order_by(
+                            RetrievalPlanPlacementRecord.file_order,
+                            RetrievalPlanPlacementRecord.sequence,
+                        )
+                        .limit(_RETRIEVAL_CLEANUP_BATCH)
+                    )
+                )
+                if placements:
+                    for placement_row in placements:
+                        session.delete(placement_row)
+                    continue
+                files = list(
+                    session.scalars(
+                        select(RetrievalPlanFileRecord)
+                        .where(RetrievalPlanFileRecord.plan_id == plan_id)
+                        .order_by(RetrievalPlanFileRecord.file_order)
+                        .limit(_RETRIEVAL_CLEANUP_BATCH)
+                    )
+                )
+                if files:
+                    for file_row in files:
+                        session.delete(file_row)
+                    continue
+                objects = list(
+                    session.scalars(
+                        select(RetrievalPlanObjectRecord)
+                        .where(RetrievalPlanObjectRecord.plan_id == plan_id)
+                        .order_by(
+                            case(
+                                (
+                                    (RetrievalPlanObjectRecord.collection_id == collection_id)
+                                    & (RetrievalPlanObjectRecord.source_store == store),
+                                    1,
+                                ),
+                                else_=0,
+                            ),
+                            RetrievalPlanObjectRecord.object_order,
+                        )
+                        .limit(_RETRIEVAL_CLEANUP_BATCH)
+                    )
+                )
+                if objects:
+                    for object_row in objects:
+                        session.delete(object_row)
+                    session.flush()
+                    remaining = session.scalar(
+                        select(RetrievalPlanObjectRecord.plan_id)
+                        .where(RetrievalPlanObjectRecord.plan_id == plan_id)
+                        .limit(1)
+                    )
+                    if remaining is not None:
+                        continue
+                job = session.scalar(
+                    select(RetrievalJobRecord).where(RetrievalJobRecord.plan_id == plan_id)
+                )
+                if job is not None:
+                    session.delete(job)
+                    session.flush()
+                plan = session.get(RetrievalPlanRecord, plan_id)
+                if plan is not None:
+                    session.delete(plan)
 
     def _clear_active(self, collection_id: int, store: str, challenge: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -352,6 +501,7 @@ def _build_plan(
     expires_at: datetime,
 ) -> dict[str, object]:
     db = session
+    now_text = format_utc_timestamp(utc_now())
     if db.get(CollectionRecord, collection_id) is None:
         raise NotFound(f"collection not found: {collection_id}")
     target = db.get(CollectionArchiveCopyRecord, (collection_id, store))
@@ -375,13 +525,28 @@ def _build_plan(
     )
     active_retrievals = db.scalars(
         select(RetrievalJobRecord.id)
-        .join(RetrievalJobObjectRecord)
+        .join(
+            RetrievalPlanObjectRecord,
+            RetrievalPlanObjectRecord.plan_id == RetrievalJobRecord.plan_id,
+        )
         .where(
-            RetrievalJobObjectRecord.collection_id == collection_id,
-            RetrievalJobObjectRecord.source_store == store,
+            RetrievalPlanObjectRecord.collection_id == collection_id,
+            RetrievalPlanObjectRecord.source_store == store,
             RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
         )
         .order_by(RetrievalJobRecord.id)
+        .limit(_BLOCKER_SAMPLE_LIMIT + 1)
+    ).all()
+    active_plans = db.scalars(
+        select(RetrievalPlanRecord.id)
+        .join(RetrievalPlanObjectRecord)
+        .where(
+            RetrievalPlanObjectRecord.collection_id == collection_id,
+            RetrievalPlanObjectRecord.source_store == store,
+            RetrievalPlanRecord.state.in_({"planning", "ready"}),
+            RetrievalPlanRecord.expires_at > now_text,
+        )
+        .order_by(RetrievalPlanRecord.id)
         .limit(_BLOCKER_SAMPLE_LIMIT + 1)
     ).all()
     copy_jobs = db.execute(
@@ -413,10 +578,13 @@ def _build_plan(
     terminal_retrieval_count = int(
         db.scalar(
             select(func.count(func.distinct(RetrievalJobRecord.id)))
-            .join(RetrievalJobObjectRecord)
+            .join(
+                RetrievalPlanObjectRecord,
+                RetrievalPlanObjectRecord.plan_id == RetrievalJobRecord.plan_id,
+            )
             .where(
-                RetrievalJobObjectRecord.collection_id == collection_id,
-                RetrievalJobObjectRecord.source_store == store,
+                RetrievalPlanObjectRecord.collection_id == collection_id,
+                RetrievalPlanObjectRecord.source_store == store,
                 ~RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
             )
         )
@@ -431,6 +599,11 @@ def _build_plan(
     )
     if len(active_retrievals) > _BLOCKER_SAMPLE_LIMIT:
         blockers.append("additional active retrievals exist; list retrievals for details")
+    blockers.extend(
+        f"retrieval plan is active: {plan_id}" for plan_id in active_plans[:_BLOCKER_SAMPLE_LIMIT]
+    )
+    if len(active_plans) > _BLOCKER_SAMPLE_LIMIT:
+        blockers.append("additional active retrieval plans exist; request a fresh retirement plan")
     blockers.extend(
         f"archive copy is active: {source_store} -> {destination_store}"
         for source_store, destination_store in copy_jobs

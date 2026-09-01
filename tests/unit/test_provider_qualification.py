@@ -1342,16 +1342,42 @@ def test_operator_advances_across_short_restore_invocations(
             assert files == ((42, "file.txt"),)
             assert kwargs["lease_seconds"] == 3 * 24 * 60 * 60
             return {
+                "id": "plan-42",
                 "etag": "plan",
+                "file_count": 1,
                 "lease_seconds": kwargs["lease_seconds"],
                 "requires_restore": True,
-                "objects": [{"source_store": "aws-deep-archive", "read_mode": "restore_required"}],
             }
 
-        def create_retrieval_job(self, files, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
-            assert files == ((42, "file.txt"),)
+        def list_retrieval_plan_files(
+            self,
+            plan_id: str,
+            **kwargs,
+        ) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            assert plan_id == "plan-42"
             assert kwargs["plan_etag"] == "plan"
-            assert kwargs["lease_seconds"] == 3 * 24 * 60 * 60
+            return {
+                "plan_id": plan_id,
+                "etag": kwargs["plan_etag"],
+                "start_ordinal": kwargs["start_ordinal"],
+                "complete": True,
+                "next_ordinal": None,
+                "files": [
+                    {
+                        "collection_id": 42,
+                        "path": "file.txt",
+                        "requires_restore": True,
+                    }
+                ],
+            }
+
+        def create_retrieval_job(
+            self,
+            plan_id: str,
+            **kwargs,
+        ) -> dict[str, object]:  # type: ignore[no-untyped-def]
+            assert plan_id == "plan-42"
+            assert kwargs["plan_etag"] == "plan"
             return {"id": "job-42", "state": "requested"}
 
         def get_retrieval_job(self, job_id: str) -> dict[str, object]:
@@ -1361,7 +1387,6 @@ def test_operator_advances_across_short_restore_invocations(
             return {
                 "id": job_id,
                 "state": "ready",
-                "files": [{"collection_id": 42, "path": "file.txt"}],
             }
 
         def acknowledge_retrieval_job(self, job_id: str) -> dict[str, object]:
@@ -1379,7 +1404,6 @@ def test_operator_advances_across_short_restore_invocations(
             return {
                 "id": job_id,
                 "state": "ready",
-                "files": [{"collection_id": 42, "path": "file.txt"}],
             }
 
     api = _Api()

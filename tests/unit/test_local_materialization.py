@@ -146,6 +146,7 @@ class FakeApi:
         self.downloaded_files: list[str] = []
         self.job_state = "ready"
         self.selection = [(COLLECTION_ID, "notes/one.txt")]
+        self.restore_paths: set[str] = set()
         self.tags = ["docs"]
         self.catalog_revision = 0
 
@@ -237,10 +238,34 @@ class FakeApi:
 
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)
-        return {"etag": "a" * 64}
+        return {
+            "id": "plan-1",
+            "etag": "a" * 64,
+            "file_count": len(self.selection),
+            "requires_restore": False,
+        }
 
-    def create_retrieval_job(self, files, **_kwargs: object) -> dict[str, object]:
-        assert list(files) == self.selection
+    def list_retrieval_plan_files(self, plan_id: str, **kwargs: object) -> dict[str, object]:
+        assert plan_id == "plan-1"
+        selected = set(self.selection)
+        return {
+            "plan_id": plan_id,
+            "etag": kwargs["plan_etag"],
+            "start_ordinal": kwargs["start_ordinal"],
+            "files": [
+                {
+                    **current,
+                    "requires_restore": str(current["path"]) in self.restore_paths,
+                }
+                for current in JOB_FILES
+                if (int(current["collection_id"]), str(current["path"])) in selected
+            ],
+            "complete": True,
+            "next_ordinal": None,
+        }
+
+    def create_retrieval_job(self, plan_id: str, **_kwargs: object) -> dict[str, object]:
+        assert plan_id == "plan-1"
         return self._job()
 
     def get_retrieval_job(self, job_id: str) -> dict[str, object]:
@@ -302,44 +327,32 @@ class FakeApi:
 class CacheMissApi(FakeApi):
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)
+        self.restore_paths = {path for _collection_id, path in self.selection}
         return {
+            "id": "plan-1",
             "etag": "a" * 64,
+            "file_count": len(self.selection),
             "requires_restore": True,
-            "objects": [
-                {
-                    "collection_id": collection_id,
-                    "read_mode": "restore_required",
-                    "placements": [{"path": path}],
-                }
-                for collection_id, path in self.selection
-            ],
         }
 
-    def create_retrieval_job(self, files, **_kwargs: object) -> dict[str, object]:
-        raise AssertionError(
-            f"opportunistic-only sync must not create a restore job: {list(files)}"
-        )
+    def create_retrieval_job(self, plan_id: str, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError(f"opportunistic-only sync must not create a restore job: {plan_id}")
 
 
 class PartialCacheApi(CacheMissApi):
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)
         cold = [current for current in self.selection if current[1] == "notes/one.txt"]
+        self.restore_paths = {path for _collection_id, path in cold}
         return {
+            "id": "plan-1",
             "etag": "a" * 64,
+            "file_count": len(self.selection),
             "requires_restore": bool(cold),
-            "objects": [
-                {
-                    "collection_id": collection_id,
-                    "read_mode": "restore_required",
-                    "placements": [{"path": path}],
-                }
-                for collection_id, path in cold
-            ],
         }
 
-    def create_retrieval_job(self, files, **_kwargs: object) -> dict[str, object]:
-        assert list(files) == self.selection
+    def create_retrieval_job(self, plan_id: str, **_kwargs: object) -> dict[str, object]:
+        assert plan_id == "plan-1"
         return self._job()
 
 

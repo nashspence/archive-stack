@@ -295,14 +295,51 @@ CREATE TABLE retrieval_cache_accounting_reconciliations (
 	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
 );
 
+CREATE TABLE retrieval_plans (
+	id VARCHAR NOT NULL,
+	app VARCHAR NOT NULL,
+	initiated_by_key_id VARCHAR,
+	idempotency_key VARCHAR NOT NULL,
+	creation_identity_sha256 VARCHAR(64) NOT NULL,
+	state VARCHAR NOT NULL,
+	request_json TEXT NOT NULL,
+	lease_seconds BIGINT NOT NULL,
+	restore_policy VARCHAR NOT NULL,
+	created_at VARCHAR NOT NULL,
+	ready_at VARCHAR,
+	expires_at VARCHAR NOT NULL,
+	failure TEXT,
+	next_file_order INTEGER NOT NULL,
+	next_placement_sequence VARCHAR(64) NOT NULL,
+	object_count VARCHAR(64) NOT NULL,
+	retrieval_bytes VARCHAR(64) NOT NULL,
+	requires_restore BOOLEAN NOT NULL,
+	file_commitment_sha256 VARCHAR(64) NOT NULL,
+	segment_commitment_sha256 VARCHAR(64) NOT NULL,
+	etag VARCHAR(64),
+	PRIMARY KEY (id),
+	CONSTRAINT uq_retrieval_plans_key_idempotency UNIQUE (app, initiated_by_key_id, idempotency_key),
+	CONSTRAINT ck_retrieval_plans_state CHECK (state IN ('planning','ready','consumed','expired','failed')),
+	CONSTRAINT ck_retrieval_plans_lease CHECK (lease_seconds > 0),
+	CONSTRAINT ck_retrieval_plans_restore_policy CHECK (restore_policy IN ('allow','never')),
+	CONSTRAINT ck_retrieval_plans_file_order CHECK (next_file_order >= 0),
+	CONSTRAINT ck_retrieval_plans_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_retrieval_plans_file_commitment_sha256_hex CHECK (length(file_commitment_sha256) = 64 AND lower(file_commitment_sha256) = file_commitment_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(file_commitment_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_retrieval_plans_segment_commitment_sha256_hex CHECK (length(segment_commitment_sha256) = 64 AND lower(segment_commitment_sha256) = segment_commitment_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(segment_commitment_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_retrieval_plans_etag_hex CHECK (etag IS NULL OR length(etag) = 64 AND lower(etag) = etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+);
+
+CREATE INDEX ix_retrieval_plans_owner ON retrieval_plans (app, initiated_by_key_id, id);
+
 CREATE TABLE retrieval_jobs (
 	id VARCHAR NOT NULL,
+	plan_id VARCHAR NOT NULL,
 	app VARCHAR NOT NULL,
 	initiated_by_key_id VARCHAR,
 	event_context_json TEXT,
 	state VARCHAR NOT NULL,
 	plan_etag VARCHAR(64) NOT NULL,
-	constraints_json TEXT NOT NULL,
+	lease_seconds BIGINT NOT NULL,
 	created_at VARCHAR NOT NULL,
 	requested_at VARCHAR,
 	restore_requested_at VARCHAR,
@@ -313,8 +350,12 @@ CREATE TABLE retrieval_jobs (
 	canceled_at VARCHAR,
 	failure TEXT,
 	PRIMARY KEY (id),
+	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id),
+	UNIQUE (id, plan_id),
 	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested','ready','completed','canceled','expired','failed')),
 	CONSTRAINT ck_retrieval_jobs_plan_etag CHECK (length(plan_etag) = 64),
+	CONSTRAINT ck_retrieval_jobs_lease CHECK (lease_seconds > 0),
+	UNIQUE (plan_id),
 	CONSTRAINT ck_retrieval_jobs_plan_etag_hex CHECK (length(plan_etag) = 64 AND lower(plan_etag) = plan_etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(plan_etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
@@ -1206,18 +1247,25 @@ CREATE TABLE collection_upload_raw_part_digests (
 	CONSTRAINT ck_collection_upload_raw_part_digests_sha256_hex CHECK (length(sha256) = 64 AND lower(sha256) = sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
-CREATE TABLE retrieval_job_files (
-	job_id VARCHAR NOT NULL,
+CREATE TABLE retrieval_plan_files (
+	plan_id VARCHAR NOT NULL,
+	file_order INTEGER NOT NULL,
 	collection_id BIGINT NOT NULL,
 	path VARCHAR NOT NULL,
-	file_order INTEGER NOT NULL,
-	PRIMARY KEY (job_id, collection_id, path),
-	FOREIGN KEY(job_id) REFERENCES retrieval_jobs (id) ON DELETE CASCADE,
+	bytes BIGINT NOT NULL,
+	sha256 VARCHAR(64) NOT NULL,
+	source_store VARCHAR NOT NULL,
+	requires_restore BOOLEAN NOT NULL,
+	PRIMARY KEY (plan_id, file_order),
+	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id) ON DELETE CASCADE,
 	FOREIGN KEY(collection_id, path) REFERENCES collection_files (collection_id, path),
-	CONSTRAINT ck_retrieval_job_files_order CHECK (file_order >= 0)
+	UNIQUE (plan_id, collection_id, path),
+	CONSTRAINT ck_retrieval_plan_files_order CHECK (file_order >= 0),
+	CONSTRAINT ck_retrieval_plan_files_bytes CHECK (bytes >= 0),
+	CONSTRAINT ck_retrieval_plan_files_sha256_hex CHECK (length(sha256) = 64 AND lower(sha256) = sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
-CREATE INDEX ix_retrieval_job_files_order ON retrieval_job_files (job_id, file_order);
+CREATE INDEX ix_retrieval_plan_files_collection ON retrieval_plan_files (collection_id, plan_id);
 
 CREATE TABLE archive_copy_object_uploads (
 	collection_id BIGINT NOT NULL,
@@ -1340,22 +1388,66 @@ CREATE INDEX ix_retrieval_cache_objects_store_cleanup ON retrieval_cache_objects
 
 CREATE INDEX ix_retrieval_cache_objects_verified ON retrieval_cache_objects (verified_at, collection_id, source_store, object_id);
 
-CREATE TABLE retrieval_job_objects (
-	job_id VARCHAR NOT NULL,
+CREATE TABLE retrieval_plan_objects (
+	plan_id VARCHAR NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
 	collection_id BIGINT NOT NULL,
 	source_store VARCHAR NOT NULL,
 	object_id VARCHAR NOT NULL,
-	object_order INTEGER NOT NULL,
+	kind VARCHAR NOT NULL,
+	plaintext_bytes BIGINT NOT NULL,
+	stored_bytes BIGINT NOT NULL,
+	sha256 VARCHAR(64),
 	read_mode VARCHAR NOT NULL,
 	cache_store VARCHAR,
-	PRIMARY KEY (job_id, collection_id, source_store, object_id),
-	FOREIGN KEY(job_id) REFERENCES retrieval_jobs (id) ON DELETE CASCADE,
+	retrieval_bytes VARCHAR(64) NOT NULL,
+	PRIMARY KEY (plan_id, object_order),
+	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id) ON DELETE CASCADE,
 	FOREIGN KEY(collection_id, source_store, object_id) REFERENCES collection_archive_objects (collection_id, store, object_id),
-	CONSTRAINT ck_retrieval_job_objects_order CHECK (object_order >= 0),
-	CONSTRAINT ck_retrieval_job_objects_read_mode CHECK (read_mode IN ('immediate','restore_required','cache'))
+	UNIQUE (plan_id, collection_id, source_store, object_id),
+	CONSTRAINT ck_retrieval_plan_objects_kind CHECK (kind IN ('pack','segment')),
+	CONSTRAINT ck_retrieval_plan_objects_read_mode CHECK (read_mode IN ('immediate','restore_required','cache')),
+	CONSTRAINT ck_retrieval_plan_objects_plaintext CHECK (plaintext_bytes >= 0),
+	CONSTRAINT ck_retrieval_plan_objects_stored CHECK (stored_bytes > 0),
+	CONSTRAINT ck_retrieval_plan_objects_sha256_hex CHECK (sha256 IS NULL OR length(sha256) = 64 AND lower(sha256) = sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
-CREATE INDEX ix_retrieval_job_objects_order ON retrieval_job_objects (job_id, object_order);
+CREATE INDEX ix_retrieval_plan_objects_copy ON retrieval_plan_objects (collection_id, source_store, plan_id);
+
+CREATE TABLE retrieval_plan_placements (
+	plan_id VARCHAR NOT NULL,
+	file_order INTEGER NOT NULL,
+	sequence VARCHAR(64) NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	file_offset BIGINT NOT NULL,
+	object_offset BIGINT NOT NULL,
+	bytes BIGINT NOT NULL,
+	member VARCHAR,
+	PRIMARY KEY (plan_id, file_order, sequence),
+	FOREIGN KEY(plan_id, file_order) REFERENCES retrieval_plan_files (plan_id, file_order) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_plan_placements_file_offset CHECK (file_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_object_offset CHECK (object_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_bytes CHECK (bytes >= 0)
+);
+
+CREATE INDEX ix_retrieval_plan_placements_object ON retrieval_plan_placements (plan_id, object_order);
+
+CREATE TABLE retrieval_job_object_progress (
+	job_id VARCHAR NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	plan_id VARCHAR NOT NULL,
+	state VARCHAR NOT NULL,
+	prepare_requested_at VARCHAR,
+	next_poll_at VARCHAR NOT NULL,
+	cache_store VARCHAR,
+	PRIMARY KEY (job_id, object_order),
+	FOREIGN KEY(job_id, plan_id) REFERENCES retrieval_jobs (id, plan_id) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_job_object_progress_state CHECK (state IN ('preparing','requested','ready'))
+);
+
+CREATE INDEX ix_retrieval_job_object_progress_due ON retrieval_job_object_progress (state, next_poll_at, job_id);
 
 CREATE TABLE collection_processing_dispositions (
 	claim_id VARCHAR(64) NOT NULL,

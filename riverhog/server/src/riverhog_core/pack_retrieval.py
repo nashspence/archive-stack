@@ -276,8 +276,33 @@ class PackMemberRangeReader:
         source: PackVolumeRetrievalSource,
         member: PackMemberRetrievalSource,
     ) -> Iterator[bytes]:
+        yield from self.iter_member_range(
+            source,
+            member,
+            offset=0,
+            size=member.bytes,
+        )
+
+    def iter_member_range(
+        self,
+        source: PackVolumeRetrievalSource,
+        member: PackMemberRetrievalSource,
+        *,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        """Stream one exact logical member range with bounded age framing overhead."""
+
+        if offset < 0 or size < 0 or offset + size > member.bytes:
+            raise ValueError("pack member requested range is invalid")
         started = time.perf_counter()
-        plan = plan_pack_range_retrieval(source, (member,), policy=self._policy)
+        requested = PackMemberRetrievalSource(
+            path=member.path,
+            bytes=size,
+            sha256=member.sha256,
+            data_offset=member.data_offset + offset,
+        )
+        plan = plan_pack_range_retrieval(source, (requested,), policy=self._policy)
         if not plan.members:
             return
         current = plan.members[0]
@@ -375,8 +400,10 @@ class PackMemberRangeReader:
                     downstream_started = time.perf_counter()
                     yield chunk
                     downstream_seconds += time.perf_counter() - downstream_started
-        if emitted != current.bytes or digest.hexdigest() != current.sha256:
-            raise ValueError(f"pack member range verification failed: {current.path}")
+        if emitted != current.bytes:
+            raise ValueError(f"pack member range byte count mismatch: {current.path}")
+        if offset == 0 and size == member.bytes and digest.hexdigest() != member.sha256:
+            raise ValueError(f"pack member verification failed: {current.path}")
         if self._timing_observer is not None:
             self._timing_observer(
                 TransferTiming(

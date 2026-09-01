@@ -9,7 +9,7 @@ from typing import cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX
-from sqlalchemy import Table, and_, delete, func, or_, select, update
+from sqlalchemy import Table, and_, case, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
@@ -36,9 +36,12 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
-    RetrievalJobFileRecord,
-    RetrievalJobObjectRecord,
+    RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
+    RetrievalPlanFileRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanPlacementRecord,
+    RetrievalPlanRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
@@ -444,42 +447,89 @@ class SqlAlchemyCollectionDeletionService:
 
     def _delete_retrieval_references(self, collection_id: int) -> bool:
         with session_scope(self._session_factory) as session:
-            object_rows = list(
+            plan_id = session.scalar(
+                select(RetrievalPlanFileRecord.plan_id)
+                .where(RetrievalPlanFileRecord.collection_id == collection_id)
+                .order_by(RetrievalPlanFileRecord.plan_id)
+                .limit(1)
+            )
+            if plan_id is None:
+                return False
+            progress_rows = list(
                 session.scalars(
-                    select(RetrievalJobObjectRecord)
-                    .where(RetrievalJobObjectRecord.collection_id == collection_id)
+                    select(RetrievalJobObjectProgressRecord)
+                    .where(RetrievalJobObjectProgressRecord.plan_id == plan_id)
                     .order_by(
-                        RetrievalJobObjectRecord.job_id,
-                        RetrievalJobObjectRecord.source_store,
-                        RetrievalJobObjectRecord.object_order,
+                        RetrievalJobObjectProgressRecord.job_id,
+                        RetrievalJobObjectProgressRecord.object_order,
                     )
                     .limit(_CATALOG_DELETE_BATCH)
                 )
             )
+            if progress_rows:
+                for progress in progress_rows:
+                    session.delete(progress)
+                return True
+            placement_rows = list(
+                session.scalars(
+                    select(RetrievalPlanPlacementRecord)
+                    .where(RetrievalPlanPlacementRecord.plan_id == plan_id)
+                    .order_by(
+                        RetrievalPlanPlacementRecord.file_order,
+                        RetrievalPlanPlacementRecord.sequence,
+                    )
+                    .limit(_CATALOG_DELETE_BATCH)
+                )
+            )
+            if placement_rows:
+                for placement in placement_rows:
+                    session.delete(placement)
+                return True
+            object_rows = list(
+                session.scalars(
+                    select(RetrievalPlanObjectRecord)
+                    .where(RetrievalPlanObjectRecord.plan_id == plan_id)
+                    .order_by(RetrievalPlanObjectRecord.object_order)
+                    .limit(_CATALOG_DELETE_BATCH)
+                )
+            )
             if object_rows:
-                job_ids = {object_row.job_id for object_row in object_rows}
                 for object_row in object_rows:
                     session.delete(object_row)
-                session.flush()
-                _delete_empty_retrieval_jobs(session, job_ids)
                 return True
             file_rows = list(
                 session.scalars(
-                    select(RetrievalJobFileRecord)
-                    .where(RetrievalJobFileRecord.collection_id == collection_id)
+                    select(RetrievalPlanFileRecord)
+                    .where(RetrievalPlanFileRecord.plan_id == plan_id)
                     .order_by(
-                        RetrievalJobFileRecord.job_id,
-                        RetrievalJobFileRecord.file_order,
+                        case(
+                            (RetrievalPlanFileRecord.collection_id == collection_id, 1),
+                            else_=0,
+                        ),
+                        RetrievalPlanFileRecord.file_order,
                     )
                     .limit(_CATALOG_DELETE_BATCH)
                 )
             )
             if file_rows:
-                job_ids = {file_row.job_id for file_row in file_rows}
                 for file_row in file_rows:
                     session.delete(file_row)
                 session.flush()
-                _delete_empty_retrieval_jobs(session, job_ids)
+                has_files = session.scalar(
+                    select(RetrievalPlanFileRecord.plan_id)
+                    .where(RetrievalPlanFileRecord.plan_id == plan_id)
+                    .limit(1)
+                )
+                if has_files is None:
+                    job = session.scalar(
+                        select(RetrievalJobRecord).where(RetrievalJobRecord.plan_id == plan_id)
+                    )
+                    if job is not None:
+                        session.delete(job)
+                        session.flush()
+                    plan = session.get(RetrievalPlanRecord, plan_id)
+                    if plan is not None:
+                        session.delete(plan)
                 return True
         return False
 
@@ -763,9 +813,12 @@ def _active_blockers(
     retrieval_jobs = list(
         session.scalars(
             select(RetrievalJobRecord.id)
-            .join(RetrievalJobFileRecord)
+            .join(
+                RetrievalPlanFileRecord,
+                RetrievalPlanFileRecord.plan_id == RetrievalJobRecord.plan_id,
+            )
             .where(
-                RetrievalJobFileRecord.collection_id == collection_id,
+                RetrievalPlanFileRecord.collection_id == collection_id,
                 RetrievalJobRecord.state.in_(_ACTIVE_RETRIEVAL_STATES),
             )
             .order_by(RetrievalJobRecord.id)
@@ -777,6 +830,25 @@ def _active_blockers(
             retrieval_jobs,
             render=lambda job_id: f"retrieval job is active: {job_id}",
             overflow="additional active retrieval jobs exist; list retrievals for details",
+        )
+    )
+    active_plans = list(
+        session.scalars(
+            select(RetrievalPlanRecord.id)
+            .join(RetrievalPlanFileRecord)
+            .where(
+                RetrievalPlanFileRecord.collection_id == collection_id,
+                RetrievalPlanRecord.state.in_({"planning", "ready"}),
+            )
+            .order_by(RetrievalPlanRecord.id)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
+        )
+    )
+    blockers.extend(
+        _bounded_blocker_sample(
+            active_plans,
+            render=lambda plan_id: f"retrieval plan is active: {plan_id}",
+            overflow="additional active retrieval plans exist; request fresh deletion plan",
         )
     )
     copy_jobs = list(
@@ -887,24 +959,6 @@ def _metadata_identity(record: CollectionMetadataPublicationRecord) -> ArchiveOb
         stored_sha256=digest,
         revision=record.revision,
     )
-
-
-def _delete_empty_retrieval_jobs(session: Session, job_ids: set[str]) -> None:
-    for job_id in sorted(job_ids):
-        has_files = session.scalar(
-            select(RetrievalJobFileRecord.job_id)
-            .where(RetrievalJobFileRecord.job_id == job_id)
-            .limit(1)
-        )
-        has_objects = session.scalar(
-            select(RetrievalJobObjectRecord.job_id)
-            .where(RetrievalJobObjectRecord.job_id == job_id)
-            .limit(1)
-        )
-        if has_files is None and has_objects is None:
-            job = session.get(RetrievalJobRecord, job_id)
-            if job is not None:
-                session.delete(job)
 
 
 @cache

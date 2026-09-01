@@ -195,3 +195,33 @@ def test_retrieval_restore_poll_and_cache_cleanup_have_independent_cadences() ->
             await cache
 
     asyncio.run(exercise())
+
+
+def test_retrieval_restore_reaper_drains_restartable_steps_before_idle_interval() -> None:
+    async def exercise() -> None:
+        process_due = Mock(side_effect=[10, 1, 0])
+        container = cast(
+            ServiceContainer,
+            SimpleNamespace(retrieval=SimpleNamespace(process_due=process_due)),
+        )
+        task = asyncio.create_task(
+            api_app._run_retrieval_restore_reaper(
+                lambda: container,
+                poll_interval=timedelta(days=1),
+            )
+        )
+        for _ in range(100):
+            if process_due.call_count >= 3:
+                break
+            await asyncio.sleep(0.001)
+        assert process_due.call_count == 3
+        assert [current.kwargs for current in process_due.call_args_list] == [
+            {"limit": 10},
+            {"limit": 10},
+            {"limit": 10},
+        ]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())

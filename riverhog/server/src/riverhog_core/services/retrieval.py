@@ -6,12 +6,13 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
-from datetime import timedelta
+from collections.abc import Iterator, Sequence
+from datetime import datetime, timedelta
 from typing import Any, Literal, cast
 
 from http_api_contracts import canonical_json_bytes, closed_literal_values
 from riverhog_protocol import (
+    RETRIEVAL_FILE_BATCH_MAX,
     ImmutableFileIdentityDocument,
     PortableCollectionFile,
     PortableCollectionHeader,
@@ -26,9 +27,11 @@ from riverhog_protocol import (
 from riverhog_protocol.errors import (
     BadRequest,
     Conflict,
+    InvalidRange,
     InvalidState,
     NotFound,
     PreconditionFailed,
+    RiverhogError,
 )
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -38,6 +41,7 @@ from riverhog_protocol.paths import (
 )
 from sqlalchemy import case, delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -60,9 +64,12 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
-    RetrievalJobFileRecord,
-    RetrievalJobObjectRecord,
+    RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
+    RetrievalPlanFileRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanPlacementRecord,
+    RetrievalPlanRecord,
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.domain.archive import StoredArchivePart
@@ -74,14 +81,10 @@ from riverhog_core.pack_retrieval import (
     plan_pack_range_retrieval,
 )
 from riverhog_core.ports.archive_objects import ArchiveObjectRangeStore
-from riverhog_core.ports.archive_store import ArchiveObjectIdentity
+from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
-from riverhog_core.raw_retrieval import (
-    RawFileRangeReader,
-    RawVolumeRangeReader,
-    RawVolumeRetrievalSource,
-)
+from riverhog_core.raw_retrieval import RawVolumeRangeReader, RawVolumeRetrievalSource
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.lifecycle_events import (
@@ -99,6 +102,14 @@ from riverhog_core.throughput import (
 
 _DATA_KINDS = {"pack", "segment"}
 _INVENTORY_PAGE_LIMIT = 1000
+_RETRIEVAL_PLAN_SEGMENT_BATCH = 32
+_RETRIEVAL_PLAN_FILE_PAGE_MAX = 100
+_RETRIEVAL_PLAN_INITIAL_COMMITMENT = hashlib.sha256(
+    b"riverhog-retrieval-plan-segments/v1\x00"
+).hexdigest()
+_RETRIEVAL_PLAN_INITIAL_FILE_COMMITMENT = hashlib.sha256(
+    b"riverhog-retrieval-plan-files/v1\x00"
+).hexdigest()
 
 
 def _encode_inventory_cursor(
@@ -470,12 +481,16 @@ class SqlAlchemyRetrievalService:
                 RetrievalCacheLeaseRecord.expires_at > now,
             )
         )
+        active_retrieval = _active_retrieval_cache_reference(now)
         with session_scope(self._session_factory) as session:
             objects, stored_bytes, protected = session.execute(
                 select(
                     func.count(),
                     func.coalesce(func.sum(RetrievalCacheObjectRecord.stored_bytes), 0),
-                    func.coalesce(func.sum(case((active_lease, 1), else_=0)), 0),
+                    func.coalesce(
+                        func.sum(case((active_lease | active_retrieval, 1), else_=0)),
+                        0,
+                    ),
                 ).where(visible, RetrievalCacheObjectRecord.state == "ready")
             ).one()
             accounting = {
@@ -671,23 +686,18 @@ class SqlAlchemyRetrievalService:
         if not normalized_store or not normalized_object:
             raise BadRequest("retrieval cache object identity is required")
         now = format_utc_timestamp(utc_now())
-        lease_summary = _active_cache_lease_summary(now).subquery()
+        protected_until, new_archive_expires_at, retrieval_job_leases = _cache_lease_projections(
+            now
+        )
         with session_scope(self._session_factory) as session:
             require_collection_access(session, principal, CATALOG_READ, normalized_id)
             row = session.execute(
                 select(
                     RetrievalCacheObjectRecord,
-                    lease_summary.c.protected_until,
-                    lease_summary.c.new_archive_expires_at,
-                    lease_summary.c.retrieval_job_leases,
-                )
-                .outerjoin(
-                    lease_summary,
-                    (lease_summary.c.source_store == RetrievalCacheObjectRecord.source_store)
-                    & (lease_summary.c.collection_id == RetrievalCacheObjectRecord.collection_id)
-                    & (lease_summary.c.object_id == RetrievalCacheObjectRecord.object_id),
-                )
-                .where(
+                    protected_until.label("protected_until"),
+                    new_archive_expires_at.label("new_archive_expires_at"),
+                    retrieval_job_leases.label("retrieval_job_leases"),
+                ).where(
                     RetrievalCacheObjectRecord.source_store == normalized_store,
                     RetrievalCacheObjectRecord.collection_id == normalized_id,
                     RetrievalCacheObjectRecord.object_id == normalized_object,
@@ -715,17 +725,40 @@ class SqlAlchemyRetrievalService:
         self,
         files: Sequence[tuple[int, str]],
         *,
+        idempotency_key: str | None = None,
         lease: timedelta | None = None,
         restore_policy: str = "allow",
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
+        normalized_idempotency_key = _normalize_plan_idempotency_key(
+            uuid.uuid4().hex if idempotency_key is None else idempotency_key
+        )
         normalized_restore_policy = _normalize_restore_policy(restore_policy)
         requested_lease = lease or self._config.retrieval_default_lease
         if requested_lease.total_seconds() <= 0:
             raise BadRequest("retrieval lease must be positive")
         if requested_lease > self._config.retrieval_max_lease:
             raise BadRequest("retrieval lease exceeds the configured maximum")
+        plan_id = uuid.uuid4().hex
+        now = utc_now()
+        owner_app = principal.app if principal is not None else ""
+        owner_key_id = principal.key_id if principal is not None else None
+        request_json = json.dumps(
+            [{"collection_id": collection_id, "path": path} for collection_id, path in normalized],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        creation_identity_sha256 = hashlib.sha256(
+            b"riverhog-retrieval-plan-request/v1\x00"
+            + canonical_json_bytes(
+                {
+                    "files": json.loads(request_json),
+                    "lease_seconds": int(requested_lease.total_seconds()),
+                    "restore_policy": normalized_restore_policy,
+                }
+            )
+        ).hexdigest()
         with session_scope(self._session_factory) as session:
             for collection_id, path in normalized:
                 require_collection_access(
@@ -735,107 +768,436 @@ class SqlAlchemyRetrievalService:
                     collection_id,
                 )
                 require_artifact_scope(session, principal, collection_id, path)
-            payload = self._build_plan(
-                session,
-                normalized,
-                requested_lease,
-                restore_policy=normalized_restore_policy,
+            existing = session.scalar(
+                select(RetrievalPlanRecord).where(
+                    RetrievalPlanRecord.app == owner_app,
+                    RetrievalPlanRecord.initiated_by_key_id == owner_key_id,
+                    RetrievalPlanRecord.idempotency_key == normalized_idempotency_key,
+                )
             )
-        canonical = _canonical_json(payload)
+            if existing is not None:
+                if existing.creation_identity_sha256 != creation_identity_sha256:
+                    raise Conflict("retrieval plan idempotency identity changed")
+                plan_id = existing.id
+            else:
+                session.add(
+                    RetrievalPlanRecord(
+                        id=plan_id,
+                        app=owner_app,
+                        initiated_by_key_id=owner_key_id,
+                        idempotency_key=normalized_idempotency_key,
+                        creation_identity_sha256=creation_identity_sha256,
+                        state="planning",
+                        request_json=request_json,
+                        lease_seconds=int(requested_lease.total_seconds()),
+                        restore_policy=normalized_restore_policy,
+                        created_at=format_utc_timestamp(now),
+                        expires_at=format_utc_timestamp(
+                            now + self._config.retrieval_pending_timeout
+                        ),
+                        file_commitment_sha256=_RETRIEVAL_PLAN_INITIAL_FILE_COMMITMENT,
+                        segment_commitment_sha256=_RETRIEVAL_PLAN_INITIAL_COMMITMENT,
+                    )
+                )
+        return self.advance_plan(
+            app=owner_app,
+            key_id=owner_key_id,
+            plan_id=plan_id,
+        )
+
+    def get_plan(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        key_id: str | None = None,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            plan = self._require_plan(session, app=app, key_id=key_id, plan_id=plan_id)
+            self._expire_plan_if_due(plan)
+            return _plan_payload(plan)
+
+    def advance_plan(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        key_id: str | None = None,
+    ) -> dict[str, object]:
+        with session_scope(self._session_factory) as session:
+            plan = self._require_plan(session, app=app, key_id=key_id, plan_id=plan_id, lock=True)
+            self._expire_plan_if_due(plan)
+            if plan.state != "planning":
+                return _plan_payload(plan)
+            try:
+                self._advance_plan_record(session, plan)
+            except RiverhogError as exc:
+                plan.state = "failed"
+                plan.failure = str(exc) or exc.__class__.__name__
+            return _plan_payload(plan)
+
+    def list_plan_files(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        etag: str,
+        start_ordinal: int,
+        page_size: int,
+        key_id: str | None = None,
+    ) -> dict[str, object]:
+        if start_ordinal < 0 or start_ordinal > RETRIEVAL_FILE_BATCH_MAX:
+            raise BadRequest("retrieval plan file ordinal is invalid")
+        if page_size < 1 or page_size > _RETRIEVAL_PLAN_FILE_PAGE_MAX:
+            raise BadRequest("retrieval plan file page size is invalid")
+        with read_snapshot(self._session_factory) as session:
+            plan = self._require_plan(session, app=app, key_id=key_id, plan_id=plan_id)
+            if plan.state not in {"ready", "consumed"} or plan.etag is None:
+                raise InvalidState("retrieval plan is not sealed")
+            if etag != plan.etag:
+                raise PreconditionFailed("retrieval plan identity changed")
+            rows = list(
+                session.scalars(
+                    select(RetrievalPlanFileRecord)
+                    .where(
+                        RetrievalPlanFileRecord.plan_id == plan_id,
+                        RetrievalPlanFileRecord.file_order >= start_ordinal,
+                    )
+                    .order_by(RetrievalPlanFileRecord.file_order)
+                    .limit(page_size + 1)
+                )
+            )
+        selected = rows[:page_size]
+        complete = len(rows) <= page_size
         return {
-            **payload,
-            "etag": hashlib.sha256(canonical).hexdigest(),
+            "format": "riverhog-retrieval-plan-files/v1",
+            "plan_id": plan_id,
+            "etag": etag,
+            "start_ordinal": start_ordinal,
+            "next_ordinal": (selected[-1].file_order + 1 if selected and not complete else None),
+            "complete": complete,
+            "files": [_plan_file_payload(current) for current in selected],
         }
+
+    def _advance_plan_record(self, session: Session, plan: RetrievalPlanRecord) -> None:
+        requested = cast(list[dict[str, object]], json.loads(plan.request_json))
+        remaining = _RETRIEVAL_PLAN_SEGMENT_BATCH
+        while remaining and plan.next_file_order < len(requested):
+            current_ref = requested[plan.next_file_order]
+            collection_id = int(str(current_ref["collection_id"]))
+            path = str(current_ref["path"])
+            plan_file = session.get(
+                RetrievalPlanFileRecord,
+                (plan.id, plan.next_file_order),
+            )
+            if plan_file is None:
+                if session.get(CollectionDeletionRecord, collection_id) is not None:
+                    raise Conflict(f"collection deletion is active: {collection_id}")
+                file_record = session.get(CollectionFileRecord, (collection_id, path))
+                if file_record is None:
+                    raise NotFound(f"file not found: {collection_id}/{path}")
+                copy = self._select_copy(session, collection_id)
+                plan_file = RetrievalPlanFileRecord(
+                    plan_id=plan.id,
+                    file_order=plan.next_file_order,
+                    collection_id=collection_id,
+                    path=path,
+                    bytes=file_record.bytes,
+                    sha256=file_record.sha256,
+                    source_store=copy.store,
+                    requires_restore=False,
+                )
+                session.add(plan_file)
+                plan.file_commitment_sha256 = _chain_commitment(
+                    plan.file_commitment_sha256,
+                    {
+                        "collection_id": collection_id,
+                        "path": path,
+                        "bytes": file_record.bytes,
+                        "sha256": file_record.sha256,
+                    },
+                )
+                session.flush()
+
+            rows = list(
+                session.scalars(
+                    select(CollectionArchiveFileObjectRecord)
+                    .where(
+                        CollectionArchiveFileObjectRecord.collection_id == collection_id,
+                        CollectionArchiveFileObjectRecord.store == plan_file.source_store,
+                        CollectionArchiveFileObjectRecord.path == path,
+                        CollectionArchiveFileObjectRecord.sequence >= plan.next_placement_sequence,
+                    )
+                    .order_by(CollectionArchiveFileObjectRecord.sequence)
+                    .limit(remaining + 1)
+                )
+            )
+            if not rows:
+                raise InvalidState(f"archive placement is missing: {collection_id}/{path}")
+            selected = rows[:remaining]
+            has_more = len(rows) > remaining
+            object_by_identity: dict[tuple[int, str, str], RetrievalPlanObjectRecord] = {}
+            previous_placement = session.scalar(
+                select(RetrievalPlanPlacementRecord)
+                .where(
+                    RetrievalPlanPlacementRecord.plan_id == plan.id,
+                    RetrievalPlanPlacementRecord.file_order == plan_file.file_order,
+                )
+                .order_by(RetrievalPlanPlacementRecord.sequence.desc())
+                .limit(1)
+            )
+            expected_file_offset = (
+                0
+                if previous_placement is None
+                else previous_placement.file_offset + previous_placement.bytes
+            )
+            previous_sequence: int | None = None
+            for placement in selected:
+                if (
+                    previous_sequence is not None and placement.sequence <= previous_sequence
+                ) or placement.file_offset != expected_file_offset:
+                    raise InvalidState("retrieval plan placement order is not canonical")
+                previous_sequence = placement.sequence
+                expected_file_offset += placement.bytes
+                identity = (collection_id, plan_file.source_store, placement.object_id)
+                planned_object = object_by_identity.get(identity)
+                if planned_object is None:
+                    planned_object = session.scalar(
+                        select(RetrievalPlanObjectRecord).where(
+                            RetrievalPlanObjectRecord.plan_id == plan.id,
+                            RetrievalPlanObjectRecord.collection_id == collection_id,
+                            RetrievalPlanObjectRecord.source_store == plan_file.source_store,
+                            RetrievalPlanObjectRecord.object_id == placement.object_id,
+                        )
+                    )
+                if planned_object is None:
+                    object_record = session.get(
+                        CollectionArchiveObjectRecord,
+                        identity,
+                    )
+                    if object_record is None or object_record.kind not in _DATA_KINDS:
+                        raise InvalidState("retrieval plan archive object is missing")
+                    cached = session.get(
+                        RetrievalCacheObjectRecord,
+                        (plan_file.source_store, collection_id, placement.object_id),
+                    )
+                    if cached is not None and cached.state != "ready":
+                        cached = None
+                    read_mode = (
+                        "cache"
+                        if cached is not None
+                        else self._archive_stores.require(plan_file.source_store).store.read_mode()
+                    )
+                    planned_object = RetrievalPlanObjectRecord(
+                        plan_id=plan.id,
+                        object_order=plan.object_count,
+                        collection_id=collection_id,
+                        source_store=plan_file.source_store,
+                        object_id=object_record.object_id,
+                        kind=object_record.kind,
+                        plaintext_bytes=object_record.plaintext_bytes,
+                        stored_bytes=object_record.stored_bytes,
+                        sha256=object_record.sha256,
+                        read_mode=read_mode,
+                        cache_store=cached.cache_store if cached is not None else None,
+                        retrieval_bytes=0,
+                    )
+                    session.add(planned_object)
+                    object_by_identity[identity] = planned_object
+                    plan.object_count += 1
+                    if read_mode == "restore_required":
+                        plan.requires_restore = True
+                        plan.retrieval_bytes += object_record.stored_bytes
+                    session.flush()
+                if planned_object.read_mode == "restore_required":
+                    plan_file.requires_restore = True
+
+                retrieval_bytes = self._placement_retrieval_bytes(
+                    session,
+                    planned_object=planned_object,
+                    plan_file=plan_file,
+                    placement=placement,
+                )
+                planned_object.retrieval_bytes += retrieval_bytes
+                plan.retrieval_bytes += retrieval_bytes
+                session.add(
+                    RetrievalPlanPlacementRecord(
+                        plan_id=plan.id,
+                        file_order=plan_file.file_order,
+                        sequence=placement.sequence,
+                        object_order=planned_object.object_order,
+                        file_offset=placement.file_offset,
+                        object_offset=placement.object_offset,
+                        bytes=placement.bytes,
+                        member=placement.member,
+                    )
+                )
+                plan.segment_commitment_sha256 = _chain_commitment(
+                    plan.segment_commitment_sha256,
+                    {
+                        "file_order": plan_file.file_order,
+                        "sequence": str(placement.sequence),
+                        "collection_id": collection_id,
+                        "path": path,
+                        "object_order": str(planned_object.object_order),
+                        "object_id": planned_object.object_id,
+                        "kind": planned_object.kind,
+                        "plaintext_bytes": planned_object.plaintext_bytes,
+                        "stored_bytes": planned_object.stored_bytes,
+                        "sha256": planned_object.sha256,
+                        "read_mode": planned_object.read_mode,
+                        "cache_store": planned_object.cache_store,
+                        "file_offset": placement.file_offset,
+                        "object_offset": placement.object_offset,
+                        "bytes": placement.bytes,
+                        "member": placement.member,
+                    },
+                )
+                plan.next_placement_sequence = placement.sequence + 1
+                remaining -= 1
+
+            if not has_more:
+                if expected_file_offset != plan_file.bytes:
+                    raise InvalidState("retrieval plan placements do not cover the file")
+                plan.next_file_order += 1
+                plan.next_placement_sequence = 0
+        if plan.next_file_order >= len(requested):
+            self._seal_plan(plan, file_count=len(requested))
+
+    def _placement_retrieval_bytes(
+        self,
+        session: Session,
+        *,
+        planned_object: RetrievalPlanObjectRecord,
+        plan_file: RetrievalPlanFileRecord,
+        placement: CollectionArchiveFileObjectRecord,
+    ) -> int:
+        if planned_object.read_mode != "immediate":
+            return 0
+        if planned_object.kind == "segment":
+            return planned_object.stored_bytes
+        object_record = session.get(
+            CollectionArchiveObjectRecord,
+            (
+                planned_object.collection_id,
+                planned_object.source_store,
+                planned_object.object_id,
+            ),
+        )
+        if object_record is None or not object_record.age_state_json:
+            raise InvalidState("pack retrieval state is missing")
+        source = PackVolumeRetrievalSource(
+            volume_id=object_record.object_id,
+            object_path=object_record.object_path,
+            revision=object_record.revision,
+            plaintext_bytes=object_record.plaintext_bytes,
+            stored_bytes=object_record.stored_bytes,
+            age_state_json=object_record.age_state_json,
+        )
+        return plan_pack_range_retrieval(
+            source,
+            (
+                PackMemberRetrievalSource(
+                    path=plan_file.path,
+                    bytes=plan_file.bytes,
+                    sha256=plan_file.sha256,
+                    data_offset=placement.object_offset,
+                ),
+            ),
+            policy=PackRangeRetrievalPolicy.from_env(
+                os.environ,
+                store_name=planned_object.source_store,
+            ),
+        ).accounted_remote_bytes
+
+    @staticmethod
+    def _seal_plan(plan: RetrievalPlanRecord, *, file_count: int) -> None:
+        plan.etag = hashlib.sha256(
+            _canonical_json(
+                {
+                    "format": "riverhog-retrieval-plan-authority/v1",
+                    "lease_seconds": plan.lease_seconds,
+                    "restore_policy": plan.restore_policy,
+                    "file_count": file_count,
+                    "file_identity": plan.file_commitment_sha256,
+                    "segment_identity": plan.segment_commitment_sha256,
+                    "object_count": str(plan.object_count),
+                    "retrieval_bytes": str(plan.retrieval_bytes),
+                    "requires_restore": plan.requires_restore,
+                }
+            )
+        ).hexdigest()
+        plan.state = "ready"
+        plan.ready_at = format_utc_timestamp(utc_now())
 
     def create(
         self,
         *,
         app: str,
         key_id: str | None = None,
-        files: Sequence[tuple[int, str]],
+        plan_id: str,
         plan_etag: str,
-        lease: timedelta | None = None,
-        restore_policy: str = "allow",
         event_context: dict[str, object] | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
-        normalized = _normalize_file_refs(files)
         if principal is not None:
             app = principal.app
             key_id = principal.key_id
-        plan = self.plan(
-            normalized,
-            lease=lease,
-            restore_policy=restore_policy,
-            principal=principal,
-        )
-        if not plan_etag or plan_etag != plan["etag"]:
-            raise Conflict("retrieval plan changed; request a fresh plan")
         job_id = uuid.uuid4().hex
+        normalized_event_context = event_context_json(event_context)
+        allowance_reserved = False
         now = utc_now()
         now_text = format_utc_timestamp(now)
-        lease_seconds = int(str(plan["lease_seconds"]))
-        planned_files = cast(list[dict[str, object]], plan["files"])
-        planned_objects = cast(list[dict[str, object]], plan["objects"])
-        requested = any(current["read_mode"] == "restore_required" for current in planned_objects)
-        if requested and plan["restore_policy"] == "never":
-            raise Conflict("retrieval requires archive restoration but restore_policy is never")
-        state = "requested" if requested else "ready"
-        expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
-        remote_bytes = sum(
-            int(str(current["retrieval_bytes"]))
-            + (
-                int(str(current["stored_bytes"]))
-                if current["read_mode"] == "restore_required"
-                else 0
-            )
-            for current in planned_objects
-        )
-        if key_id is not None and self._download_allowance is not None:
-            self._download_allowance.reserve_retrieval(
-                key_id=key_id,
-                job_id=job_id,
-                expected_bytes=remote_bytes,
-                expires_at=format_utc_timestamp(now + self._config.retrieval_pending_timeout),
-            )
         try:
             with session_scope(self._session_factory) as session:
-                for collection_id in sorted({collection_id for collection_id, _path in normalized}):
-                    collection = session.scalar(
-                        select(CollectionRecord)
-                        .where(CollectionRecord.id == collection_id)
-                        .with_for_update()
+                plan = self._require_plan(
+                    session,
+                    app=app,
+                    key_id=key_id,
+                    plan_id=plan_id,
+                    lock=True,
+                )
+                self._expire_plan_if_due(plan)
+                if not plan_etag or plan_etag != plan.etag:
+                    raise Conflict("retrieval plan changed; request a fresh plan")
+                if plan.state == "consumed":
+                    existing = session.scalar(
+                        select(RetrievalJobRecord).where(RetrievalJobRecord.plan_id == plan.id)
                     )
-                    if collection is None:
-                        raise NotFound(f"collection not found: {collection_id}")
-                    if session.get(CollectionDeletionRecord, collection_id) is not None:
-                        raise Conflict(f"collection deletion is active: {collection_id}")
-                planned_sources = {
-                    (
-                        cast(int, current["collection_id"]),
-                        str(current["source_store"]),
+                    if existing is None:
+                        raise InvalidState("consumed retrieval plan has no job")
+                    if existing.event_context_json != normalized_event_context:
+                        raise Conflict("retrieval job retry changed its event context")
+                    job_id = existing.id
+                    return _job_payload(existing)
+                if plan.state != "ready" or plan.etag is None:
+                    raise InvalidState("retrieval plan is not ready")
+                if plan.requires_restore and plan.restore_policy == "never":
+                    raise Conflict(
+                        "retrieval requires archive restoration but restore_policy is never"
                     )
-                    for current in planned_objects
-                }
-                for collection_id, source_store in sorted(planned_sources):
-                    if (
-                        session.get(
-                            ArchiveCopyRetirementRecord,
-                            (collection_id, source_store),
-                        )
-                        is not None
-                    ):
-                        raise Conflict(
-                            f"archive copy retirement is active: {collection_id} in {source_store}"
-                        )
+                requested = plan.requires_restore
+                state = "requested" if requested else "ready"
+                expires_at = format_utc_timestamp(now + timedelta(seconds=plan.lease_seconds))
+                if key_id is not None and self._download_allowance is not None:
+                    self._download_allowance.reserve_retrieval(
+                        key_id=key_id,
+                        job_id=job_id,
+                        expected_bytes=plan.retrieval_bytes,
+                        expires_at=format_utc_timestamp(
+                            now + self._config.retrieval_pending_timeout
+                        ),
+                    )
+                    allowance_reserved = True
                 record = RetrievalJobRecord(
                     id=job_id,
+                    plan_id=plan_id,
                     app=app,
                     initiated_by_key_id=key_id,
-                    event_context_json=event_context_json(event_context),
+                    event_context_json=normalized_event_context,
                     state=state,
-                    plan_etag=str(plan["etag"]),
-                    constraints_json=json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                    plan_etag=plan.etag,
+                    lease_seconds=plan.lease_seconds,
                     created_at=now_text,
                     requested_at=now_text if requested else None,
                     ready_at=None if requested else now_text,
@@ -843,46 +1205,13 @@ class SqlAlchemyRetrievalService:
                     next_poll_at=now_text if requested else None,
                 )
                 session.add(record)
-                for order, current in enumerate(planned_files):
-                    record.files.append(
-                        RetrievalJobFileRecord(
-                            job_id=job_id,
-                            collection_id=cast(int, current["collection_id"]),
-                            path=str(current["path"]),
-                            file_order=order,
-                        )
-                    )
-                for order, current in enumerate(planned_objects):
-                    record.objects.append(
-                        RetrievalJobObjectRecord(
-                            job_id=job_id,
-                            collection_id=cast(int, current["collection_id"]),
-                            source_store=str(current["source_store"]),
-                            object_id=str(current["object_id"]),
-                            object_order=order,
-                            read_mode=str(current["read_mode"]),
-                            cache_store=(
-                                str(current["cache_store"])
-                                if current.get("cache_store") is not None
-                                else None
-                            ),
-                        )
-                    )
-                    if current["read_mode"] == "cache":
-                        self._lease_cached_object(
-                            session,
-                            owner=_job_owner(job_id),
-                            source_store=str(current["source_store"]),
-                            collection_id=cast(int, current["collection_id"]),
-                            object_id=str(current["object_id"]),
-                            expires_at=expires_at,
-                        )
+                plan.state = "consumed"
                 self._lifecycle_events.emit_retrieval(
                     type="retrieval.requested",
                     job=record,
                     details={
-                        "files": len(planned_files),
-                        "objects": len(planned_objects),
+                        "files": len(json.loads(plan.request_json)),
+                        "objects": plan.object_count,
                         "restore_required": requested,
                     },
                     session=session,
@@ -895,7 +1224,7 @@ class SqlAlchemyRetrievalService:
                         session=session,
                     )
         except Exception:
-            if key_id is not None and self._download_allowance is not None:
+            if allowance_reserved and key_id is not None and self._download_allowance is not None:
                 self._download_allowance.release_retrieval(job_id=job_id)
             raise
         return self.get(app=app, key_id=key_id, job_id=job_id)
@@ -924,27 +1253,29 @@ class SqlAlchemyRetrievalService:
             self._expire_job_if_due(session, record)
             if record.state != "ready":
                 raise InvalidState("only a ready retrieval job can be renewed")
-            plan = json.loads(record.constraints_json)
-            plan["lease_seconds"] = int(lease.total_seconds())
-            record.constraints_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+            missing_cached = session.scalar(
+                select(RetrievalPlanObjectRecord.object_order)
+                .where(
+                    RetrievalPlanObjectRecord.plan_id == record.plan_id,
+                    RetrievalPlanObjectRecord.read_mode.in_({"cache", "restore_required"}),
+                    ~exists(
+                        select(1).where(
+                            RetrievalCacheObjectRecord.source_store
+                            == RetrievalPlanObjectRecord.source_store,
+                            RetrievalCacheObjectRecord.collection_id
+                            == RetrievalPlanObjectRecord.collection_id,
+                            RetrievalCacheObjectRecord.object_id
+                            == RetrievalPlanObjectRecord.object_id,
+                            RetrievalCacheObjectRecord.state == "ready",
+                        )
+                    ),
+                )
+                .limit(1)
+            )
+            if missing_cached is not None:
+                raise InvalidState("retrieval cache object disappeared before renewal")
+            record.lease_seconds = int(lease.total_seconds())
             record.expires_at = expires_at
-            for current in record.objects:
-                if current.read_mode not in {"cache", "restore_required"}:
-                    continue
-                cached = session.get(
-                    RetrievalCacheObjectRecord,
-                    (current.source_store, current.collection_id, current.object_id),
-                )
-                if cached is None or cached.state != "ready":
-                    raise InvalidState("retrieval cache object disappeared before renewal")
-                self._lease_cached_object(
-                    session,
-                    owner=_job_owner(job_id),
-                    source_store=current.source_store,
-                    collection_id=current.collection_id,
-                    object_id=current.object_id,
-                    expires_at=expires_at,
-                )
             self._lifecycle_events.emit_retrieval(
                 type="retrieval.renewed",
                 job=record,
@@ -961,11 +1292,6 @@ class SqlAlchemyRetrievalService:
             if record.state != "completed":
                 record.state = "completed"
                 record.completed_at = format_utc_timestamp(utc_now())
-                session.execute(
-                    delete(RetrievalCacheLeaseRecord).where(
-                        RetrievalCacheLeaseRecord.owner == _job_owner(job_id)
-                    )
-                )
                 self._lifecycle_events.emit_retrieval(
                     type="retrieval.completed",
                     job=record,
@@ -975,8 +1301,6 @@ class SqlAlchemyRetrievalService:
             payload = _job_payload(record)
         if self._download_allowance is not None:
             self._download_allowance.release_retrieval(job_id=job_id)
-        if self._cache is not None:
-            self._cache.release(owner=_job_owner(job_id))
         return payload
 
     def cancel(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
@@ -989,11 +1313,6 @@ class SqlAlchemyRetrievalService:
                 record.state = "canceled"
                 record.canceled_at = format_utc_timestamp(utc_now())
                 record.next_poll_at = None
-                session.execute(
-                    delete(RetrievalCacheLeaseRecord).where(
-                        RetrievalCacheLeaseRecord.owner == _job_owner(job_id)
-                    )
-                )
                 self._lifecycle_events.emit_retrieval(
                     type="retrieval.canceled",
                     job=record,
@@ -1003,8 +1322,6 @@ class SqlAlchemyRetrievalService:
             payload = _job_payload(record)
         if self._download_allowance is not None:
             self._download_allowance.release_retrieval(job_id=job_id)
-        if self._cache is not None:
-            self._cache.release(owner=_job_owner(job_id))
         return payload
 
     def content(
@@ -1014,6 +1331,8 @@ class SqlAlchemyRetrievalService:
         job_id: str,
         collection_id: int,
         path: str,
+        offset: int = 0,
+        size: int | None = None,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]:
         with session_scope(self._session_factory) as session:
@@ -1021,78 +1340,56 @@ class SqlAlchemyRetrievalService:
             self._expire_job_if_due(session, job)
             if job.state != "ready":
                 raise InvalidState("retrieval job is not ready")
-            if session.get(RetrievalJobFileRecord, (job_id, collection_id, path)) is None:
+            plan_file = session.scalar(
+                select(RetrievalPlanFileRecord).where(
+                    RetrievalPlanFileRecord.plan_id == job.plan_id,
+                    RetrievalPlanFileRecord.collection_id == collection_id,
+                    RetrievalPlanFileRecord.path == path,
+                )
+            )
+            if plan_file is None:
                 raise NotFound("file is not part of this retrieval job")
-            file_record = session.get(CollectionFileRecord, (collection_id, path))
-            if file_record is None:
-                raise NotFound("file is no longer present")
-            source_store = str(
-                session.scalar(
-                    select(RetrievalJobObjectRecord.source_store)
-                    .where(
-                        RetrievalJobObjectRecord.job_id == job_id,
-                        RetrievalJobObjectRecord.collection_id == collection_id,
+            planned = list(
+                session.execute(
+                    select(RetrievalPlanPlacementRecord, RetrievalPlanObjectRecord)
+                    .join(
+                        RetrievalPlanObjectRecord,
+                        (RetrievalPlanObjectRecord.plan_id == RetrievalPlanPlacementRecord.plan_id)
+                        & (
+                            RetrievalPlanObjectRecord.object_order
+                            == RetrievalPlanPlacementRecord.object_order
+                        ),
                     )
-                    .limit(1)
-                )
-                or ""
-            )
-            if not source_store:
-                raise InvalidState("retrieval job has no source archive")
-            placements = list(
-                session.scalars(
-                    select(CollectionArchiveFileObjectRecord)
                     .where(
-                        CollectionArchiveFileObjectRecord.collection_id == collection_id,
-                        CollectionArchiveFileObjectRecord.store == source_store,
-                        CollectionArchiveFileObjectRecord.path == path,
+                        RetrievalPlanPlacementRecord.plan_id == job.plan_id,
+                        RetrievalPlanPlacementRecord.file_order == plan_file.file_order,
                     )
-                    .order_by(CollectionArchiveFileObjectRecord.sequence)
+                    .order_by(RetrievalPlanPlacementRecord.sequence)
+                    .limit(2)
                 )
             )
-            if not placements:
+            if not planned:
                 raise InvalidState("retrieval file has no archive placement")
-            records: list[
-                tuple[
-                    CollectionArchiveFileObjectRecord,
-                    CollectionArchiveObjectRecord,
-                    RetrievalCacheObjectRecord | None,
-                ]
-            ] = []
-            for placement in placements:
-                if (
-                    session.get(
-                        RetrievalJobObjectRecord,
-                        (job_id, collection_id, source_store, placement.object_id),
-                    )
-                    is None
-                ):
-                    raise InvalidState("retrieval file object is outside the job plan")
-                object_record = session.get(
-                    CollectionArchiveObjectRecord,
-                    (collection_id, source_store, placement.object_id),
-                )
-                if object_record is None or object_record.kind not in _DATA_KINDS:
-                    raise InvalidState("retrieval archive volume is missing")
-                cached = session.get(
-                    RetrievalCacheObjectRecord,
-                    (source_store, collection_id, placement.object_id),
-                )
-                if cached is not None and cached.state != "ready":
-                    cached = None
-                records.append((placement, object_record, cached))
             attribution = _download_attribution(job)
-            expected_bytes = file_record.bytes
-            expected_sha256 = file_record.sha256
+            expected_bytes = plan_file.bytes
+            expected_sha256 = plan_file.sha256
+            requested_size = expected_bytes - offset if size is None else size
+            if offset < 0 or requested_size < 0 or offset + requested_size > expected_bytes:
+                raise InvalidRange("retrieval content range is invalid")
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {collection_id}")
             passphrase_id = collection.passphrase_id
             passphrase = self._config.archive_passphrase_for(passphrase_id)
+            plan_id = job.plan_id
+            file_order = plan_file.file_order
+            source_store = plan_file.source_store
 
-        kinds = {record.kind for _placement, record, _cached in records}
-        if kinds == {"pack"} and len(records) == 1:
-            placement, record, cached = records[0]
+        kinds = {current.kind for _placement, current in planned}
+        if kinds == {"pack"} and len(planned) == 1:
+            placement, planned_object = planned[0]
+            record = self._catalog_archive_object(planned_object)
+            cached = self._current_cached_object(planned_object)
             if not record.age_state_json:
                 raise InvalidState("pack volume is missing its age state")
             source = PackVolumeRetrievalSource(
@@ -1125,38 +1422,136 @@ class SqlAlchemyRetrievalService:
                     os.environ,
                     store_name=source_store,
                 ),
-            ).iter_member(source, member)
+            ).iter_member_range(source, member, offset=offset, size=requested_size)
             return chunks, expected_bytes, expected_sha256
 
         if kinds == {"segment"}:
-            sources: list[RawVolumeRetrievalSource] = []
-            range_stores: dict[str, ArchiveObjectRangeStore] = {}
-            for placement, record, cached in records:
-                if not record.age_state_json or not record.archive_parts_json:
-                    raise InvalidState("raw volume is missing its retrieval state")
-                sources.append(
-                    RawVolumeRetrievalSource(
-                        volume_id=record.object_id,
-                        object_path=record.object_path,
-                        revision=record.revision,
-                        source_path=path,
-                        file_offset=placement.file_offset,
-                        plaintext_bytes=placement.bytes,
-                        file_bytes=expected_bytes,
-                        file_sha256=expected_sha256,
-                        age_state_json=record.age_state_json,
-                        parts=_stored_parts(record.archive_parts_json),
+            chunks = self._iter_raw_plan_range(
+                plan_id=plan_id,
+                file_order=file_order,
+                source_store=source_store,
+                path=path,
+                expected_bytes=expected_bytes,
+                expected_sha256=expected_sha256,
+                offset=offset,
+                size=requested_size,
+                passphrase=passphrase,
+                passphrase_id=passphrase_id,
+                attribution=attribution,
+            )
+            return chunks, expected_bytes, expected_sha256
+
+        raise InvalidState("retrieval file has inconsistent archive volume kinds")
+
+    def _catalog_archive_object(
+        self,
+        planned: RetrievalPlanObjectRecord,
+    ) -> CollectionArchiveObjectRecord:
+        with read_snapshot(self._session_factory) as session:
+            record = session.get(
+                CollectionArchiveObjectRecord,
+                (planned.collection_id, planned.source_store, planned.object_id),
+            )
+            if record is None or record.kind != planned.kind:
+                raise InvalidState("retrieval archive volume is missing")
+            return record
+
+    def _current_cached_object(
+        self,
+        planned: RetrievalPlanObjectRecord,
+    ) -> RetrievalCacheObjectRecord | None:
+        if planned.read_mode == "immediate":
+            return None
+        with read_snapshot(self._session_factory) as session:
+            cached = session.get(
+                RetrievalCacheObjectRecord,
+                (planned.source_store, planned.collection_id, planned.object_id),
+            )
+            if cached is None or cached.state != "ready":
+                raise InvalidState("retrieval cache object is unavailable")
+            return cached
+
+    def _iter_raw_plan_range(
+        self,
+        *,
+        plan_id: str,
+        file_order: int,
+        source_store: str,
+        path: str,
+        expected_bytes: int,
+        expected_sha256: str,
+        offset: int,
+        size: int,
+        passphrase: str | bytes,
+        passphrase_id: str,
+        attribution: DownloadAttribution | None,
+    ) -> Iterator[bytes]:
+        requested_end = offset + size
+        next_sequence = 0
+        logical_cursor = offset
+        emitted = 0
+        digest = hashlib.sha256() if offset == 0 and size == expected_bytes else None
+        while logical_cursor < requested_end:
+            with read_snapshot(self._session_factory) as session:
+                rows = list(
+                    session.execute(
+                        select(RetrievalPlanPlacementRecord, RetrievalPlanObjectRecord)
+                        .join(
+                            RetrievalPlanObjectRecord,
+                            (
+                                RetrievalPlanObjectRecord.plan_id
+                                == RetrievalPlanPlacementRecord.plan_id
+                            )
+                            & (
+                                RetrievalPlanObjectRecord.object_order
+                                == RetrievalPlanPlacementRecord.object_order
+                            ),
+                        )
+                        .where(
+                            RetrievalPlanPlacementRecord.plan_id == plan_id,
+                            RetrievalPlanPlacementRecord.file_order == file_order,
+                            RetrievalPlanPlacementRecord.sequence >= next_sequence,
+                            RetrievalPlanPlacementRecord.file_offset
+                            + RetrievalPlanPlacementRecord.bytes
+                            > offset,
+                            RetrievalPlanPlacementRecord.file_offset < requested_end,
+                        )
+                        .order_by(RetrievalPlanPlacementRecord.sequence)
+                        .limit(_RETRIEVAL_PLAN_SEGMENT_BATCH)
                     )
                 )
-                range_stores[record.object_path] = self._range_store(
-                    source_store=source_store,
-                    object_record=record,
-                    cached=cached,
-                    attribution=attribution,
+            if not rows:
+                raise InvalidState("retrieval plan does not cover the requested file range")
+            for placement, planned_object in rows:
+                volume_start = placement.file_offset
+                volume_end = volume_start + placement.bytes
+                current_start = max(offset, volume_start)
+                current_end = min(requested_end, volume_end)
+                if current_start != logical_cursor:
+                    raise InvalidState("retrieval plan raw segments are not contiguous")
+                record = self._catalog_archive_object(planned_object)
+                cached = self._current_cached_object(planned_object)
+                if not record.age_state_json or not record.archive_parts_json:
+                    raise InvalidState("raw volume is missing its retrieval state")
+                source = RawVolumeRetrievalSource(
+                    volume_id=record.object_id,
+                    object_path=record.object_path,
+                    revision=record.revision,
+                    source_path=path,
+                    file_offset=placement.file_offset,
+                    plaintext_bytes=placement.bytes,
+                    file_bytes=expected_bytes,
+                    file_sha256=expected_sha256,
+                    age_state_json=record.age_state_json,
+                    parts=_stored_parts(record.archive_parts_json),
                 )
-            chunks = RawFileRangeReader(
-                RawVolumeRangeReader(
-                    _DispatchArchiveRangeStore(range_stores),
+                reader = RawVolumeRangeReader(
+                    self._range_store(
+                        source_store=source_store,
+                        object_record=record,
+                        cached=cached,
+                        attribution=attribution,
+                    ),
                     passphrase=passphrase,
                     request_concurrency=self._throughput.retrieval_request_concurrency,
                     read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
@@ -1164,10 +1559,23 @@ class SqlAlchemyRetrievalService:
                     session_cache=self._age_sessions[passphrase_id],
                     timing_observer=log_transfer_timing,
                 )
-            ).iter_file(sources)
-            return chunks, expected_bytes, expected_sha256
-
-        raise InvalidState("retrieval file has inconsistent archive volume kinds")
+                for chunk in reader.iter_volume_range(
+                    source,
+                    offset=current_start - volume_start,
+                    size=current_end - current_start,
+                ):
+                    emitted += len(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+                    yield chunk
+                logical_cursor = current_end
+                next_sequence = placement.sequence + 1
+                if logical_cursor == requested_end:
+                    break
+        if emitted != size:
+            raise InvalidState("retrieval raw range emitted an unexpected byte count")
+        if digest is not None and digest.hexdigest() != expected_sha256:
+            raise InvalidState("retrieval raw file verification failed")
 
     def _range_store(
         self,
@@ -1214,12 +1622,16 @@ class SqlAlchemyRetrievalService:
             self._expire_job_if_due(session, job)
             if job.state != "ready":
                 raise InvalidState("retrieval job is not ready")
-            if session.get(RetrievalJobFileRecord, (job_id, collection_id, path)) is None:
+            plan_file = session.scalar(
+                select(RetrievalPlanFileRecord).where(
+                    RetrievalPlanFileRecord.plan_id == job.plan_id,
+                    RetrievalPlanFileRecord.collection_id == collection_id,
+                    RetrievalPlanFileRecord.path == path,
+                )
+            )
+            if plan_file is None:
                 raise NotFound("file is not part of this retrieval job")
-            file_record = session.get(CollectionFileRecord, (collection_id, path))
-            if file_record is None:
-                raise NotFound("file is no longer present")
-            return file_record.bytes, file_record.sha256
+            return plan_file.bytes, plan_file.sha256
 
     def process_due(self, *, limit: int = 10) -> int:
         if limit < 1:
@@ -1257,6 +1669,18 @@ class SqlAlchemyRetrievalService:
             self._cache.reap_abandoned_populations(limit=limit)
         now_text = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
+            expired_plans = session.scalars(
+                select(RetrievalPlanRecord)
+                .where(
+                    RetrievalPlanRecord.state.in_({"planning", "ready"}),
+                    RetrievalPlanRecord.expires_at <= now_text,
+                )
+                .order_by(RetrievalPlanRecord.expires_at, RetrievalPlanRecord.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).all()
+            for plan in expired_plans:
+                plan.state = "expired"
             expired_jobs = session.scalars(
                 select(RetrievalJobRecord)
                 .where(
@@ -1275,17 +1699,20 @@ class SqlAlchemyRetrievalService:
                     terminal=True,
                     session=session,
                 )
-                session.execute(
-                    delete(RetrievalCacheLeaseRecord).where(
-                        RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
-                    )
-                )
                 _release_job_reservation(session, job.id)
-            session.execute(
-                delete(RetrievalCacheLeaseRecord).where(
-                    RetrievalCacheLeaseRecord.expires_at <= now_text
+            expired_leases = list(
+                session.scalars(
+                    select(RetrievalCacheLeaseRecord)
+                    .where(RetrievalCacheLeaseRecord.expires_at <= now_text)
+                    .order_by(
+                        RetrievalCacheLeaseRecord.expires_at,
+                        RetrievalCacheLeaseRecord.owner,
+                    )
+                    .limit(limit)
                 )
             )
+            for lease in expired_leases:
+                session.delete(lease)
             if self._cache is None:
                 return 0
             candidates = list(
@@ -1305,6 +1732,7 @@ class SqlAlchemyRetrievalService:
                                 == RetrievalCacheObjectRecord.object_id,
                             )
                             .exists()
+                            & ~_active_retrieval_cache_reference(now_text)
                         )
                     )
                     .order_by(
@@ -1382,167 +1810,6 @@ class SqlAlchemyRetrievalService:
                     removed += 1
         return removed
 
-    def _build_plan(
-        self,
-        session: Session,
-        files: tuple[tuple[int, str], ...],
-        lease: timedelta,
-        *,
-        restore_policy: str,
-    ) -> dict[str, object]:
-        files_payload: list[dict[str, object]] = []
-        objects_payload: list[dict[str, object]] = []
-        object_payloads: dict[tuple[int, str, str], dict[str, object]] = {}
-        copy_by_collection: dict[int, CollectionArchiveCopyRecord] = {}
-        for collection_id, path in files:
-            file_record = session.get(CollectionFileRecord, (collection_id, path))
-            if file_record is None:
-                raise NotFound(f"file not found: {collection_id}/{path}")
-            copy = copy_by_collection.get(collection_id)
-            if copy is None:
-                copy = self._select_copy(session, collection_id)
-                copy_by_collection[collection_id] = copy
-            files_payload.append(
-                {
-                    "collection_id": collection_id,
-                    "path": path,
-                    "bytes": file_record.bytes,
-                    "sha256": file_record.sha256,
-                }
-            )
-            placements = list(
-                session.scalars(
-                    select(CollectionArchiveFileObjectRecord)
-                    .where(
-                        CollectionArchiveFileObjectRecord.collection_id == collection_id,
-                        CollectionArchiveFileObjectRecord.store == copy.store,
-                        CollectionArchiveFileObjectRecord.path == path,
-                    )
-                    .order_by(CollectionArchiveFileObjectRecord.sequence)
-                )
-            )
-            if not placements:
-                raise InvalidState(f"archive placement is missing: {collection_id}/{path}")
-            for placement in placements:
-                object_id = placement.object_id
-                identity = (collection_id, copy.store, str(object_id))
-                payload = object_payloads.get(identity)
-                if payload is None:
-                    payload = self._plan_object_payload(
-                        session,
-                        collection_id=collection_id,
-                        store=copy.store,
-                        object_id=str(object_id),
-                    )
-                    object_payloads[identity] = payload
-                    objects_payload.append(payload)
-                cast(list[dict[str, object]], payload["placements"]).append(
-                    {
-                        "path": placement.path,
-                        "sequence": placement.sequence,
-                        "file_offset": placement.file_offset,
-                        "object_offset": placement.object_offset,
-                        "bytes": placement.bytes,
-                        "member": placement.member,
-                    }
-                )
-        for payload in objects_payload:
-            payload["retrieval_bytes"] = self._planned_object_retrieval_bytes(
-                session,
-                payload,
-            )
-        return {
-            "format": "riverhog-retrieval-plan/v1",
-            "lease_seconds": int(lease.total_seconds()),
-            "restore_policy": restore_policy,
-            "requires_restore": any(
-                current["read_mode"] == "restore_required" for current in objects_payload
-            ),
-            "files": files_payload,
-            "objects": objects_payload,
-        }
-
-    def _plan_object_payload(
-        self,
-        session: Session,
-        *,
-        collection_id: int,
-        store: str,
-        object_id: str,
-    ) -> dict[str, object]:
-        identity = (collection_id, store, object_id)
-        object_record = session.get(CollectionArchiveObjectRecord, identity)
-        if object_record is None:
-            raise InvalidState("archive object record is missing")
-        cached = session.get(RetrievalCacheObjectRecord, (store, collection_id, object_id))
-        if cached is not None and cached.state != "ready":
-            cached = None
-        if object_record.kind not in _DATA_KINDS:
-            raise InvalidState("retrieval plan contains a non-data archive object")
-        read_mode = (
-            "cache" if cached is not None else self._archive_stores.require(store).store.read_mode()
-        )
-        return {
-            "collection_id": collection_id,
-            "source_store": store,
-            "object_id": object_record.object_id,
-            "kind": object_record.kind,
-            "plaintext_bytes": object_record.plaintext_bytes,
-            "stored_bytes": object_record.stored_bytes,
-            "sha256": object_record.sha256,
-            "retrieval_bytes": 0,
-            "read_mode": read_mode,
-            "cache_store": cached.cache_store if cached is not None else None,
-            "placements": [],
-        }
-
-    def _planned_object_retrieval_bytes(
-        self,
-        session: Session,
-        payload: dict[str, object],
-    ) -> int:
-        collection_id = int(str(payload["collection_id"]))
-        store = str(payload["source_store"])
-        object_id = str(payload["object_id"])
-        object_record = session.get(
-            CollectionArchiveObjectRecord,
-            (collection_id, store, object_id),
-        )
-        if object_record is None:
-            raise InvalidState("archive object record is missing")
-        if object_record.kind == "segment":
-            return object_record.stored_bytes
-        if object_record.kind != "pack" or not object_record.age_state_json:
-            raise InvalidState("pack retrieval state is missing")
-        source = PackVolumeRetrievalSource(
-            volume_id=object_record.object_id,
-            object_path=object_record.object_path,
-            revision=object_record.revision,
-            plaintext_bytes=object_record.plaintext_bytes,
-            stored_bytes=object_record.stored_bytes,
-            age_state_json=object_record.age_state_json,
-        )
-        policy = PackRangeRetrievalPolicy.from_env(os.environ, store_name=store)
-        total = 0
-        for placement in cast(list[dict[str, object]], payload["placements"]):
-            path = str(placement["path"])
-            file_record = session.get(CollectionFileRecord, (collection_id, path))
-            if file_record is None:
-                raise InvalidState("pack retrieval file record is missing")
-            total += plan_pack_range_retrieval(
-                source,
-                (
-                    PackMemberRetrievalSource(
-                        path=path,
-                        bytes=file_record.bytes,
-                        sha256=file_record.sha256,
-                        data_offset=int(str(placement["object_offset"])),
-                    ),
-                ),
-                policy=policy,
-            ).accounted_remote_bytes
-        return total
-
     def _select_copy(self, session: Session, collection_id: int) -> CollectionArchiveCopyRecord:
         retiring_stores = set(
             session.scalars(
@@ -1566,225 +1833,103 @@ class SqlAlchemyRetrievalService:
         raise InvalidState(f"collection has no readable archive copy: {collection_id}")
 
     def _process_one(self, job_id: str) -> None:
-        pending_failed = False
-        with session_scope(self._session_factory) as session:
-            job = session.get(RetrievalJobRecord, job_id)
-            if job is None or job.state != "requested":
-                return
-            pending_deadline = (
-                parse_utc_timestamp(job.created_at) + self._config.retrieval_pending_timeout
-            )
-            if pending_deadline <= utc_now():
-                self._fail_pending_job(
-                    session,
-                    job,
-                    "retrieval exceeded the configured pending timeout",
-                )
-                pending_failed = True
-            else:
-                groups = self._missing_groups(session, job)
-                restore_requested_at = job.restore_requested_at
-                plan = json.loads(job.constraints_json)
-                attribution = _download_attribution(job)
-                lease_seconds = int(plan["lease_seconds"])
-                pending_expires_at = format_utc_timestamp(pending_deadline)
-                for current in job.objects:
-                    if current.read_mode != "restore_required":
-                        continue
-                    if (
-                        session.get(
-                            RetrievalCacheObjectRecord,
-                            (current.source_store, current.collection_id, current.object_id),
-                        )
-                        is not None
-                    ):
-                        self._lease_cached_object(
-                            session,
-                            owner=_job_owner(job_id),
-                            source_store=current.source_store,
-                            collection_id=current.collection_id,
-                            object_id=current.object_id,
-                            expires_at=pending_expires_at,
-                        )
-        if pending_failed:
-            if self._cache is not None:
-                self._cache.release(owner=_job_owner(job_id))
-            if self._download_allowance is not None:
-                self._download_allowance.release_retrieval(job_id=job_id)
-            return
         try:
-            admissions = {}
-            if groups:
+            work = self._claim_restore_step(job_id)
+            if work is None:
+                if self._download_allowance is not None:
+                    with read_snapshot(self._session_factory) as session:
+                        state = session.scalar(
+                            select(RetrievalJobRecord.state).where(RetrievalJobRecord.id == job_id)
+                        )
+                    if state == "failed":
+                        self._download_allowance.release_retrieval(job_id=job_id)
+                return
+            action, planned, object_identity, attribution = work
+            store = self._archive_stores.require(planned.source_store).store
+            if action == "prepare":
                 if self._cache is None:
                     raise RuntimeError("retrieval cache is unavailable")
-                admission_waiting = False
-                for (store_name, collection_id), objects in groups.items():
-                    for object_identity in objects:
-                        key = (store_name, collection_id, object_identity.object_id)
-                        admission = self._cache.admit(
-                            owner=_job_owner(job_id),
-                            source_store=store_name,
-                            collection_id=collection_id,
-                            object_id=object_identity.object_id,
-                            expected_bytes=object_identity.stored_bytes,
-                        )
-                        if admission is None:
-                            with session_scope(self._session_factory) as session:
-                                cached = session.get(RetrievalCacheObjectRecord, key)
-                                if cached is None or cached.state != "ready":
-                                    admission_waiting = True
-                                else:
-                                    job_object = session.get(
-                                        RetrievalJobObjectRecord,
-                                        (
-                                            job_id,
-                                            collection_id,
-                                            store_name,
-                                            object_identity.object_id,
-                                        ),
-                                    )
-                                    if job_object is not None:
-                                        job_object.cache_store = cached.cache_store
-                            continue
-                        admissions[key] = admission
-                        with session_scope(self._session_factory) as session:
-                            job_object = session.get(
-                                RetrievalJobObjectRecord,
-                                (job_id, collection_id, store_name, object_identity.object_id),
-                            )
-                            if job_object is not None:
-                                job_object.cache_store = admission.cache_store
-                if admission_waiting:
-                    with session_scope(self._session_factory) as session:
-                        job = session.get(RetrievalJobRecord, job_id)
-                        if job is not None and job.state == "requested":
-                            job.next_poll_at = format_utc_timestamp(
-                                utc_now() + self._config.retrieval_restore_poll_interval
-                            )
-                    return
-            if groups and restore_requested_at is None:
-                restore_requested_at = format_utc_timestamp(utc_now())
-                for (store_name, collection_id), objects in groups.items():
-                    self._archive_stores.require(store_name).store.prepare_archive_objects_read(
-                        collection_id=collection_id,
-                        objects=objects,
-                    )
-                with session_scope(self._session_factory) as session:
-                    job = session.scalar(
-                        select(RetrievalJobRecord)
-                        .where(RetrievalJobRecord.id == job_id)
-                        .with_for_update()
-                    )
-                    if job is None or job.state != "requested":
-                        return
-                    if job.restore_requested_at is None:
-                        job.restore_requested_at = restore_requested_at
-                        job.failure = None
-                    else:
-                        restore_requested_at = job.restore_requested_at
-
-            all_ready = True
-            restore_expired = False
-            for (store_name, collection_id), objects in groups.items():
-                store = self._archive_stores.require(store_name).store
-                status = store.get_archive_objects_read_status(
-                    collection_id=collection_id,
-                    objects=objects,
+                admission = self._cache.admit(
+                    owner=_job_object_owner(job_id, planned.object_order),
+                    source_store=planned.source_store,
+                    collection_id=planned.collection_id,
+                    object_id=planned.object_id,
+                    expected_bytes=planned.stored_bytes,
                 )
-                if status.state == "expired":
-                    all_ready = False
-                    restore_expired = True
-                    continue
-                if status.state != "ready":
-                    all_ready = False
-                    continue
-                if self._cache is None:
-                    raise RuntimeError("retrieval cache is unavailable")
-                for object_identity in objects:
-                    key = (store_name, collection_id, object_identity.object_id)
-                    admission = admissions.get(key)
-                    if admission is None:
-                        continue
-                    receipt = self._cache.put(
-                        admission=admission,
-                        content=store.iter_stored_archive_object(
-                            collection_id=collection_id,
-                            object=object_identity,
-                            attribution=attribution,
-                        ),
+                if admission is None:
+                    next_poll = format_utc_timestamp(
+                        utc_now() + self._config.retrieval_restore_poll_interval
                     )
-                    try:
-                        _validate_cache_receipt(receipt, object_identity)
-                    except Exception as receipt_error:
-                        try:
-                            self._cache.delete(
-                                cache_store=receipt.cache_store,
-                                object_path=receipt.object_path,
-                                revision=receipt.revision,
-                            )
-                        except Exception as cleanup_error:
-                            raise RuntimeError(
-                                f"{receipt_error}; retrieval cache cleanup also failed: "
-                                f"{cleanup_error}"
-                            ) from cleanup_error
-                        raise
                     with session_scope(self._session_factory) as session:
-                        register_cache_ready(
-                            session,
-                            source_store=store_name,
-                            collection_id=collection_id,
-                            object_id=object_identity.object_id,
-                            receipt=receipt,
+                        progress = session.get(
+                            RetrievalJobObjectProgressRecord,
+                            (job_id, planned.object_order),
                         )
-                        session.flush()
-                        self._lease_cached_object(
-                            session,
-                            owner=_job_owner(job_id),
-                            source_store=store_name,
-                            collection_id=collection_id,
-                            object_id=object_identity.object_id,
-                            expires_at=pending_expires_at,
-                        )
-            if all_ready:
+                        job = session.get(RetrievalJobRecord, job_id)
+                        if progress is not None and job is not None and job.state == "requested":
+                            progress.next_poll_at = next_poll
+                            job.next_poll_at = next_poll
+                    return
+                store.prepare_archive_objects_read(
+                    collection_id=planned.collection_id,
+                    objects=(object_identity,),
+                )
                 now = utc_now()
-                expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
                 with session_scope(self._session_factory) as session:
-                    job = session.get(RetrievalJobRecord, job_id)
-                    if job is None or job.state != "requested":
-                        return
-                    for current in job.objects:
-                        if current.read_mode == "restore_required":
-                            self._lease_cached_object(
-                                session,
-                                owner=_job_owner(job_id),
-                                source_store=current.source_store,
-                                collection_id=current.collection_id,
-                                object_id=current.object_id,
-                                expires_at=expires_at,
-                            )
-                    job.state = "ready"
-                    job.ready_at = format_utc_timestamp(now)
-                    job.expires_at = expires_at
-                    job.next_poll_at = None
-                    job.failure = None
-                    self._lifecycle_events.emit_retrieval(
-                        type="retrieval.ready",
-                        job=job,
-                        details={"expires_at": expires_at},
-                        session=session,
+                    progress = session.get(
+                        RetrievalJobObjectProgressRecord,
+                        (job_id, planned.object_order),
                     )
-            else:
-                with session_scope(self._session_factory) as session:
                     job = session.get(RetrievalJobRecord, job_id)
-                    if job is not None and job.state == "requested":
-                        if restore_expired:
-                            job.restore_requested_at = None
-                            job.next_poll_at = format_utc_timestamp(utc_now())
-                            job.failure = None
-                        else:
-                            job.next_poll_at = format_utc_timestamp(
-                                utc_now() + self._config.retrieval_restore_poll_interval
-                            )
+                    if progress is None or job is None or job.state != "requested":
+                        return
+                    progress.state = "requested"
+                    progress.prepare_requested_at = format_utc_timestamp(now)
+                    progress.next_poll_at = format_utc_timestamp(now)
+                    if job.restore_requested_at is None:
+                        job.restore_requested_at = format_utc_timestamp(now)
+                    job.next_poll_at = format_utc_timestamp(now)
+                    job.failure = None
+                return
+
+            status = store.get_archive_objects_read_status(
+                collection_id=planned.collection_id,
+                objects=(object_identity,),
+            )
+            if status.state == "expired":
+                with session_scope(self._session_factory) as session:
+                    progress = session.get(
+                        RetrievalJobObjectProgressRecord,
+                        (job_id, planned.object_order),
+                    )
+                    job = session.get(RetrievalJobRecord, job_id)
+                    if progress is not None and job is not None and job.state == "requested":
+                        progress.state = "preparing"
+                        progress.next_poll_at = format_utc_timestamp(utc_now())
+                        job.next_poll_at = progress.next_poll_at
+                        job.failure = None
+                return
+            if status.state != "ready":
+                next_poll = format_utc_timestamp(
+                    utc_now() + self._config.retrieval_restore_poll_interval
+                )
+                with session_scope(self._session_factory) as session:
+                    progress = session.get(
+                        RetrievalJobObjectProgressRecord,
+                        (job_id, planned.object_order),
+                    )
+                    job = session.get(RetrievalJobRecord, job_id)
+                    if progress is not None and job is not None and job.state == "requested":
+                        progress.next_poll_at = next_poll
+                        job.next_poll_at = next_poll
+                return
+            self._cache_restored_object(
+                job_id=job_id,
+                planned=planned,
+                object_identity=object_identity,
+                attribution=attribution,
+                store=store,
+            )
         except Exception as exc:
             with session_scope(self._session_factory) as session:
                 job = session.get(RetrievalJobRecord, job_id)
@@ -1803,29 +1948,226 @@ class SqlAlchemyRetrievalService:
                             session=session,
                         )
 
-    def _missing_groups(
+    def _claim_restore_step(
+        self,
+        job_id: str,
+    ) -> (
+        tuple[
+            str,
+            RetrievalPlanObjectRecord,
+            ArchiveObjectIdentity,
+            DownloadAttribution | None,
+        ]
+        | None
+    ):
+        now = utc_now()
+        now_text = format_utc_timestamp(now)
+        with session_scope(self._session_factory) as session:
+            job = session.scalar(
+                select(RetrievalJobRecord).where(RetrievalJobRecord.id == job_id).with_for_update()
+            )
+            if job is None or job.state != "requested":
+                return None
+            if parse_utc_timestamp(job.created_at) + self._config.retrieval_pending_timeout <= now:
+                self._fail_pending_job(
+                    session,
+                    job,
+                    "retrieval exceeded the configured pending timeout",
+                )
+                return None
+
+            planned = session.scalar(
+                select(RetrievalPlanObjectRecord)
+                .where(
+                    RetrievalPlanObjectRecord.plan_id == job.plan_id,
+                    RetrievalPlanObjectRecord.read_mode == "restore_required",
+                    ~exists(
+                        select(1).where(
+                            RetrievalJobObjectProgressRecord.job_id == job.id,
+                            RetrievalJobObjectProgressRecord.object_order
+                            == RetrievalPlanObjectRecord.object_order,
+                        )
+                    ),
+                )
+                .order_by(RetrievalPlanObjectRecord.object_order)
+                .limit(1)
+            )
+            if planned is not None:
+                cached = session.get(
+                    RetrievalCacheObjectRecord,
+                    (planned.source_store, planned.collection_id, planned.object_id),
+                )
+                state = "ready" if cached is not None and cached.state == "ready" else "preparing"
+                session.add(
+                    RetrievalJobObjectProgressRecord(
+                        job_id=job.id,
+                        plan_id=job.plan_id,
+                        object_order=planned.object_order,
+                        state=state,
+                        next_poll_at=now_text,
+                        cache_store=(
+                            cached.cache_store
+                            if cached is not None and cached.state == "ready"
+                            else None
+                        ),
+                    )
+                )
+                job.next_poll_at = now_text
+                if state == "ready":
+                    return None
+                record = session.get(
+                    CollectionArchiveObjectRecord,
+                    (planned.collection_id, planned.source_store, planned.object_id),
+                )
+                if record is None:
+                    raise InvalidState("retrieval archive object is missing")
+                return "prepare", planned, _object_identity(record), _download_attribution(job)
+
+            progress = session.scalar(
+                select(RetrievalJobObjectProgressRecord)
+                .where(
+                    RetrievalJobObjectProgressRecord.job_id == job.id,
+                    RetrievalJobObjectProgressRecord.state != "ready",
+                    RetrievalJobObjectProgressRecord.next_poll_at <= now_text,
+                )
+                .order_by(RetrievalJobObjectProgressRecord.object_order)
+                .limit(1)
+            )
+            if progress is None:
+                remaining = session.scalar(
+                    select(RetrievalJobObjectProgressRecord.next_poll_at)
+                    .where(
+                        RetrievalJobObjectProgressRecord.job_id == job.id,
+                        RetrievalJobObjectProgressRecord.state != "ready",
+                    )
+                    .order_by(RetrievalJobObjectProgressRecord.next_poll_at)
+                    .limit(1)
+                )
+                if remaining is not None:
+                    job.next_poll_at = remaining
+                    return None
+                self._mark_job_ready(session, job, now=now)
+                return None
+            planned = session.get(
+                RetrievalPlanObjectRecord,
+                (job.plan_id, progress.object_order),
+            )
+            if planned is None:
+                raise InvalidState("retrieval plan object is missing")
+            record = session.get(
+                CollectionArchiveObjectRecord,
+                (planned.collection_id, planned.source_store, planned.object_id),
+            )
+            if record is None:
+                raise InvalidState("retrieval archive object is missing")
+            action = "prepare" if progress.state == "preparing" else "poll"
+            return action, planned, _object_identity(record), _download_attribution(job)
+
+    def _cache_restored_object(
+        self,
+        *,
+        job_id: str,
+        planned: RetrievalPlanObjectRecord,
+        object_identity: ArchiveObjectIdentity,
+        attribution: DownloadAttribution | None,
+        store: ArchiveStore,
+    ) -> None:
+        if self._cache is None:
+            raise RuntimeError("retrieval cache is unavailable")
+        admission = self._cache.admit(
+            owner=_job_object_owner(job_id, planned.object_order),
+            source_store=planned.source_store,
+            collection_id=planned.collection_id,
+            object_id=planned.object_id,
+            expected_bytes=planned.stored_bytes,
+        )
+        if admission is None:
+            with session_scope(self._session_factory) as session:
+                cached = session.get(
+                    RetrievalCacheObjectRecord,
+                    (planned.source_store, planned.collection_id, planned.object_id),
+                )
+                progress = session.get(
+                    RetrievalJobObjectProgressRecord,
+                    (job_id, planned.object_order),
+                )
+                job = session.get(RetrievalJobRecord, job_id)
+                if progress is None or job is None or job.state != "requested":
+                    return
+                if cached is not None and cached.state == "ready":
+                    progress.state = "ready"
+                    progress.cache_store = cached.cache_store
+                    progress.next_poll_at = format_utc_timestamp(utc_now())
+                    job.next_poll_at = progress.next_poll_at
+                else:
+                    next_poll = format_utc_timestamp(
+                        utc_now() + self._config.retrieval_restore_poll_interval
+                    )
+                    progress.next_poll_at = next_poll
+                    job.next_poll_at = next_poll
+            return
+        receipt = self._cache.put(
+            admission=admission,
+            content=store.iter_stored_archive_object(
+                collection_id=planned.collection_id,
+                object=object_identity,
+                attribution=attribution,
+            ),
+        )
+        try:
+            _validate_cache_receipt(receipt, object_identity)
+        except Exception as receipt_error:
+            try:
+                self._cache.delete(
+                    cache_store=receipt.cache_store,
+                    object_path=receipt.object_path,
+                    revision=receipt.revision,
+                )
+            except Exception as cleanup_error:
+                raise RuntimeError(
+                    f"{receipt_error}; retrieval cache cleanup also failed: {cleanup_error}"
+                ) from cleanup_error
+            raise
+        with session_scope(self._session_factory) as session:
+            register_cache_ready(
+                session,
+                source_store=planned.source_store,
+                collection_id=planned.collection_id,
+                object_id=planned.object_id,
+                receipt=receipt,
+            )
+            progress = session.get(
+                RetrievalJobObjectProgressRecord,
+                (job_id, planned.object_order),
+            )
+            job = session.get(RetrievalJobRecord, job_id)
+            if progress is not None and job is not None and job.state == "requested":
+                progress.state = "ready"
+                progress.cache_store = receipt.cache_store
+                progress.next_poll_at = format_utc_timestamp(utc_now())
+                job.next_poll_at = progress.next_poll_at
+                job.failure = None
+        self._cache.release(owner=_job_object_owner(job_id, planned.object_order))
+
+    def _mark_job_ready(
         self,
         session: Session,
         job: RetrievalJobRecord,
-    ) -> dict[tuple[str, int], list[ArchiveObjectIdentity]]:
-        groups: dict[tuple[str, int], list[ArchiveObjectIdentity]] = {}
-        for current in job.objects:
-            if current.read_mode != "restore_required":
-                continue
-            cache_key = (current.source_store, current.collection_id, current.object_id)
-            cached = session.get(RetrievalCacheObjectRecord, cache_key)
-            if cached is not None and cached.state == "ready":
-                continue
-            object_record = session.get(
-                CollectionArchiveObjectRecord,
-                (current.collection_id, current.source_store, current.object_id),
-            )
-            if object_record is None:
-                raise InvalidState("retrieval archive object is missing")
-            groups.setdefault((current.source_store, current.collection_id), []).append(
-                _object_identity(object_record)
-            )
-        return groups
+        *,
+        now: datetime,
+    ) -> None:
+        expires_at = format_utc_timestamp(now + timedelta(seconds=job.lease_seconds))
+        job.state = "ready"
+        job.ready_at = format_utc_timestamp(now)
+        job.expires_at = expires_at
+        job.next_poll_at = None
+        job.failure = None
+        self._lifecycle_events.emit_retrieval(
+            type="retrieval.ready",
+            job=job,
+            details={"expires_at": expires_at},
+            session=session,
+        )
 
     def _fail_pending_job(
         self,
@@ -1836,11 +2178,6 @@ class SqlAlchemyRetrievalService:
         job.state = "failed"
         job.failure = failure
         job.next_poll_at = None
-        session.execute(
-            delete(RetrievalCacheLeaseRecord).where(
-                RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
-            )
-        )
         _release_job_reservation(session, job.id)
         self._lifecycle_events.emit_retrieval(
             type="retrieval.failed",
@@ -1851,35 +2188,33 @@ class SqlAlchemyRetrievalService:
         )
 
     @staticmethod
-    def _lease_cached_object(
+    def _require_plan(
         session: Session,
         *,
-        owner: str,
-        source_store: str,
-        collection_id: int,
-        object_id: str,
-        expires_at: str,
-    ) -> None:
-        cached = session.scalar(
-            select(RetrievalCacheObjectRecord)
-            .where(
-                RetrievalCacheObjectRecord.source_store == source_store,
-                RetrievalCacheObjectRecord.collection_id == collection_id,
-                RetrievalCacheObjectRecord.object_id == object_id,
-            )
-            .with_for_update()
-        )
-        if cached is None or cached.state != "ready":
-            raise InvalidState("planned retrieval cache object is missing")
-        session.merge(
-            RetrievalCacheLeaseRecord(
-                owner=owner,
-                source_store=source_store,
-                collection_id=collection_id,
-                object_id=object_id,
-                expires_at=expires_at,
-            )
-        )
+        app: str,
+        plan_id: str,
+        key_id: str | None = None,
+        lock: bool = False,
+    ) -> RetrievalPlanRecord:
+        statement = select(RetrievalPlanRecord).where(RetrievalPlanRecord.id == plan_id)
+        if lock:
+            statement = statement.with_for_update()
+        record = session.scalar(statement)
+        if (
+            record is None
+            or (record.app and record.app != app)
+            or (record.initiated_by_key_id is not None and record.initiated_by_key_id != key_id)
+        ):
+            raise NotFound(f"retrieval plan not found: {plan_id}")
+        return record
+
+    @staticmethod
+    def _expire_plan_if_due(plan: RetrievalPlanRecord) -> None:
+        if (
+            plan.state in {"planning", "ready"}
+            and parse_utc_timestamp(plan.expires_at) <= utc_now()
+        ):
+            plan.state = "expired"
 
     @staticmethod
     def _require_job(
@@ -1910,11 +2245,6 @@ class SqlAlchemyRetrievalService:
                 job=job,
                 terminal=True,
                 session=session,
-            )
-            session.execute(
-                delete(RetrievalCacheLeaseRecord).where(
-                    RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
-                )
             )
             _release_job_reservation(session, job.id)
 
@@ -1996,32 +2326,6 @@ class _TrackedArchiveRangeStore:
             expected_bytes=size,
             content=content,
             attribution=self._attribution,
-        )
-
-
-class _DispatchArchiveRangeStore:
-    def __init__(self, stores: Mapping[str, ArchiveObjectRangeStore]) -> None:
-        self._stores = dict(stores)
-
-    def iter_object_range(
-        self,
-        *,
-        object_path: str,
-        revision: str | None,
-        expected_bytes: int,
-        offset: int,
-        size: int,
-    ) -> Iterator[bytes]:
-        try:
-            store = self._stores[object_path]
-        except KeyError as exc:
-            raise ValueError("raw retrieval object range store is missing") from exc
-        return store.iter_object_range(
-            object_path=object_path,
-            revision=revision,
-            expected_bytes=expected_bytes,
-            offset=offset,
-            size=size,
         )
 
 
@@ -2234,7 +2538,7 @@ def _cache_lease_projections(now: str) -> tuple[Any, Any, Any]:
         & (RetrievalCacheLeaseRecord.object_id == RetrievalCacheObjectRecord.object_id)
         & (RetrievalCacheLeaseRecord.expires_at > now)
     )
-    protected_until = (
+    lease_protected_until = (
         select(func.max(RetrievalCacheLeaseRecord.expires_at))
         .where(matches_object)
         .correlate(RetrievalCacheObjectRecord)
@@ -2246,46 +2550,47 @@ def _cache_lease_projections(now: str) -> tuple[Any, Any, Any]:
         .correlate(RetrievalCacheObjectRecord)
         .scalar_subquery()
     )
-    retrieval_job_leases = (
-        select(func.count())
-        .select_from(RetrievalCacheLeaseRecord)
-        .where(matches_object, RetrievalCacheLeaseRecord.owner.startswith("job:"))
+    retrieval_protected_until, retrieval_references = _retrieval_reference_projections(now)
+    protected_until = case(
+        (lease_protected_until.is_(None), retrieval_protected_until),
+        (retrieval_protected_until.is_(None), lease_protected_until),
+        (lease_protected_until >= retrieval_protected_until, lease_protected_until),
+        else_=retrieval_protected_until,
+    )
+    return protected_until, new_archive_expires_at, retrieval_references
+
+
+def _retrieval_reference_projections(now: str) -> tuple[Any, Any]:
+    active_until = case(
+        (
+            RetrievalPlanRecord.state.in_({"planning", "ready"}),
+            RetrievalPlanRecord.expires_at,
+        ),
+        (
+            RetrievalJobRecord.state == "requested",
+            RetrievalPlanRecord.expires_at,
+        ),
+        (
+            RetrievalJobRecord.state == "ready",
+            RetrievalJobRecord.expires_at,
+        ),
+        else_=None,
+    )
+    matches = (
+        (RetrievalPlanObjectRecord.source_store == RetrievalCacheObjectRecord.source_store)
+        & (RetrievalPlanObjectRecord.collection_id == RetrievalCacheObjectRecord.collection_id)
+        & (RetrievalPlanObjectRecord.object_id == RetrievalCacheObjectRecord.object_id)
+    )
+    base = (
+        select(RetrievalPlanObjectRecord)
+        .join(RetrievalPlanRecord)
+        .outerjoin(RetrievalJobRecord, RetrievalJobRecord.plan_id == RetrievalPlanRecord.id)
+        .where(matches, active_until > now)
         .correlate(RetrievalCacheObjectRecord)
-        .scalar_subquery()
     )
-    return protected_until, new_archive_expires_at, retrieval_job_leases
-
-
-def _active_cache_lease_summary(now: str) -> Any:
-    return (
-        select(
-            RetrievalCacheLeaseRecord.source_store.label("source_store"),
-            RetrievalCacheLeaseRecord.collection_id.label("collection_id"),
-            RetrievalCacheLeaseRecord.object_id.label("object_id"),
-            func.max(RetrievalCacheLeaseRecord.expires_at).label("protected_until"),
-            func.max(
-                case(
-                    (
-                        RetrievalCacheLeaseRecord.owner == "new-archive",
-                        RetrievalCacheLeaseRecord.expires_at,
-                    ),
-                    else_=None,
-                )
-            ).label("new_archive_expires_at"),
-            func.sum(
-                case(
-                    (RetrievalCacheLeaseRecord.owner.startswith("job:"), 1),
-                    else_=0,
-                )
-            ).label("retrieval_job_leases"),
-        )
-        .where(RetrievalCacheLeaseRecord.expires_at > now)
-        .group_by(
-            RetrievalCacheLeaseRecord.source_store,
-            RetrievalCacheLeaseRecord.collection_id,
-            RetrievalCacheLeaseRecord.object_id,
-        )
-    )
+    protected_until = base.with_only_columns(func.max(active_until)).scalar_subquery()
+    references = base.with_only_columns(func.count()).scalar_subquery()
+    return protected_until, references
 
 
 def _cache_object_payload(
@@ -2367,8 +2672,39 @@ def _validate_cache_receipt(
     parse_utc_timestamp(receipt.verified_at)
 
 
-def _job_owner(job_id: str) -> str:
-    return f"job:{job_id}"
+def _job_object_owner(job_id: str, object_order: int) -> str:
+    return f"job-object:{job_id}:{object_order}"
+
+
+def _active_retrieval_cache_reference(now: str) -> ColumnElement[bool]:
+    return exists(
+        select(1)
+        .select_from(RetrievalPlanObjectRecord)
+        .join(
+            RetrievalPlanRecord,
+            RetrievalPlanRecord.id == RetrievalPlanObjectRecord.plan_id,
+        )
+        .outerjoin(
+            RetrievalJobRecord,
+            RetrievalJobRecord.plan_id == RetrievalPlanRecord.id,
+        )
+        .where(
+            RetrievalPlanObjectRecord.source_store == RetrievalCacheObjectRecord.source_store,
+            RetrievalPlanObjectRecord.collection_id == RetrievalCacheObjectRecord.collection_id,
+            RetrievalPlanObjectRecord.object_id == RetrievalCacheObjectRecord.object_id,
+            or_(
+                (
+                    RetrievalPlanRecord.state.in_({"planning", "ready"})
+                    & (RetrievalPlanRecord.expires_at > now)
+                ),
+                (
+                    (RetrievalJobRecord.state == "requested")
+                    & (RetrievalPlanRecord.expires_at > now)
+                ),
+                ((RetrievalJobRecord.state == "ready") & (RetrievalJobRecord.expires_at > now)),
+            ),
+        )
+    )
 
 
 def _download_attribution(job: RetrievalJobRecord) -> DownloadAttribution | None:
@@ -2389,24 +2725,10 @@ def _release_job_reservation(session: Session, job_id: str) -> None:
 
 
 def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
-    plan = json.loads(record.constraints_json)
-    cache_stores = {
-        (current.collection_id, current.source_store, current.object_id): current.cache_store
-        for current in record.objects
-    }
-    objects: list[dict[str, object]] = []
-    for value in plan["objects"]:
-        current = dict(value)
-        current["cache_store"] = cache_stores.get(
-            (
-                int(current["collection_id"]),
-                str(current["source_store"]),
-                str(current["object_id"]),
-            )
-        )
-        objects.append(current)
+    plan = record.plan
     return {
         "id": record.id,
+        "plan_id": record.plan_id,
         "state": record.state,
         "plan_etag": record.plan_etag,
         "created_at": record.created_at,
@@ -2417,9 +2739,49 @@ def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
         "completed_at": record.completed_at,
         "canceled_at": record.canceled_at,
         "failure": record.failure,
-        "lease_seconds": plan["lease_seconds"],
-        "restore_policy": plan["restore_policy"],
-        "requires_restore": plan["requires_restore"],
-        "files": plan["files"],
-        "objects": objects,
+        "lease_seconds": record.lease_seconds,
+        "restore_policy": plan.restore_policy,
+        "requires_restore": plan.requires_restore,
     }
+
+
+def _plan_payload(record: RetrievalPlanRecord) -> dict[str, object]:
+    return {
+        "format": "riverhog-retrieval-plan/v1",
+        "id": record.id,
+        "state": record.state,
+        "created_at": record.created_at,
+        "ready_at": record.ready_at,
+        "expires_at": record.expires_at,
+        "failure": record.failure,
+        "lease_seconds": record.lease_seconds,
+        "restore_policy": record.restore_policy,
+        "requires_restore": record.requires_restore,
+        "file_count": len(json.loads(record.request_json)),
+        "etag": record.etag,
+    }
+
+
+def _normalize_plan_idempotency_key(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or normalized != value or len(normalized) > 200:
+        raise BadRequest("retrieval plan idempotency_key is invalid")
+    return normalized
+
+
+def _plan_file_payload(record: RetrievalPlanFileRecord) -> dict[str, object]:
+    return {
+        "collection_id": record.collection_id,
+        "path": record.path,
+        "bytes": record.bytes,
+        "sha256": record.sha256,
+        "requires_restore": record.requires_restore,
+    }
+
+
+def _chain_commitment(previous: str, value: object) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"riverhog-retrieval-plan-chain/v1\x00")
+    digest.update(bytes.fromhex(previous))
+    digest.update(canonical_json_bytes(value))
+    return digest.hexdigest()

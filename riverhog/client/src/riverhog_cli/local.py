@@ -598,6 +598,63 @@ def _missing_files(
     return missing
 
 
+def _retrieval_plan_files(
+    api: ApiClient,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    plan_id = str(plan["id"])
+    plan_etag = str(plan["etag"])
+    file_count = int(plan["file_count"])
+    files: list[dict[str, Any]] = []
+    start_ordinal = 0
+    while True:
+        page = api.list_retrieval_plan_files(
+            plan_id,
+            plan_etag=plan_etag,
+            start_ordinal=start_ordinal,
+            page_size=100,
+        )
+        current = page.get("files")
+        if (
+            page.get("plan_id") != plan_id
+            or page.get("etag") != plan_etag
+            or page.get("start_ordinal") != start_ordinal
+            or not isinstance(current, list)
+            or any(not isinstance(item, dict) for item in current)
+        ):
+            raise InvalidState("retrieval plan file page changed its authority")
+        files.extend(current)
+        if len(files) > file_count:
+            raise InvalidState("retrieval plan file page exceeded its declared count")
+        complete = page.get("complete")
+        if not isinstance(complete, bool):
+            raise InvalidState("retrieval plan file page omitted completion state")
+        if complete:
+            if page.get("next_ordinal") is not None or len(files) != file_count:
+                raise InvalidState("retrieval plan file traversal ended inconsistently")
+            return tuple(files)
+        next_ordinal = page.get("next_ordinal")
+        expected_next = start_ordinal + len(current)
+        if not current or isinstance(next_ordinal, bool) or next_ordinal != expected_next:
+            raise InvalidState("retrieval plan file traversal did not advance exactly")
+        start_ordinal = expected_next
+
+
+def _verify_retrieval_plan_selection(
+    files: Sequence[dict[str, Any]],
+    expected: Sequence[tuple[int, str]],
+) -> None:
+    actual = tuple(
+        (
+            normalize_collection_id(current["collection_id"]),
+            normalize_relpath(str(current["path"])),
+        )
+        for current in files
+    )
+    if actual != tuple(expected):
+        raise InvalidState("retrieval plan changed its requested file selection")
+
+
 def _download_job(
     db: sqlite3.Connection,
     target: Path,
@@ -622,17 +679,6 @@ def _download_job(
             (str(job["id"]),),
         )
     )
-    reported_files = tuple(
-        (
-            normalize_collection_id(current["collection_id"]),
-            normalize_relpath(str(current["path"])),
-            int(current["bytes"]),
-            str(current["sha256"]),
-        )
-        for current in job["files"]
-    )
-    if reported_files != persisted_files:
-        raise InvalidState("retrieval job membership changed after local checkpoint")
     expected: dict[tuple[int, str], tuple[int, str]] = {}
     for collection_id, path, expected_bytes, expected_sha256 in persisted_files:
         output = _output_path(target, collection_id, path)
@@ -782,25 +828,27 @@ def _sync(
 
                 batch = missing[:RETRIEVAL_FILE_BATCH_MAX]
                 plan = api.plan_retrieval(batch, restore_policy=policy)
+                plan_files = _retrieval_plan_files(api, plan)
+                _verify_retrieval_plan_selection(plan_files, batch)
                 if policy == "never" and plan.get("requires_restore"):
                     blocked = {
                         (
                             normalize_collection_id(current["collection_id"]),
-                            normalize_relpath(str(placement["path"])),
+                            normalize_relpath(str(current["path"])),
                         )
-                        for current in plan.get("objects", [])
-                        if current.get("read_mode") == "restore_required"
-                        for placement in current.get("placements", [])
+                        for current in plan_files
+                        if current.get("requires_restore") is True
                     }
                     unavailable.update(blocked)
                     batch = [current for current in batch if current not in blocked]
                     if not batch:
                         continue
                     plan = api.plan_retrieval(batch, restore_policy=policy)
+                    plan_files = _retrieval_plan_files(api, plan)
+                    _verify_retrieval_plan_selection(plan_files, batch)
                 job = api.create_retrieval_job(
-                    batch,
+                    str(plan["id"]),
                     plan_etag=str(plan["etag"]),
-                    restore_policy=policy,
                 )
                 db.execute(
                     "INSERT INTO retrieval_jobs (id, state) VALUES (?, ?)",
@@ -821,7 +869,7 @@ def _sync(
                             current["bytes"],
                             current["sha256"],
                         )
-                        for ordinal, current in enumerate(job["files"])
+                        for ordinal, current in enumerate(plan_files)
                     ),
                 )
                 db.commit()

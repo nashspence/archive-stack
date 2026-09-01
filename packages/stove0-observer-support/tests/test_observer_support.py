@@ -150,20 +150,40 @@ class RetrievalApi:
         files: Sequence[tuple[int, str]],
         **_kwargs: Any,
     ) -> dict[str, Any]:
-        return {"etag": _sha("9"), "files": self._rows(files)}
+        self.planned_files = self._rows(files)
+        return {
+            "id": "observer-plan",
+            "etag": _sha("9"),
+            "file_count": len(self.planned_files),
+        }
+
+    def list_retrieval_plan_files(
+        self,
+        plan_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert plan_id == "observer-plan"
+        return {
+            "plan_id": plan_id,
+            "etag": kwargs["plan_etag"],
+            "start_ordinal": kwargs["start_ordinal"],
+            "files": self.planned_files,
+            "complete": True,
+            "next_ordinal": None,
+        }
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[int, str]],
+        plan_id: str,
         *,
         plan_etag: str,
         **_kwargs: Any,
     ) -> dict[str, Any]:
         return {
             "id": "observer-retrieval",
+            "plan_id": plan_id,
             "state": "ready",
             "plan_etag": plan_etag,
-            "files": self._rows(files),
         }
 
     def get_retrieval_job(self, job_id: str) -> dict[str, Any]:

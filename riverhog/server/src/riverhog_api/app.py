@@ -224,7 +224,8 @@ async def _run_retrieval_restore_reaper(
             container = container_provider()
             if container is None:
                 continue
-            await asyncio.to_thread(container.retrieval.process_due, limit=10)
+            while await asyncio.to_thread(container.retrieval.process_due, limit=10):
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging

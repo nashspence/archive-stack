@@ -110,6 +110,32 @@ def test_two_mib_packed_file_does_not_download_its_six_mib_pack() -> None:
     assert store.requests[0][3] < source.stored_bytes // 2
 
 
+def test_head_middle_and_tail_ranges_read_only_bounded_pack_framing() -> None:
+    content = bytes(range(251)) * (2 * 1024 * 1024 // 251)
+    content += b"tail"
+    _plan, source, members, ciphertext = _archive({"large.bin": content})
+    store = MemoryRangeStore(ciphertext)
+    size = 4096
+
+    for offset in (0, len(content) // 2, len(content) - size):
+        store.requests.clear()
+        recovered = b"".join(
+            PackMemberRangeReader(
+                store,
+                passphrase="archive passphrase",
+            ).iter_member_range(
+                source,
+                members["large.bin"],
+                offset=offset,
+                size=size,
+            )
+        )
+
+        assert recovered == content[offset : offset + size]
+        assert len(store.requests) == 1
+        assert store.requests[0][3] < len(content) // 4
+
+
 def test_batch_reader_coalesces_nearby_members_and_verifies_each_file() -> None:
     contents = {
         "a.txt": b"alpha" * 1000,

@@ -18,6 +18,8 @@ from riverhog_core.catalog_models import (
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
+    RetrievalPlanFileRecord,
+    RetrievalPlanRecord,
     TagRecord,
 )
 from riverhog_core.services.collection_deletions import (
@@ -308,6 +310,92 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
     assert changes["cursor"] == event_sequence
     assert changes["has_more"] is False
     assert [current["change"] for current in changes["changes"]] == ["deleted"]
+
+
+def test_deletion_reclaims_a_multi_collection_retrieval_plan_as_one_authority(
+    tmp_path: Path,
+) -> None:
+    config, _archive_store, service = _service(tmp_path / "catalog.sqlite3")
+    factory = make_session_factory(config.database_url)
+    other_collection_id = COLLECTION_ID + 1
+    with session_scope(factory) as session:
+        session.add(
+            CollectionRecord(
+                id=other_collection_id,
+                creation_idempotency_key="other-collection",
+                creation_identity_sha256="1" * 64,
+                creation_custody_mode="transfer",
+                content_identity="2" * 64,
+                tag_set_identity="3" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="default",
+                provenance_mode="omitted",
+                provenance_identity=None,
+                inventory_identity="4" * 64,
+                metadata_updated_at=UPLOADED_AT,
+                created_at=UPLOADED_AT,
+                file_count=1,
+                file_bytes=1,
+            )
+        )
+        session.add(
+            CollectionFileRecord(
+                collection_id=other_collection_id,
+                path="other.bin",
+                bytes=1,
+                sha256="5" * 64,
+            )
+        )
+        session.add(
+            RetrievalPlanRecord(
+                id="multi-collection-plan",
+                app="reader",
+                idempotency_key="multi-collection-plan",
+                creation_identity_sha256="8" * 64,
+                state="expired",
+                request_json=(
+                    f'[{{"collection_id":{COLLECTION_ID},"path":"one.txt"}},'
+                    f'{{"collection_id":{other_collection_id},"path":"other.bin"}}]'
+                ),
+                lease_seconds=3600,
+                restore_policy="allow",
+                created_at=UPLOADED_AT,
+                expires_at=UPLOADED_AT,
+                file_commitment_sha256="6" * 64,
+                segment_commitment_sha256="7" * 64,
+            )
+        )
+        target_file = session.get(CollectionFileRecord, (COLLECTION_ID, "one.txt"))
+        assert target_file is not None
+        session.add_all(
+            (
+                RetrievalPlanFileRecord(
+                    plan_id="multi-collection-plan",
+                    file_order=0,
+                    collection_id=COLLECTION_ID,
+                    path="one.txt",
+                    bytes=len(FILES["one.txt"]),
+                    sha256=target_file.sha256,
+                    source_store="deep",
+                ),
+                RetrievalPlanFileRecord(
+                    plan_id="multi-collection-plan",
+                    file_order=1,
+                    collection_id=other_collection_id,
+                    path="other.bin",
+                    bytes=1,
+                    sha256="5" * 64,
+                    source_store="deep",
+                ),
+            )
+        )
+
+    assert service._delete_retrieval_references(COLLECTION_ID) is True
+
+    with session_scope(factory) as session:
+        assert session.get(RetrievalPlanRecord, "multi-collection-plan") is None
+        assert session.get(CollectionRecord, other_collection_id) is not None
+        assert session.get(CollectionFileRecord, (other_collection_id, "other.bin")) is not None
 
 
 def test_cache_deletion_waits_for_lease_and_accounts_once_after_ambiguous_response(
