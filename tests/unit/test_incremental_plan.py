@@ -13,6 +13,7 @@ from riverhog_core.incremental_plan import (
     new_incremental_volume_planner,
     parse_incremental_volume_planner_checkpoint,
 )
+from riverhog_protocol.manifest import collection_content_identity_ordered
 
 TEST_ARCHIVE_PART_BYTES = 5 * 1024 * 1024
 
@@ -103,6 +104,9 @@ def test_artifact_at_a_time_construction_seals_the_exact_one_shot_v1_plans(
     assert sealed.checkpoint == one_shot.checkpoint
     assert tuple(emitted) == one_shot.volumes
     assert [item.sequence for item in emitted] == list(range(len(emitted)))
+    assert sealed.checkpoint.content_identity == collection_content_identity_ordered(
+        (current.file.path, current.file.bytes, current.file.sha256) for current in files
+    )
 
 
 def test_large_file_flushes_pending_pack_and_emits_canonical_segments() -> None:
@@ -137,6 +141,26 @@ def test_incremental_checkpoint_has_canonical_identity() -> None:
     ).checkpoint
     payload = json.loads(incremental_volume_planner_checkpoint_bytes(checkpoint))
     assert payload["schema"] == "incremental-volume-planner-checkpoint/v1"
+    assert payload["content_identity"] is None
+
+
+def test_incremental_content_commitment_matches_unicode_one_shot_after_restart() -> None:
+    files = (
+        _ordered(0, "unicode/Éclair.txt", 1),
+        _ordered(1, "unicode/ΩMEGA.txt", 2),
+    )
+    first = advance_incremental_volume_plan(
+        new_incremental_volume_planner(policy=_policy()),
+        files[:1],
+    )
+    restored = parse_incremental_volume_planner_checkpoint(
+        incremental_volume_planner_checkpoint_bytes(first.checkpoint)
+    )
+    sealed = advance_incremental_volume_plan(restored, files[1:], final=True).checkpoint
+
+    assert sealed.content_identity == collection_content_identity_ordered(
+        (current.file.path, current.file.bytes, current.file.sha256) for current in files
+    )
 
 
 def test_incremental_checkpoint_preserves_the_full_v1_sequence_domain() -> None:
