@@ -267,7 +267,7 @@ CREATE TABLE lifecycle_events (
 )
     """.strip(),
     """
-CREATE INDEX ix_lifecycle_events_context_expiry ON lifecycle_events (context_expires_at)
+CREATE INDEX ix_lifecycle_events_context_expiry ON lifecycle_events (context_expires_at, sequence)
     """.strip(),
     """
 CREATE INDEX ix_lifecycle_events_owner_sequence ON lifecycle_events (owner_app, sequence)
@@ -738,6 +738,7 @@ CREATE TABLE collection_upload_provenance_journals (
 	sha256 VARCHAR(64) NOT NULL,
 	state VARCHAR NOT NULL,
 	accepted_bytes BIGINT DEFAULT 0 NOT NULL,
+	next_chunk_ordinal VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' NOT NULL,
 	content_hash_state TEXT NOT NULL,
 	validation_byte_offset BIGINT DEFAULT 0 NOT NULL,
 	validation_sequence BIGINT DEFAULT 0 NOT NULL,
@@ -759,6 +760,7 @@ CREATE TABLE collection_upload_provenance_journals (
 	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
 	CONSTRAINT ck_upload_provenance_journals_bytes CHECK (bytes >= 0),
 	CONSTRAINT ck_upload_provenance_journals_accepted_bytes CHECK (accepted_bytes >= 0 AND accepted_bytes <= bytes),
+	CONSTRAINT ck_upload_provenance_journals_next_chunk_ordinal CHECK (length(next_chunk_ordinal) = 64 AND lower(next_chunk_ordinal) = next_chunk_ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(next_chunk_ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_upload_provenance_journals_validation_offset CHECK (validation_byte_offset >= 0 AND validation_byte_offset <= accepted_bytes),
 	CONSTRAINT ck_upload_provenance_journals_validation_sequence CHECK (validation_sequence >= 0),
 	CONSTRAINT ck_upload_provenance_journals_state CHECK (state IN ('accepting','generating','validating','sealed','failed')),
@@ -1146,12 +1148,12 @@ CREATE INDEX ix_collection_provenance_journal_agents_agent ON collection_provena
 CREATE TABLE collection_provenance_journal_chunks (
 	collection_id INTEGER NOT NULL,
 	journal_id VARCHAR NOT NULL,
-	ordinal INTEGER NOT NULL,
+	ordinal VARCHAR(64) NOT NULL,
 	byte_offset BIGINT NOT NULL,
 	content BLOB NOT NULL,
 	PRIMARY KEY (collection_id, journal_id, ordinal),
 	FOREIGN KEY(collection_id, journal_id) REFERENCES collection_provenance_journals (collection_id, journal_id) ON DELETE CASCADE,
-	CONSTRAINT ck_provenance_journal_chunks_ordinal CHECK (ordinal >= 0),
+	CONSTRAINT ck_provenance_journal_chunks_ordinal CHECK (length(ordinal) = 64 AND lower(ordinal) = ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_provenance_journal_chunks_offset CHECK (byte_offset >= 0),
 	CONSTRAINT ck_provenance_journal_chunks_content CHECK (length(content) > 0)
 )
@@ -1257,12 +1259,12 @@ CREATE INDEX ix_collection_transform_capabilities_claim_state ON collection_tran
 CREATE TABLE collection_upload_provenance_journal_chunks (
 	collection_id INTEGER NOT NULL,
 	journal_id VARCHAR NOT NULL,
-	ordinal INTEGER NOT NULL,
+	ordinal VARCHAR(64) NOT NULL,
 	byte_offset BIGINT NOT NULL,
 	content BLOB NOT NULL,
 	PRIMARY KEY (collection_id, journal_id, ordinal),
 	FOREIGN KEY(collection_id, journal_id) REFERENCES collection_upload_provenance_journals (collection_id, journal_id) ON DELETE CASCADE,
-	CONSTRAINT ck_upload_provenance_journal_chunks_ordinal CHECK (ordinal >= 0),
+	CONSTRAINT ck_upload_provenance_journal_chunks_ordinal CHECK (length(ordinal) = 64 AND lower(ordinal) = ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_upload_provenance_journal_chunks_offset CHECK (byte_offset >= 0),
 	CONSTRAINT ck_upload_provenance_journal_chunks_content CHECK (length(content) > 0)
 )
@@ -1819,7 +1821,7 @@ CREATE TABLE lifecycle_events (
 )
     """.strip(),
     """
-CREATE INDEX ix_lifecycle_events_context_expiry ON lifecycle_events (context_expires_at)
+CREATE INDEX ix_lifecycle_events_context_expiry ON lifecycle_events (context_expires_at, sequence)
     """.strip(),
     """
 CREATE INDEX ix_lifecycle_events_owner_sequence ON lifecycle_events (owner_app, sequence)
@@ -2290,6 +2292,7 @@ CREATE TABLE collection_upload_provenance_journals (
 	sha256 VARCHAR(64) NOT NULL,
 	state VARCHAR NOT NULL,
 	accepted_bytes BIGINT DEFAULT 0 NOT NULL,
+	next_chunk_ordinal VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' NOT NULL,
 	content_hash_state TEXT NOT NULL,
 	validation_byte_offset BIGINT DEFAULT 0 NOT NULL,
 	validation_sequence BIGINT DEFAULT 0 NOT NULL,
@@ -2311,6 +2314,7 @@ CREATE TABLE collection_upload_provenance_journals (
 	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
 	CONSTRAINT ck_upload_provenance_journals_bytes CHECK (bytes >= 0),
 	CONSTRAINT ck_upload_provenance_journals_accepted_bytes CHECK (accepted_bytes >= 0 AND accepted_bytes <= bytes),
+	CONSTRAINT ck_upload_provenance_journals_next_chunk_ordinal CHECK (length(next_chunk_ordinal) = 64 AND lower(next_chunk_ordinal) = next_chunk_ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(next_chunk_ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_upload_provenance_journals_validation_offset CHECK (validation_byte_offset >= 0 AND validation_byte_offset <= accepted_bytes),
 	CONSTRAINT ck_upload_provenance_journals_validation_sequence CHECK (validation_sequence >= 0),
 	CONSTRAINT ck_upload_provenance_journals_state CHECK (state IN ('accepting','generating','validating','sealed','failed')),
@@ -2698,12 +2702,12 @@ CREATE INDEX ix_collection_provenance_journal_agents_agent ON collection_provena
 CREATE TABLE collection_provenance_journal_chunks (
 	collection_id BIGINT NOT NULL,
 	journal_id VARCHAR NOT NULL,
-	ordinal INTEGER NOT NULL,
+	ordinal VARCHAR(64) NOT NULL,
 	byte_offset BIGINT NOT NULL,
 	content BYTEA NOT NULL,
 	PRIMARY KEY (collection_id, journal_id, ordinal),
 	FOREIGN KEY(collection_id, journal_id) REFERENCES collection_provenance_journals (collection_id, journal_id) ON DELETE CASCADE,
-	CONSTRAINT ck_provenance_journal_chunks_ordinal CHECK (ordinal >= 0),
+	CONSTRAINT ck_provenance_journal_chunks_ordinal CHECK (length(ordinal) = 64 AND lower(ordinal) = ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_provenance_journal_chunks_offset CHECK (byte_offset >= 0),
 	CONSTRAINT ck_provenance_journal_chunks_content CHECK (length(content) > 0)
 )
@@ -2809,12 +2813,12 @@ CREATE INDEX ix_collection_transform_capabilities_claim_state ON collection_tran
 CREATE TABLE collection_upload_provenance_journal_chunks (
 	collection_id BIGINT NOT NULL,
 	journal_id VARCHAR NOT NULL,
-	ordinal INTEGER NOT NULL,
+	ordinal VARCHAR(64) NOT NULL,
 	byte_offset BIGINT NOT NULL,
 	content BYTEA NOT NULL,
 	PRIMARY KEY (collection_id, journal_id, ordinal),
 	FOREIGN KEY(collection_id, journal_id) REFERENCES collection_upload_provenance_journals (collection_id, journal_id) ON DELETE CASCADE,
-	CONSTRAINT ck_upload_provenance_journal_chunks_ordinal CHECK (ordinal >= 0),
+	CONSTRAINT ck_upload_provenance_journal_chunks_ordinal CHECK (length(ordinal) = 64 AND lower(ordinal) = ordinal AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(ordinal, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_upload_provenance_journal_chunks_offset CHECK (byte_offset >= 0),
 	CONSTRAINT ck_upload_provenance_journal_chunks_content CHECK (length(content) > 0)
 )

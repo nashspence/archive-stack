@@ -140,6 +140,71 @@ def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None
         assert records["2"].context_expires_at is None
 
 
+def test_event_page_omits_expired_context_without_performing_cleanup(tmp_path: Path) -> None:
+    config = RuntimeConfig(database_url=sqlite_url(tmp_path / "catalog.sqlite3"))
+    initialize_db(config.database_url)
+    events = SqlAlchemyLifecycleEventService(config)
+    events.emit(
+        owner_app="alpha",
+        type="collection.tags_changed",
+        subject="1",
+        data=_tag_event_data(1, "alpha"),
+        context_json='{"route":"phone"}',
+        context_expires_at="2000-01-01T00:00:00.000000Z",
+    )
+
+    page = events.page(owner_app="alpha", after=None, limit=1)
+
+    assert len(page.events) == 1
+    assert "context" not in page.events[0].data
+    with session_scope(make_session_factory(config.database_url)) as session:
+        record = session.query(LifecycleEventRecord).one()
+        assert record.context_json == '{"route":"phone"}'
+        assert record.context_expires_at == "2000-01-01T00:00:00.000000Z"
+
+
+def test_expired_context_reclamation_is_bounded_and_restartable(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        database_url=sqlite_url(tmp_path / "catalog.sqlite3"),
+        event_context_reap_batch_size=2,
+    )
+    initialize_db(config.database_url)
+    events = SqlAlchemyLifecycleEventService(config)
+    for subject in ("1", "2", "3"):
+        events.emit(
+            owner_app="alpha",
+            type="collection.tags_changed",
+            subject=subject,
+            data=_tag_event_data(int(subject), "alpha"),
+            context_json='{"route":"phone"}',
+            context_expires_at="2000-01-01T00:00:00.000000Z",
+        )
+    events.emit(
+        owner_app="alpha",
+        type="collection.tags_changed",
+        subject="4",
+        data=_tag_event_data(4, "alpha"),
+        context_json='{"route":"desktop"}',
+        context_expires_at="2999-01-01T00:00:00.000000Z",
+    )
+
+    assert events.reap_expired_contexts() == 2
+    with session_scope(make_session_factory(config.database_url)) as session:
+        remaining = session.query(LifecycleEventRecord).filter(
+            LifecycleEventRecord.context_json.is_not(None)
+        )
+        assert {record.subject for record in remaining} == {"3", "4"}
+
+    restarted = SqlAlchemyLifecycleEventService(config)
+    assert restarted.reap_expired_contexts() == 1
+    assert restarted.reap_expired_contexts() == 0
+    with session_scope(make_session_factory(config.database_url)) as session:
+        remaining = session.query(LifecycleEventRecord).filter(
+            LifecycleEventRecord.context_json.is_not(None)
+        )
+        assert {record.subject for record in remaining} == {"4"}
+
+
 def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
     tmp_path: Path,
 ) -> None:

@@ -151,6 +151,17 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "context_json",
         "context_expires_at",
     }
+    lifecycle_indexes = {
+        index["name"]: tuple(index["column_names"])
+        for index in inspector.get_indexes("lifecycle_events")
+    }
+    assert lifecycle_indexes["ix_lifecycle_events_context_expiry"] == (
+        "context_expires_at",
+        "sequence",
+    )
+    assert {
+        column["name"] for column in inspector.get_columns("collection_upload_provenance_journals")
+    } >= {"accepted_bytes", "next_chunk_ordinal"}
     assert {column["name"] for column in inspector.get_columns("catalog_event_tags")} == {
         "sequence",
         "phase",
