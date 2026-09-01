@@ -10,6 +10,7 @@ from riverhog_protocol.lifecycle_events import (
     RiverhogEventPage,
     RiverhogLifecycleEvent,
     normalize_riverhog_event_type,
+    validate_lifecycle_event_cursor,
     validate_riverhog_event,
 )
 from sqlalchemy import func, select, update
@@ -101,12 +102,7 @@ class SqlAlchemyLifecycleEventService:
         after: str | None,
         limit: int,
     ) -> RiverhogEventPage:
-        try:
-            cursor = int((after or "0").strip())
-        except ValueError as exc:
-            raise ValueError("after must be a non-negative event cursor") from exc
-        if cursor < 0:
-            raise ValueError("after must be a non-negative event cursor")
+        cursor = int(validate_lifecycle_event_cursor("0" if after is None else after))
         if limit < 1 or limit > 100:
             raise ValueError("limit must be between 1 and 100")
         with session_scope(self._session_factory) as session:

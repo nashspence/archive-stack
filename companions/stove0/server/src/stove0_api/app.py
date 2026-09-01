@@ -13,13 +13,15 @@ import threading
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import Annotated, cast
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from http_api_contracts import (
+    BrowsePageToken,
+    BrowseQuery,
     apply_openapi_error_contract,
     cursor_feed_operation,
     error_code_for_status,
@@ -103,6 +105,9 @@ from stove0_api.schemas import (
     WorkCreateIn,
     WorkflowPreviewIn,
 )
+
+type BrowsePageTokenQuery = Annotated[BrowsePageToken | None, Query()]
+type BrowseQueryParameter = Annotated[BrowseQuery | None, Query()]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -549,13 +554,13 @@ def create_app(
     )
     def list_work(
         page_size: int = Query(default=25, ge=1, le=100),
-        page_token: str | None = None,
+        page_token: BrowsePageTokenQuery = None,
         phase: WorkPhase | None = None,
-        q: str | None = None,
+        q: BrowseQueryParameter = None,
         sort: WorkSort = "updated_at",
         order: SortOrder = "desc",
     ) -> WorkPage:
-        normalized_query = q.strip().casefold() if q is not None else None
+        normalized_query = q.casefold() if q is not None else None
         selectors: dict[str, object] = {
             "phase": phase,
             "q": normalized_query,
@@ -715,13 +720,13 @@ def create_app(
     )
     def list_evaluations(
         page_size: int = Query(default=25, ge=1, le=100),
-        page_token: str | None = None,
+        page_token: BrowsePageTokenQuery = None,
         phase: EvaluationPhase | None = None,
-        q: str | None = None,
+        q: BrowseQueryParameter = None,
         sort: EvaluationSort = "updated_at",
         order: SortOrder = "desc",
     ) -> EvaluationPage:
-        normalized_query = q.strip().casefold() if q is not None else None
+        normalized_query = q.casefold() if q is not None else None
         selectors: dict[str, object] = {
             "phase": phase,
             "q": normalized_query,

@@ -34,7 +34,13 @@ from riverhog_api.auth import (
     CollectionDeleter,
     CollectionUploadReader,
 )
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
@@ -111,8 +117,8 @@ def list_collections(
     container: ContainerDep,
     principal: CatalogReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None, max_length=8192),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     sort: Annotated[CollectionSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
     tag: Annotated[CanonicalTag | None, Query()] = None,
@@ -165,7 +171,7 @@ def list_collection_archive_copies(
     container: ContainerDep,
     principal: CatalogReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None, max_length=8192),
+    page_token: BrowsePageTokenQuery = None,
 ) -> CollectionArchiveCopyListOut:
     selectors = canonical_selectors(collection_id=collection_id)
     payload = container.collections.list_archive_copies(
@@ -200,8 +206,8 @@ def list_collection_upload_sessions(
     container: ContainerDep,
     principal: CollectionUploadReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None, max_length=8192),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     tag: Annotated[CanonicalTag | None, Query()] = None,
     state: Annotated[CollectionUploadState | None, Query()] = None,
     sort: Annotated[CollectionUploadSort, Query()] = "created_at",
@@ -273,7 +279,7 @@ def list_collection_upload_session_tags(
     container: ContainerDep,
     principal: CollectionCreator,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None, max_length=8192),
+    page_token: BrowsePageTokenQuery = None,
 ) -> ListCollectionUploadSessionTagsResponse:
     container.collection_uploads.require_access(collection_id, principal)
     selectors = canonical_selectors(collection_id=collection_id)
@@ -472,7 +478,7 @@ def list_collection_upload_session_files(
     container: ContainerDep,
     principal: CollectionUploadReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None, max_length=8192),
+    page_token: BrowsePageTokenQuery = None,
 ) -> ListCollectionUploadSessionFilesResponse:
     container.collection_uploads.require_read_access(collection_id, principal)
     selectors = canonical_selectors(collection_id=collection_id)

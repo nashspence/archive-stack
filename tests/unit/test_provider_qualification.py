@@ -1021,6 +1021,9 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
     assert "STORAGE_CLASS" not in text
     assert "RESTORE_TIER" not in text
     riverhog_names = {line.partition("=")[0] for line in riverhog_text.splitlines()}
+    assert 'RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY="true"' in riverhog_text
+    assert "riverhog-development-browse-token-signing-key-v1" not in riverhog_text
+    assert "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY=" in riverhog_text
     compose_names = {line.partition("=")[0] for line in text.splitlines()}
     assert compose_names - riverhog_names == {
         "RIVERHOG_AWS_STORAGE_ADAPTER_CLOUDFRONT_PRIVATE_KEY_HOST_PATH",

@@ -24,7 +24,7 @@ from riverhog_core.catalog_models import CollectionRecord, TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
-from riverhog_protocol.errors import Forbidden, Unauthorized
+from riverhog_protocol.errors import BadRequest, Forbidden, Unauthorized
 from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.db_helpers import sqlite_url
@@ -83,6 +83,10 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
     @api.exception_handler(Unauthorized)
     async def unauthorized_handler(_request: object, exc: Unauthorized) -> JSONResponse:
         return JSONResponse(status_code=401, content={"detail": exc.message})
+
+    @api.exception_handler(BadRequest)
+    async def bad_request_handler(_request: object, exc: BadRequest) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": exc.message})
 
     api.include_router(apps_router, prefix="/v1")
     api.include_router(quotas_router, prefix="/v1")
@@ -257,6 +261,31 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             )
             assert changed_page_size.status_code == 200
             assert changed_page_size.json()["apps"]
+            maximum_query = await client.get(
+                "/v1/apps",
+                params={"q": "x" * 4096},
+                headers=manager_headers,
+            )
+            assert maximum_query.status_code == 200
+            maximum_token = await client.get(
+                "/v1/apps",
+                params={"page_token": "x" * 8192},
+                headers=manager_headers,
+            )
+            assert maximum_token.status_code == 400
+            for params in (
+                {"q": ""},
+                {"q": " leading"},
+                {"q": "e\u0301"},
+                {"q": "x" * 4097},
+                {"page_token": "x" * 8193},
+            ):
+                rejected = await client.get(
+                    "/v1/apps",
+                    params=params,
+                    headers=manager_headers,
+                )
+                assert rejected.status_code == 422
             revoked = await client.post(
                 f"/v1/apps/manager/keys/{created['id']}/revoke",
                 headers=bootstrap_headers,

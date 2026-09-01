@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
+from http_api_contracts import BrowsePageToken
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, RootModel, model_validator
 from riverhog_application_access import ApplicationKeyId, ApplicationName
@@ -157,7 +158,7 @@ class ArchiveCopyJobListFiltersOut(RiverhogModel):
 
 class ArchiveCopyJobListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: ArchiveCopySort
     order: SortOrder
     query: str | None

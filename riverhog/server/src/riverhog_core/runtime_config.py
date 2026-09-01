@@ -192,11 +192,19 @@ class RuntimeConfig:
     event_source: str = "urn:riverhog"
     event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
     browse_token_signing_key: str = DEFAULT_BROWSE_TOKEN_SIGNING_KEY
+    browse_require_explicit_signing_key: bool = False
     browse_token_lifetime: timedelta = field(default_factory=lambda: timedelta(hours=24))
 
     def __post_init__(self) -> None:
         if len(self.browse_token_signing_key.encode("utf-8")) < 32:
             raise ValueError("RIVERHOG_BROWSE_TOKEN_SIGNING_KEY must contain at least 32 bytes")
+        if (
+            self.browse_require_explicit_signing_key
+            and self.browse_token_signing_key == DEFAULT_BROWSE_TOKEN_SIGNING_KEY
+        ):
+            raise ValueError(
+                "RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY rejects the development key"
+            )
         if self.browse_token_lifetime.total_seconds() < 1:
             raise ValueError("RIVERHOG_BROWSE_TOKEN_LIFETIME must be positive")
         if not self.event_source.strip():
@@ -651,6 +659,9 @@ def load_runtime_config() -> RuntimeConfig:
             "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY",
             DEFAULT_BROWSE_TOKEN_SIGNING_KEY,
         ).strip(),
+        browse_require_explicit_signing_key=_parse_bool(
+            os.getenv("RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY", "false")
+        ),
         browse_token_lifetime=parse_duration(os.getenv("RIVERHOG_BROWSE_TOKEN_LIFETIME", "24h")),
         database_url=database_url,
         log_level=log_level,

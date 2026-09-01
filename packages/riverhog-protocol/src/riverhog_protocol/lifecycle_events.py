@@ -5,7 +5,16 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, Self
 
 from lifecycle_events.models import CloudEvent, EventContext, normalize_event_context
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from riverhog_protocol.paths import CollectionId, normalize_collection_id
 from riverhog_protocol.storage_names import ArchiveStoreName
@@ -47,6 +56,22 @@ RIVERHOG_EVENT_TYPES = frozenset(
     }
 )
 COLLECTION_WAKE_EVENT_TYPES = frozenset({COLLECTION_FINALIZED, COLLECTION_TAGS_CHANGED})
+MAX_LIFECYCLE_EVENT_SEQUENCE = 2**63 - 1
+
+
+def validate_lifecycle_event_cursor(value: str) -> str:
+    if not value.isascii() or not value.isdecimal() or str(int(value)) != value:
+        raise ValueError("lifecycle-event cursor must be canonical decimal")
+    if int(value) > MAX_LIFECYCLE_EVENT_SEQUENCE:
+        raise ValueError("lifecycle-event cursor exceeds the v1 sequence domain")
+    return value
+
+
+type LifecycleEventCursor = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=19, pattern=r"^(?:0|[1-9][0-9]*)$"),
+    AfterValidator(validate_lifecycle_event_cursor),
+]
 
 
 class RiverhogEventModel(BaseModel):
@@ -320,7 +345,7 @@ _EVENT_ADAPTER: TypeAdapter[RiverhogLifecycleEvent] = TypeAdapter(RiverhogLifecy
 
 class RiverhogEventPage(RiverhogEventModel):
     events: list[RiverhogLifecycleEvent]
-    next_cursor: str
+    next_cursor: LifecycleEventCursor
     has_more: bool
 
     def require_progress_after(self, cursor: str) -> None:

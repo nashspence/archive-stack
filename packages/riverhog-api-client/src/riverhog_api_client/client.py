@@ -87,7 +87,7 @@ from riverhog_protocol.errors import (
     ServiceUnavailable,
     error_type_for_code,
 )
-from riverhog_protocol.lifecycle_events import RiverhogEventPage
+from riverhog_protocol.lifecycle_events import LifecycleEventCursor, RiverhogEventPage
 from riverhog_protocol.paths import (
     CanonicalRelPath,
     normalize_collection_id,
@@ -678,13 +678,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def list_lifecycle_events(
         self,
         *,
-        after: str | None = None,
+        after: LifecycleEventCursor | None = None,
         limit: int = 100,
     ) -> RiverhogEventPage:
         payload = self._json(
             "GET",
             "/v1/events",
-            params={"after": after or "0", "limit": limit},
+            params={"after": "0" if after is None else after, "limit": limit},
         )
         return RiverhogEventPage.model_validate(payload)
 
@@ -912,7 +912,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if page_token is not None:
             params["page_token"] = page_token
-        if q:
+        if q is not None:
             params["q"] = q
         if tag is not None:
             params["tag"] = _canonical_tag(tag)
@@ -1403,7 +1403,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if page_token is not None:
             params["page_token"] = page_token
-        if q:
+        if q is not None:
             params["q"] = q
         if state:
             params["state"] = _one_of(
@@ -1548,7 +1548,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if page_token is not None:
             params["page_token"] = page_token
-        if query:
+        if query is not None:
             params["q"] = query
         if collection is not None:
             params["collection"] = _collection_id(collection)
@@ -1595,7 +1595,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if page_token is not None:
             params["page_token"] = page_token
-        if q:
+        if q is not None:
             params["q"] = q
         if status:
             params["status"] = _one_of(
@@ -1964,7 +1964,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 _SORT_ORDERS,
                 "sort order",
             )
-        if q:
+        if q is not None:
             params["q"] = q
         if tag is not None:
             params["tag"] = _canonical_tag(tag)
@@ -1992,7 +1992,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         return self._json("GET", "/v1/archive/stores", params=params)
 
@@ -2018,7 +2018,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         if active is not None:
             params["active"] = str(active).lower()
@@ -2060,7 +2060,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         if active is not None:
             params["active"] = str(active).lower()
@@ -2107,7 +2107,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         if app is not None:
             params["app"] = _application_name(app)
@@ -2189,7 +2189,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         return self._json("GET", "/v1/tags", params=params)
 
@@ -2310,7 +2310,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         if app is not None:
             params["app"] = _application_name(app)
@@ -2362,7 +2362,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
-        if q:
+        if q is not None:
             params["q"] = q
         if state:
             params["state"] = _one_of(

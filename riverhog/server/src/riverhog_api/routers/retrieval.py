@@ -25,7 +25,13 @@ from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.retrieval import (
     CreateRetrievalJobRequest,
@@ -64,8 +70,8 @@ def list_retrieval_cache_objects(
     principal: CatalogReader,
     container: ContainerDep,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
     source_store: Annotated[ArchiveStoreName | None, Query()] = None,

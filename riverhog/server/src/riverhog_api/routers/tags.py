@@ -8,7 +8,13 @@ from riverhog_protocol import CollectionIdParameter, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.tags import (
     CollectionTagSetOut,
@@ -44,8 +50,8 @@ def list_tags(
     container: ContainerDep,
     principal: CatalogReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     sort: Annotated[TagSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
 ) -> TagListOut:
@@ -115,7 +121,7 @@ def get_collection_tags(
     container: ContainerDep,
     principal: CatalogReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
 ) -> CollectionTagsOut:
     selectors = canonical_selectors(collection_id=collection_id)
     position = page_position(
