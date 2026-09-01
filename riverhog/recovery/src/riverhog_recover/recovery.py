@@ -26,6 +26,7 @@ from riverhog_archive_contracts import (
     SegmentArchiveVolume,
     StoredPartIdentity,
     format_archive_sequence,
+    parse_archive_sequence,
     update_archive_sequence_commitment,
 )
 from riverhog_archive_contracts import (
@@ -36,6 +37,7 @@ from riverhog_provenance import (
     ProvenanceTerminalDocument,
     ProvenanceVolumeDocument,
     format_provenance_sequence,
+    parse_provenance_sequence,
     resolve_incremental_journal_current_state,
     update_ordered_volume_commitment,
     validate_incremental_journal_entry,
@@ -154,16 +156,20 @@ def recover_archive(
             volume_set_digest = CheckpointSHA256()
             state.execute(
                 "INSERT INTO sequence_progress(name, next_sequence, hash_state) VALUES (?, ?, ?)",
-                ("archive", 0, volume_set_digest.export_state()),
+                ("archive", format_archive_sequence(0), volume_set_digest.export_state()),
             )
             state.commit()
         else:
-            volume_next = int(progress[0])
+            volume_next = parse_archive_sequence(progress[0], "recovery checkpoint sequence")
             volume_set_digest = CheckpointSHA256.from_state(str(progress[1]))
         terminal_row = state.execute(
             "SELECT value FROM authority WHERE key = 'archive_terminal_sequence'"
         ).fetchone()
-        archive_volume_count = int(terminal_row[0]) if terminal_row is not None else None
+        archive_volume_count = (
+            parse_archive_sequence(terminal_row[0], "recovery terminal sequence")
+            if terminal_row is not None
+            else None
+        )
         sequence = volume_next
         while archive_volume_count is None:
             sequence_token = format_archive_sequence(sequence)
@@ -195,12 +201,12 @@ def recover_archive(
                 metadata_path.unlink()
                 state.execute(
                     "INSERT INTO authority(key, value) VALUES (?, ?)",
-                    ("archive_terminal_sequence", str(sequence)),
+                    ("archive_terminal_sequence", format_archive_sequence(sequence)),
                 )
                 state.execute(
                     "UPDATE sequence_progress SET next_sequence = ?, hash_state = ? "
                     "WHERE name = 'archive'",
-                    (sequence + 1, volume_set_digest.export_state()),
+                    (format_archive_sequence(sequence), volume_set_digest.export_state()),
                 )
                 state.commit()
                 archive_volume_count = sequence
@@ -251,19 +257,27 @@ def recover_archive(
                 state.execute(
                     "INSERT OR IGNORE INTO raw_ranges(path, volume_sequence, offset, bytes) "
                     "VALUES (?, ?, ?, ?)",
-                    (current.path, sequence, volume.file_offset, volume.plaintext_bytes),
+                    (
+                        current.path,
+                        format_archive_sequence(sequence),
+                        volume.file_offset,
+                        volume.plaintext_bytes,
+                    ),
                 )
             else:  # pragma: no cover - closed public union
                 raise RecoveryError("archive volume kind is unsupported")
             plaintext.unlink()
             state.execute(
                 "INSERT INTO volumes(sequence, metadata_sha256) VALUES (?, ?)",
-                (sequence, hashlib.sha256(metadata_bytes).hexdigest()),
+                (
+                    format_archive_sequence(sequence),
+                    hashlib.sha256(metadata_bytes).hexdigest(),
+                ),
             )
             state.execute(
                 "UPDATE sequence_progress SET next_sequence = ?, hash_state = ? "
                 "WHERE name = 'archive'",
-                (sequence + 1, volume_set_digest.export_state()),
+                (format_archive_sequence(sequence + 1), volume_set_digest.export_state()),
             )
             state.commit()
             sequence += 1
@@ -333,12 +347,16 @@ def _initialize_recovery_state(state: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS volumes (
-            sequence INTEGER PRIMARY KEY,
+            sequence TEXT PRIMARY KEY
+                CHECK(length(sequence) = 64 AND sequence = lower(sequence)
+                    AND sequence NOT GLOB '*[^0-9a-f]*'),
             metadata_sha256 TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sequence_progress (
             name TEXT PRIMARY KEY,
-            next_sequence INTEGER NOT NULL,
+            next_sequence TEXT NOT NULL
+                CHECK(length(next_sequence) = 64 AND next_sequence = lower(next_sequence)
+                    AND next_sequence NOT GLOB '*[^0-9a-f]*'),
             hash_state TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS files (
@@ -349,18 +367,85 @@ def _initialize_recovery_state(state: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS file_volumes (
             path TEXT NOT NULL,
-            volume_sequence INTEGER NOT NULL,
+            volume_sequence TEXT NOT NULL
+                CHECK(length(volume_sequence) = 64 AND volume_sequence = lower(volume_sequence)
+                    AND volume_sequence NOT GLOB '*[^0-9a-f]*'),
             kind TEXT NOT NULL,
             PRIMARY KEY (path, volume_sequence),
             FOREIGN KEY (path) REFERENCES files(path) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS raw_ranges (
             path TEXT NOT NULL,
-            volume_sequence INTEGER NOT NULL,
+            volume_sequence TEXT NOT NULL
+                CHECK(length(volume_sequence) = 64 AND volume_sequence = lower(volume_sequence)
+                    AND volume_sequence NOT GLOB '*[^0-9a-f]*'),
             offset INTEGER NOT NULL,
             bytes INTEGER NOT NULL,
             PRIMARY KEY (path, volume_sequence),
             FOREIGN KEY (path) REFERENCES files(path) ON DELETE CASCADE
+        );
+        """
+    )
+    state.commit()
+
+
+def _initialize_provenance_recovery_state(state: sqlite3.Connection) -> None:
+    state.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS bindings (
+            path TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            journal_id TEXT,
+            current_state_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entries (
+            journal_id TEXT NOT NULL,
+            entry_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            PRIMARY KEY (journal_id, entry_id)
+        );
+        CREATE TABLE IF NOT EXISTS states (
+            journal_id TEXT NOT NULL,
+            state_id TEXT NOT NULL,
+            document_json TEXT NOT NULL,
+            PRIMARY KEY (journal_id, state_id)
+        );
+        CREATE TABLE IF NOT EXISTS journal_progress (
+            journal_id TEXT PRIMARY KEY,
+            next_sequence INTEGER NOT NULL,
+            validated_offset INTEGER NOT NULL,
+            previous_entry_id TEXT,
+            previous_json_sha256 TEXT,
+            primary_lineage_id TEXT,
+            current_binding_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS external_states (
+            from_journal_id TEXT NOT NULL,
+            journal_id TEXT NOT NULL,
+            entry_id TEXT NOT NULL,
+            entry_sha256 TEXT NOT NULL,
+            state_id TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS provenance_progress (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            next_volume TEXT NOT NULL
+                CHECK(length(next_volume) = 64 AND next_volume = lower(next_volume)
+                    AND next_volume NOT GLOB '*[^0-9a-f]*'),
+            hash_state TEXT NOT NULL,
+            next_file_order INTEGER NOT NULL,
+            previous_path TEXT,
+            previous_journal_id TEXT,
+            current_journal_id TEXT,
+            current_journal_bytes INTEGER NOT NULL,
+            current_journal_sha256 TEXT NOT NULL,
+            journal_count INTEGER NOT NULL,
+            omitted INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS provenance_terminal (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            sequence TEXT NOT NULL
+                CHECK(length(sequence) = 64 AND sequence = lower(sequence)
+                    AND sequence NOT GLOB '*[^0-9a-f]*')
         );
         """
     )
@@ -416,13 +501,13 @@ def _record_recovered_file(
     elif str(existing[2]) != kind or kind == "pack":
         prior = state.execute(
             "SELECT 1 FROM file_volumes WHERE path = ? AND volume_sequence != ? LIMIT 1",
-            (file.path, volume_sequence),
+            (file.path, format_archive_sequence(volume_sequence)),
         ).fetchone()
         if prior is not None:
             raise RecoveryError(f"archive repeats a logical file: {file.path}")
     state.execute(
         "INSERT OR IGNORE INTO file_volumes(path, volume_sequence, kind) VALUES (?, ?, ?)",
-        (file.path, volume_sequence, kind),
+        (file.path, format_archive_sequence(volume_sequence), kind),
     )
 
 
@@ -478,7 +563,7 @@ def _save_provenance_progress(
         "current_journal_sha256 = ?, journal_count = ?, omitted = ? "
         "WHERE singleton = 1",
         (
-            next_volume,
+            format_provenance_sequence(next_volume),
             volume_digest.export_state(),
             next_file_order,
             previous_path.decode("utf-8") if previous_path is not None else None,
@@ -493,7 +578,7 @@ def _save_provenance_progress(
     if terminal_sequence is not None:
         state.execute(
             "INSERT INTO provenance_terminal(singleton, sequence) VALUES (1, ?)",
-            (terminal_sequence,),
+            (format_provenance_sequence(terminal_sequence),),
         )
     state.commit()
 
@@ -702,61 +787,7 @@ def _recover_provenance(
     journal_dir.mkdir(exist_ok=True)
     (output_root / "root.json").write_bytes(root_bytes)
     state = sqlite3.connect(scratch / "provenance-validation.sqlite3")
-    state.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS bindings (
-            path TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            journal_id TEXT,
-            current_state_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS entries (
-            journal_id TEXT NOT NULL,
-            entry_id TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
-            PRIMARY KEY (journal_id, entry_id)
-        );
-        CREATE TABLE IF NOT EXISTS states (
-            journal_id TEXT NOT NULL,
-            state_id TEXT NOT NULL,
-            document_json TEXT NOT NULL,
-            PRIMARY KEY (journal_id, state_id)
-        );
-        CREATE TABLE IF NOT EXISTS journal_progress (
-            journal_id TEXT PRIMARY KEY,
-            next_sequence INTEGER NOT NULL,
-            validated_offset INTEGER NOT NULL,
-            previous_entry_id TEXT,
-            previous_json_sha256 TEXT,
-            primary_lineage_id TEXT,
-            current_binding_json TEXT
-        );
-        CREATE TABLE IF NOT EXISTS external_states (
-            from_journal_id TEXT NOT NULL,
-            journal_id TEXT NOT NULL,
-            entry_id TEXT NOT NULL,
-            entry_sha256 TEXT NOT NULL,
-            state_id TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS provenance_progress (
-            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-            next_volume INTEGER NOT NULL,
-            hash_state TEXT NOT NULL,
-            next_file_order INTEGER NOT NULL,
-            previous_path TEXT,
-            previous_journal_id TEXT,
-            current_journal_id TEXT,
-            current_journal_bytes INTEGER NOT NULL,
-            current_journal_sha256 TEXT NOT NULL,
-            journal_count INTEGER NOT NULL,
-            omitted INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS provenance_terminal (
-            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-            sequence INTEGER NOT NULL
-        );
-        """
-    )
+    _initialize_provenance_recovery_state(state)
     progress = state.execute(
         "SELECT next_volume, hash_state, next_file_order, previous_path, "
         "previous_journal_id, current_journal_id, current_journal_bytes, "
@@ -766,8 +797,8 @@ def _recover_provenance(
     if progress is None:
         volume_digest = CheckpointSHA256()
         state.execute(
-            "INSERT INTO provenance_progress VALUES (1, 0, ?, 0, NULL, NULL, NULL, 0, '', 0, 0)",
-            (volume_digest.export_state(),),
+            "INSERT INTO provenance_progress VALUES (1, ?, ?, 0, NULL, NULL, NULL, 0, '', 0, 0)",
+            (format_provenance_sequence(0), volume_digest.export_state()),
         )
         state.commit()
         next_volume = 0
@@ -780,7 +811,9 @@ def _recover_provenance(
         journal_count = 0
         omitted = 0
     else:
-        next_volume = int(progress[0])
+        next_volume = parse_provenance_sequence(
+            progress[0], "provenance recovery checkpoint sequence"
+        )
         volume_digest = CheckpointSHA256.from_state(str(progress[1]))
         next_file_order = int(progress[2])
         previous_path = str(progress[3]).encode("utf-8") if progress[3] is not None else None
@@ -796,7 +829,11 @@ def _recover_provenance(
     terminal_row = state.execute(
         "SELECT sequence FROM provenance_terminal WHERE singleton = 1"
     ).fetchone()
-    provenance_volume_count = int(terminal_row[0]) if terminal_row is not None else None
+    provenance_volume_count = (
+        parse_provenance_sequence(terminal_row[0], "provenance recovery terminal sequence")
+        if terminal_row is not None
+        else None
+    )
     sequence = next_volume
     try:
         while provenance_volume_count is None:
@@ -831,7 +868,7 @@ def _recover_provenance(
                 (metadata_dir / f"volume-{sequence_token}.json").write_bytes(metadata_bytes)
                 _save_provenance_progress(
                     state,
-                    next_volume=sequence + 1,
+                    next_volume=sequence,
                     volume_digest=volume_digest,
                     next_file_order=next_file_order,
                     previous_path=previous_path,
@@ -1108,7 +1145,11 @@ def _recover_pack(
                     "SELECT volume_sequence FROM file_volumes WHERE path = ? LIMIT 1",
                     (current.path,),
                 ).fetchone()
-                if prior is not None and int(prior[0]) != volume.sequence:
+                if (
+                    prior is not None
+                    and parse_archive_sequence(prior[0], "recovered file volume sequence")
+                    != volume.sequence
+                ):
                     raise RecoveryError(f"archive repeats a logical file: {current.path}")
                 try:
                     _verify_file(
