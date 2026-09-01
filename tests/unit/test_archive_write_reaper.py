@@ -80,6 +80,11 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         process_due_verifications=Mock(return_value=0),
     )
     lifecycle_events = SimpleNamespace(reap_expired_contexts=Mock(return_value=1))
+    collection_deletions = SimpleNamespace(process_due=Mock(return_value=0))
+    retrieval = SimpleNamespace(
+        request_cache_accounting_reconciliation_for_startup=Mock(return_value=1),
+        process_cache_accounting_reconciliation=Mock(return_value=0),
+    )
     container = cast(
         ServiceContainer,
         SimpleNamespace(
@@ -87,6 +92,8 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             collection_workflows=collection_workflows,
             archive_copies=archive_copies,
             archive_maintenance=archive_maintenance,
+            collection_deletions=collection_deletions,
+            retrieval=retrieval,
             provenance=provenance,
             lifecycle_events=lifecycle_events,
         ),
@@ -107,6 +114,9 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_workflows.process_due_outcome_sets.assert_called_once_with(limit=1)
     provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
     provenance.process_due_verifications.assert_called_once_with(limit=1)
+    collection_deletions.process_due.assert_called_once_with(limit=1)
+    retrieval.request_cache_accounting_reconciliation_for_startup.assert_called_once_with()
+    retrieval.process_cache_accounting_reconciliation.assert_called_once_with(limit=100)
     lifecycle_events.reap_expired_contexts.assert_called_once_with()
 
 
@@ -137,6 +147,11 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
                 archive_maintenance=SimpleNamespace(
                     requeue_interrupted_metadata_publications_for_startup=zero,
                     process_due_metadata_publications=zero,
+                ),
+                collection_deletions=SimpleNamespace(process_due=zero),
+                retrieval=SimpleNamespace(
+                    request_cache_accounting_reconciliation_for_startup=zero,
+                    process_cache_accounting_reconciliation=zero,
                 ),
                 provenance=SimpleNamespace(
                     requeue_interrupted_verifications_for_startup=zero,

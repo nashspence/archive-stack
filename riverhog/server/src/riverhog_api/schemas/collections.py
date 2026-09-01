@@ -476,7 +476,7 @@ class DeleteCollectionRequest(RiverhogModel):
 
 
 class CollectionDeletionResultOut(RiverhogModel):
-    status: Literal["deleted", "already_absent"]
+    status: Literal["deleting", "deleted", "already_absent"]
     collection_id: CollectionId
     files: int
     bytes: int

@@ -1138,8 +1138,10 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
             challenge=str(retirement["challenge"]),
             retirement_claim_id=outcome_claim_id,
         )["status"]
-        == "deleted"
+        == "deleting"
     )
+    while container.collection_deletions.process_due(limit=1):
+        pass
     assert {
         item["journal"]["journal_id"]
         for item in operator.trace_collection_file_provenance(
