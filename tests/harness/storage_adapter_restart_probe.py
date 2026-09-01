@@ -7,12 +7,10 @@ import json
 import os
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from riverhog_core.runtime_config import load_runtime_config
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedWriteLookupRequest,
     DeletePrefixRequest,
@@ -25,7 +23,6 @@ from riverhog_storage_adapter_protocol import (
     validate_completed_write_response,
 )
 from riverhog_storage_adapter_support import StorageAdapterClient
-from time_formats import format_utc_timestamp
 
 _STATE_FORMAT = "riverhog-storage-adapter-restart-probe/v1"
 _SECOND_SEGMENT = b"continued after adapter restart\n"
@@ -68,8 +65,10 @@ def prepare(path: Path) -> None:
         placement="immediate",
     )
     abort_request = request.model_copy(update={"object_path": f"{prefix}/aborted.bin"})
+    active_sessions: list[WriteSession] = []
     try:
         session = client.begin_write(request)
+        active_sessions.append(session)
         first_segment = client.write_segment(
             session=session,
             number=1,
@@ -77,6 +76,7 @@ def prepare(path: Path) -> None:
             content=first_content,
         )
         abort_session = client.begin_write(abort_request)
+        active_sessions.append(abort_session)
         _write_state(
             path,
             {
@@ -91,7 +91,7 @@ def prepare(path: Path) -> None:
             },
         )
     except BaseException:
-        _cleanup(client, prefix)
+        _cleanup(client, prefix, sessions=active_sessions)
         raise
     finally:
         client.close()
@@ -126,6 +126,8 @@ def resume(path: Path) -> dict[str, object]:
     try:
         if client.descriptor() != descriptor:
             raise RuntimeError("restarted storage adapter descriptor changed")
+        if client.begin_write(request) != session:
+            raise RuntimeError("restarted storage adapter changed the write session")
         if client.list_segments(session).segments != (first_segment,):
             raise RuntimeError("restarted storage adapter lost its committed segment")
         second_segment = client.write_segment(
@@ -175,6 +177,7 @@ def resume(path: Path) -> dict[str, object]:
             "format": _STATE_FORMAT,
             "checks": [
                 "adapter-process-restart",
+                "begin-response-reconciliation",
                 "segment-reconciliation",
                 "continued-write",
                 "completion-reconciliation",
@@ -183,18 +186,18 @@ def resume(path: Path) -> dict[str, object]:
             "stored_bytes": completed.stored_bytes,
         }
     finally:
-        _cleanup(client, prefix)
+        _cleanup(client, prefix, sessions=(session, abort_session))
         client.close()
 
 
-def _cleanup(client: StorageAdapterClient, prefix: str) -> None:
-    cutoff = format_utc_timestamp(datetime.now(UTC) + timedelta(seconds=1))
-    client.abort_incomplete_writes(
-        AbortIncompleteWritesRequest(
-            object_prefix=f"{prefix}/",
-            initiated_before=cutoff,
-        )
-    )
+def _cleanup(
+    client: StorageAdapterClient,
+    prefix: str,
+    *,
+    sessions: Sequence[WriteSession] = (),
+) -> None:
+    for session in sessions:
+        client.abort_write(session)
     client.delete_prefix(DeletePrefixRequest(object_prefix=f"{prefix}/"))
 
 

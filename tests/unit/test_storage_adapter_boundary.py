@@ -56,7 +56,6 @@ def test_public_storage_adapter_owns_provider_neutral_resumable_capabilities() -
         "complete_write",
         "find_completed_write",
         "abort_write",
-        "abort_incomplete_writes",
     } <= set(StorageAdapterPort.__dict__)
     assert {
         "minimum_nonfinal_segment_bytes",

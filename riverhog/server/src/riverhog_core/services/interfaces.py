@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Protocol
 
 from riverhog_protocol import (
@@ -273,12 +273,6 @@ class CollectionDeletionService(Protocol):
 class RetrievalService(Protocol):
     def request_cache_accounting_reconciliation_for_startup(self) -> int: ...
     def process_cache_accounting_reconciliation(self, *, limit: int = 100) -> int: ...
-
-    def abort_incomplete_cache_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int: ...
 
     def collection_inventory(
         self,
@@ -578,11 +572,6 @@ class SearchService(Protocol):
 class ArchiveMaintenanceService(Protocol):
     def requeue_interrupted_metadata_publications_for_startup(self) -> int: ...
     def process_due_metadata_publications(self, *, limit: int = 10) -> int: ...
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int: ...
 
 
 class ArchiveCopyService(Protocol):

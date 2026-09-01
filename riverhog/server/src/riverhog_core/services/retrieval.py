@@ -7,7 +7,7 @@ import json
 import os
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Literal, cast
 
 from http_api_contracts import canonical_json_bytes, closed_literal_values
@@ -182,15 +182,6 @@ class SqlAlchemyRetrievalService:
             config,
             session_factory=self._session_factory,
         )
-
-    def abort_incomplete_cache_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int:
-        if self._cache is None:
-            return 0
-        return self._cache.abort_incomplete_writes(initiated_before=initiated_before)
 
     def request_cache_accounting_reconciliation_for_startup(self) -> int:
         if self._cache is None:

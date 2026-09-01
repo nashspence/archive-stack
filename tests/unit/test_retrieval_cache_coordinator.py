@@ -15,6 +15,7 @@ from riverhog_core.catalog_models import (
     RetrievalCacheStoreAccountingRecord,
 )
 from riverhog_core.ports.archive_objects import WriteSession
+from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import (
     RetrievalCacheStoreRegistration,
     StorageAdapterRegistration,
@@ -109,6 +110,7 @@ def _seed_ready_object(
     *,
     cache_store: str,
     object_id: str = "old-volume",
+    object_order: int = 0,
     stored_bytes: int = 60,
     leased: bool = False,
 ) -> None:
@@ -157,7 +159,7 @@ def _seed_ready_object(
                 collection_id=1,
                 store="deep",
                 object_id=object_id,
-                object_order=0,
+                object_order=object_order,
                 kind="raw",
                 object_path=f"archives/1/{object_id}",
                 plaintext_bytes=stored_bytes,
@@ -329,7 +331,9 @@ def test_disabled_candidate_drains_existing_state_but_accepts_no_new_work(
     assert local.begin_calls == []
 
 
-def test_full_finite_store_evicts_one_unleased_object_before_fallback(tmp_path: Path) -> None:
+def test_full_finite_store_eviction_is_one_restartable_step_before_admission(
+    tmp_path: Path,
+) -> None:
     local = _Candidate("local")
     elastic = _Candidate("elastic")
     cache, factory = _coordinator(
@@ -339,6 +343,13 @@ def test_full_finite_store_evicts_one_unleased_object_before_fallback(tmp_path: 
     )
     _seed_ready_object(factory, cache_store="local")
 
+    first_step = cache.admit(
+        owner="job:1",
+        source_store="deep",
+        collection_id=1,
+        object_id="new-volume",
+        expected_bytes=60,
+    )
     admission = cache.admit(
         owner="job:1",
         source_store="deep",
@@ -347,6 +358,7 @@ def test_full_finite_store_evicts_one_unleased_object_before_fallback(tmp_path: 
         expected_bytes=60,
     )
 
+    assert first_step is None
     assert admission is not None and admission.cache_store == "local"
     assert local.delete_calls == [("cache/old-volume", "cache-revision")]
     assert elastic.begin_calls == []
@@ -354,6 +366,88 @@ def test_full_finite_store_evicts_one_unleased_object_before_fallback(tmp_path: 
         accounting = session.get(RetrievalCacheStoreAccountingRecord, "local")
         assert accounting is not None
         assert (accounting.committed_bytes, accounting.reserved_bytes) == (0, 60)
+
+
+def test_finite_store_combines_multiple_victims_across_bounded_restartable_steps(
+    tmp_path: Path,
+) -> None:
+    local = _Candidate("local")
+    elastic = _Candidate("elastic")
+    registrations = (_registration("local", budget=100), _registration("elastic"))
+    cache, factory = _coordinator(
+        tmp_path,
+        (local, elastic),
+        registrations,
+    )
+    _seed_ready_object(
+        factory,
+        cache_store="local",
+        object_id="old-volume-a",
+        object_order=0,
+        stored_bytes=25,
+    )
+    _seed_ready_object(
+        factory,
+        cache_store="local",
+        object_id="old-volume-b",
+        object_order=1,
+        stored_bytes=25,
+    )
+
+    def admit() -> RetrievalCacheAdmission | None:
+        return cache.admit(
+            owner="job:1",
+            source_store="deep",
+            collection_id=1,
+            object_id="new-volume",
+            expected_bytes=80,
+        )
+
+    assert admit() is None
+    assert local.delete_calls == [("cache/old-volume-a", "cache-revision")]
+    assert elastic.begin_calls == []
+    cache = SqlAlchemyRetrievalCache(
+        {"local": local, "elastic": elastic},  # type: ignore[arg-type]
+        {registration.name: registration for registration in registrations},
+        session_factory=factory,  # type: ignore[arg-type]
+    )
+    assert admit() is None
+    assert local.delete_calls == [
+        ("cache/old-volume-a", "cache-revision"),
+        ("cache/old-volume-b", "cache-revision"),
+    ]
+    admission = admit()
+
+    assert admission is not None and admission.cache_store == "local"
+    assert elastic.begin_calls == []
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        accounting = session.get(RetrievalCacheStoreAccountingRecord, "local")
+        assert accounting is not None
+        assert (accounting.committed_bytes, accounting.reserved_bytes) == (0, 80)
+
+
+def test_payload_larger_than_one_finite_store_falls_through_without_eviction(
+    tmp_path: Path,
+) -> None:
+    local = _Candidate("local")
+    elastic = _Candidate("elastic")
+    cache, factory = _coordinator(
+        tmp_path,
+        (local, elastic),
+        (_registration("local", budget=100), _registration("elastic")),
+    )
+    _seed_ready_object(factory, cache_store="local", stored_bytes=60)
+
+    admission = cache.admit(
+        owner="job:1",
+        source_store="deep",
+        collection_id=1,
+        object_id="new-volume",
+        expected_bytes=101,
+    )
+
+    assert admission is not None and admission.cache_store == "elastic"
+    assert local.delete_calls == []
 
 
 def test_finite_store_never_evicts_a_leased_object_to_avoid_fallback(tmp_path: Path) -> None:
@@ -403,6 +497,13 @@ def test_population_survives_one_shared_owner_and_is_reclaimed_after_the_last(
     )
     assert first is not None and second is not None
     assert first.write_token == second.write_token
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        population = session.get(RetrievalCachePopulationRecord, ("deep", 1, "volume-0"))
+        assert population is not None
+        population.updated_at = "2000-01-01T00:00:00.000000Z"
+    assert cache.reap_abandoned_populations() == 0
+    assert local.abort_calls == []
 
     assert cache.release(owner="job:1") == 0
     with session_scope(factory) as session:  # type: ignore[arg-type]

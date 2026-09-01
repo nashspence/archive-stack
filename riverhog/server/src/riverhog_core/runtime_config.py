@@ -163,10 +163,6 @@ class RuntimeConfig:
         }
     )
     retrieval_cache_write_segment_bytes: int = DEFAULT_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES
-    archive_incomplete_write_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
-    archive_incomplete_write_sweep_interval: timedelta = field(
-        default_factory=lambda: timedelta(hours=6)
-    )
     retrieval_cache_stores: Mapping[str, RetrievalCacheStoreRegistration] = field(
         default_factory=dict
     )
@@ -351,10 +347,6 @@ class RuntimeConfig:
         object.__setattr__(self, "retrieval_cache_stores", normalized_cache_stores)
         if self.retrieval_cache_write_segment_bytes < 1:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES must be >= 1")
-        if self.archive_incomplete_write_max_age.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE must be > 0")
-        if self.archive_incomplete_write_sweep_interval.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL must be > 0")
         if self.retrieval_cache_new_archive_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE must be > 0")
         if self.retrieval_default_lease.total_seconds() <= 0:
@@ -599,12 +591,6 @@ def load_runtime_config() -> RuntimeConfig:
         name="RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES",
         minimum=1,
     )
-    archive_incomplete_write_max_age = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE", "72h")
-    )
-    archive_incomplete_write_sweep_interval = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL", "6h")
-    )
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
     )
@@ -677,8 +663,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_read_order=archive_read_order,
         archive_stores=archive_stores,
         retrieval_cache_write_segment_bytes=retrieval_cache_write_segment_bytes,
-        archive_incomplete_write_max_age=archive_incomplete_write_max_age,
-        archive_incomplete_write_sweep_interval=archive_incomplete_write_sweep_interval,
         retrieval_cache_stores=retrieval_cache_stores,
         retrieval_cache_new_archive_enabled=_parse_bool(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "true")

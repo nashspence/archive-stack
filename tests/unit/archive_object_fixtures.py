@@ -868,20 +868,12 @@ class MemoryArchiveStore:
     def read_mode(self) -> str:
         return self._read_mode
 
-    def abort_incomplete_writes(self, **_: object) -> int:
-        return 0
-
     def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None:
         self.discarded_uploads.append(archive_storage_prefix)
         self.objects = {
             path: content
             for path, content in self.objects.items()
             if not path.startswith(f"{archive_storage_prefix}/")
-        }
-        self._writes = {
-            write_token: current
-            for write_token, current in self._writes.items()
-            if not current[0].startswith(f"{archive_storage_prefix}/")
         }
 
     def new_collection_archive_storage_prefix(self) -> str:

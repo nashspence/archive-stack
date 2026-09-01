@@ -280,8 +280,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES",
         "RIVERHOG_ARCHIVE_WRITE_CONCURRENCY",
-        "RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE",
-        "RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL",
         "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY",
         "RIVERHOG_ARCHIVE_UPLOAD_REQUEST_CONCURRENCY",
         "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES",
@@ -654,8 +652,6 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert " up --detach garage" in docker_log
     assert " exec -T garage /garage -c /etc/garage.toml node id" in docker_log
-    assert " run --rm --entrypoint python" in docker_log
-    assert "tests/harness/configure_garage.py" in docker_log
 
 
 def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:

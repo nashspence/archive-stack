@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.ports.archive_store import (
@@ -12,7 +11,6 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
@@ -56,7 +54,6 @@ class _MemoryAdapter:
         self.reads = 0
         self.preparations: list[ReadPreparationRequest] = []
         self.deleted: list[DeleteObjectRequest] = []
-        self.aborted: list[AbortIncompleteWritesRequest] = []
 
     def descriptor(self) -> AdapterDescriptor:
         return AdapterDescriptor(
@@ -153,10 +150,6 @@ class _MemoryAdapter:
         for path in paths:
             del self.objects[path]
         return len(paths)
-
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        self.aborted.append(request)
-        return 0
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
         raise NotImplementedError(request)
@@ -344,7 +337,7 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
     assert adapter.deleted[0].mode == "all_versions"
 
 
-def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> None:
+def test_discard_removes_completed_objects_from_the_exact_archive_namespace() -> None:
     adapter = _MemoryAdapter()
     store = _store(adapter)
     adapter.objects["archives/opaque/partial"] = _Stored(
@@ -355,14 +348,6 @@ def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> 
         revision="partial-version",
     )
 
-    assert (
-        store.abort_incomplete_writes(
-            initiated_before=datetime(2026, 8, 21, tzinfo=UTC),
-        )
-        == 0
-    )
     store.discard_collection_archive_upload(archive_storage_prefix="archives/opaque")
 
-    assert adapter.aborted[0].object_prefix == "archives/"
-    assert adapter.aborted[1].object_prefix == "archives/opaque/"
     assert "archives/opaque/partial" not in adapter.objects

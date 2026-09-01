@@ -10,7 +10,6 @@ import httpx
 from http_api_contracts import safe_http_base_url
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     BinaryContent,
     CompletedObjectReceipt,
@@ -327,14 +326,6 @@ class StorageAdapterClient:
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self._empty("POST", "/v1/reads/cleanup", request)
-
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        return self._model(
-            "POST",
-            "/v1/maintenance/abort-incomplete-writes",
-            MaintenanceResult,
-            request,
-        ).affected
 
     def _model(
         self,

@@ -3,12 +3,10 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import Iterator, Sequence
-from datetime import datetime, timedelta
 from typing import Literal
 
 from riverhog_age import encrypt_age_scrypt, iter_decrypt_age_scrypt
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     DeleteObjectRequest,
     DeletePrefixRequest,
@@ -23,7 +21,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterPort,
     validated_storage_adapter,
 )
-from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
+from time_formats import utc_timestamp_now
 
 from riverhog_core.archive_formats import archive_object_storage_format
 from riverhog_core.archive_safety import archive_agents_guidance, archive_recovery_readme
@@ -74,28 +72,8 @@ class StorageAdapterArchiveStore:
     def new_collection_archive_storage_prefix(self) -> str:
         return f"archives/{secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)}"
 
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int:
-        if initiated_before.tzinfo is None:
-            raise ValueError("resumable-write cutoff must be timezone-aware")
-        return self._adapter.abort_incomplete_writes(
-            AbortIncompleteWritesRequest(
-                object_prefix="archives/",
-                initiated_before=format_utc_timestamp(initiated_before),
-            )
-        )
-
     def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None:
         prefix = _archive_prefix(archive_storage_prefix)
-        self._adapter.abort_incomplete_writes(
-            AbortIncompleteWritesRequest(
-                object_prefix=f"{prefix}/",
-                initiated_before=format_utc_timestamp(utc_now() + timedelta(seconds=1)),
-            )
-        )
         self._adapter.delete_prefix(DeletePrefixRequest(object_prefix=f"{prefix}/"))
 
     def verify_collection_archive(
