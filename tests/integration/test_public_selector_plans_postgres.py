@@ -425,7 +425,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 uploaded_at, verified_at
             )
             SELECT g, 'archive-' || lpad((g % 16)::text, 2, '0'),
-                   'object-' || lpad(g::text, 6, '0'), 0, 'pack',
+                   'object-' || lpad(g::text, 6, '0'), repeat('0', 65), 'pack',
                    'collections/' || g || '/object', g, g + 64, {sha}, {sha},
                    'revision-' || g, {timestamp}, {timestamp}
             FROM generate_series(1, {rows}) AS g

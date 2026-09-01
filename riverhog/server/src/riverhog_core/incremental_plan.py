@@ -5,6 +5,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from riverhog_archive_contracts import format_archive_sequence
 from riverhog_protocol.pack_ingress import RESERVED_ARCHIVE_PREFIX, canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
@@ -46,6 +47,7 @@ class IncrementalVolumePlannerCheckpoint:
             raise ValueError("incremental planner counters must be non-negative")
         if self.next_file_order != self.files_seen:
             raise ValueError("incremental planner file order does not match files seen")
+        format_archive_sequence(self.next_sequence)
         if len(self.pending_pack_files) > self.policy.pack_files:
             raise ValueError("incremental planner pending pack exceeds its file limit")
         pending_bytes = 0
