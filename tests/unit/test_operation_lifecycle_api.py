@@ -774,6 +774,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         actions=("read-inputs", "write-output"),
         artifacts=(source_artifact,),
     )
+    target = _api(transport, str(output_capability["token"]), observer=observer)
 
     output_root = tmp_path / "derived"
     output_payload_path = output_root / "derived" / "document.txt"
@@ -814,12 +815,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     disposition_identity = ArtifactDispositionSetIdentity.from_mapping(
         disposition_state.identity.model_dump(mode="json")
     )
-    disposition_page = operator.list_processing_claim_dispositions(
+    disposition_page = target.list_processing_claim_dispositions(
         claim_id,
         authority_sha256=disposition_identity.sha256,
     )
     assert len(disposition_page.dispositions) == 1
-    output_page = operator.list_processing_claim_disposition_outputs(
+    output_page = target.list_processing_claim_disposition_outputs(
         claim_id,
         authority_sha256=disposition_identity.sha256,
     )
@@ -900,7 +901,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journal_summary.journal_id: journal,
         output_journal_summary.journal_id: output_journal,
     }
-    target = _api(transport, str(output_capability["token"]), observer=observer)
     assert (
         len(
             target.list_collection_provenance(collection_id, page_size=100, page_token=None)[

@@ -1282,7 +1282,7 @@ class SqlAlchemyCollectionWorkflowService:
         start = _page_start(start_ordinal)
         expected = _sha256(authority_sha256, "disposition set identity")
         with read_snapshot(self._session_factory) as session:
-            claim = _owned_claim(session, claim_id, principal)
+            claim = _claim_actor(session, claim_id, principal)
             disposition_set = _sealed_disposition_authority(session, claim.id, expected)
             rows = list(
                 session.scalars(
