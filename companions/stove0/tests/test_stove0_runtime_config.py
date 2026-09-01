@@ -51,6 +51,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             "STOVE0_TARGET_CALLBACK_BASE_URL": "http://stove0.internal:8080",
             "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP": "true",
             "STOVE0_TARGET_CALLBACK_SIGNING_KEY": "target-callback-signing-key",
+            "STOVE0_TARGET_AUTHORITY_BATCH_SIZE": "17",
         }
     )
 
@@ -69,6 +70,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.target_callback_base_url == "http://stove0.internal:8080"
     assert config.target_callback_allow_insecure_http is True
     assert config.target_callback_signing_key == "target-callback-signing-key"
+    assert config.target_authority_batch_size == 17
     assert config.workspace_assurance == "ephemeral"
     assert config.claim_lease_seconds == 240
     assert config.capability_ttl_seconds == 120
@@ -152,6 +154,18 @@ def test_scheduler_interval_must_be_finite(tmp_path: Path, value: str) -> None:
     environment["STOVE0_SCHEDULER_INTERVAL_SECONDS"] = value
 
     with pytest.raises(ValueError, match="must be at least"):
+        Stove0RuntimeConfig.from_environment(
+            environment,
+            require_api_token=False,
+        )
+
+
+@pytest.mark.parametrize("value", ["0", "129"])
+def test_target_authority_batch_size_is_bounded(tmp_path: Path, value: str) -> None:
+    environment = _environment(tmp_path / "recipes.yaml")
+    environment["STOVE0_TARGET_AUTHORITY_BATCH_SIZE"] = value
+
+    with pytest.raises(ValueError, match="must be at"):
         Stove0RuntimeConfig.from_environment(
             environment,
             require_api_token=False,

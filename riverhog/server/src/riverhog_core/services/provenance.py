@@ -784,7 +784,8 @@ def _verification_binding_rows(
     limit: int,
 ) -> list[tuple[CollectionFileRecord, CollectionFileProvenanceRecord]]:
     terminal_rank = case(
-        (CollectionFileRecord.path == DERIVATION_EVIDENCE_PATH, 1),
+        (CollectionFileRecord.path == DERIVATION_EVIDENCE_PATH, 2),
+        (CollectionFileRecord.path.startswith("riverhog/"), 1),
         else_=0,
     )
     statement = (
@@ -799,7 +800,9 @@ def _verification_binding_rows(
         .limit(limit)
     )
     if after_path is not None:
-        after_rank = 1 if after_path == DERIVATION_EVIDENCE_PATH else 0
+        after_rank = (
+            2 if after_path == DERIVATION_EVIDENCE_PATH else int(after_path.startswith("riverhog/"))
+        )
         statement = statement.where(
             or_(
                 terminal_rank > after_rank,

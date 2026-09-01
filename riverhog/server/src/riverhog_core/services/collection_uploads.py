@@ -40,9 +40,15 @@ from riverhog_protocol import (
     collection_upload_raw_digest_summary,
     validate_collection_upload_batch_against_registration_constraints,
 )
+from riverhog_protocol.collection_workflow_transport import DISPOSITION_BATCH_MAX
 from riverhog_protocol.collection_workflows import (
+    DERIVATION_DISPOSITION_EVIDENCE_PREFIX,
     DERIVATION_EVIDENCE_PATH,
+    DERIVATION_OUTPUT_EVIDENCE_PREFIX,
     PRODUCER_EVIDENCE_PATH,
+    ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.pack_ingress import canonical_json_bytes
@@ -148,8 +154,10 @@ from riverhog_core.catalog_models import (
     TagRecord,
 )
 from riverhog_core.catalog_workflow_models import (
+    CollectionProcessingClaimInputRecord,
     CollectionProcessingClaimRecord,
     CollectionProcessingDispositionOutputRecord,
+    CollectionProcessingDispositionRecord,
     CollectionProcessingDispositionSetRecord,
 )
 from riverhog_core.checkpoint_sha256 import CheckpointSHA256
@@ -714,7 +722,7 @@ class SqlAlchemyCollectionUploadService:
                     new_files[0]["path"]
                 ) <= collection_upload_path_order_key(last_path):
                     raise Conflict("collection upload file registration is not append-only")
-                _require_transform_control_paths(upload, new_files)
+                _require_transform_control_paths(session, upload, new_files)
             ordered: list[OrderedArchiveFile] = []
             next_order = checkpoint.next_file_order
             for current in new_files:
@@ -3731,16 +3739,131 @@ def _require_transform_output_intent(
 
 
 def _require_transform_control_paths(
+    session: Session,
     upload: CollectionUploadRecord,
     files: Sequence[_RegisteredFile],
 ) -> None:
     if not upload.initiated_by_app.startswith("transform:"):
         return
-    control_paths = {
-        str(item["path"]) for item in files if str(item["path"]).startswith("riverhog/")
-    }
-    if control_paths - {PRODUCER_EVIDENCE_PATH, DERIVATION_EVIDENCE_PATH}:
+    for item in files:
+        path = str(item["path"])
+        if not path.startswith("riverhog/"):
+            continue
+        if path in {PRODUCER_EVIDENCE_PATH, DERIVATION_EVIDENCE_PATH}:
+            continue
+        expected = _transform_derivation_evidence(session, upload, path)
+        if (
+            int(item["bytes"]) != len(expected)
+            or str(item["sha256"]) != hashlib.sha256(expected).hexdigest()
+        ):
+            raise Conflict("transform derivation evidence differs from its sealed authority")
+
+
+def _transform_derivation_evidence(
+    session: Session,
+    upload: CollectionUploadRecord,
+    path: str,
+) -> bytes:
+    matched = re.fullmatch(
+        rf"(?:({re.escape(DERIVATION_DISPOSITION_EVIDENCE_PREFIX)})|"
+        rf"({re.escape(DERIVATION_OUTPUT_EVIDENCE_PREFIX)}))/([0-9a-f]{{64}})\.json",
+        path,
+    )
+    if matched is None:
         raise Conflict("transform output contains an unsupported Riverhog control file")
+    start = int(matched.group(3), 16)
+    if start % DISPOSITION_BATCH_MAX:
+        raise Conflict("transform derivation evidence starts outside a canonical page boundary")
+    claim = _derivative_claim(session, upload)
+    authority_record = session.get(CollectionProcessingDispositionSetRecord, claim.id)
+    assert authority_record is not None and authority_record.identity_sha256 is not None
+    authority = ArtifactDispositionSetIdentity(
+        disposition_count=authority_record.disposition_count,
+        output_edge_count=authority_record.output_edge_count,
+        output_artifact_count=authority_record.output_artifact_count,
+        sha256=authority_record.identity_sha256,
+    )
+    total = (
+        authority.disposition_count if matched.group(1) is not None else authority.output_edge_count
+    )
+    if start >= total:
+        raise Conflict("transform derivation evidence page is outside its sealed authority")
+    if matched.group(1) is not None:
+        disposition_rows = list(
+            session.execute(
+                select(CollectionProcessingDispositionRecord, CollectionProcessingClaimInputRecord)
+                .join(
+                    CollectionProcessingClaimInputRecord,
+                    (CollectionProcessingClaimInputRecord.claim_id == claim.id)
+                    & (
+                        CollectionProcessingClaimInputRecord.collection_id
+                        == CollectionProcessingDispositionRecord.collection_id
+                    ),
+                )
+                .where(
+                    CollectionProcessingDispositionRecord.claim_id == claim.id,
+                    CollectionProcessingDispositionRecord.disposition_order >= start,
+                )
+                .order_by(CollectionProcessingDispositionRecord.disposition_order)
+                .limit(DISPOSITION_BATCH_MAX)
+            ).tuples()
+        )
+        values = [
+            ArtifactDisposition(
+                input_collection_id=row.collection_id,
+                input_archive_root_sha256=input_record.archive_root_sha256,
+                input_path=row.path,
+                status=cast(Any, row.status),
+                code=row.failure_code,
+                message=row.failure_message,
+            ).as_dict()
+            for row, input_record in disposition_rows
+        ]
+        field = "dispositions"
+    else:
+        output_rows = list(
+            session.execute(
+                select(
+                    CollectionProcessingDispositionOutputRecord,
+                    CollectionProcessingClaimInputRecord,
+                )
+                .join(
+                    CollectionProcessingClaimInputRecord,
+                    (CollectionProcessingClaimInputRecord.claim_id == claim.id)
+                    & (
+                        CollectionProcessingClaimInputRecord.collection_id
+                        == CollectionProcessingDispositionOutputRecord.input_collection_id
+                    ),
+                )
+                .where(
+                    CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+                    CollectionProcessingDispositionOutputRecord.output_order >= start,
+                )
+                .order_by(CollectionProcessingDispositionOutputRecord.output_order)
+                .limit(DISPOSITION_BATCH_MAX)
+            ).tuples()
+        )
+        values = [
+            ArtifactDispositionOutput(
+                input_collection_id=row.input_collection_id,
+                input_archive_root_sha256=input_record.archive_root_sha256,
+                input_path=row.input_path,
+                output_path=row.output_path,
+            ).as_dict()
+            for row, input_record in output_rows
+        ]
+        field = "outputs"
+    if not values:
+        raise Conflict("transform derivation evidence page is outside its sealed authority")
+    next_ordinal = start + len(values)
+    document: dict[str, object] = {
+        "authority": authority.as_dict(),
+        "start_ordinal": start,
+        field: values,
+    }
+    if next_ordinal < total:
+        document["next_ordinal"] = next_ordinal
+    return canonical_json_bytes(document)
 
 
 def _require_transform_output_authority(

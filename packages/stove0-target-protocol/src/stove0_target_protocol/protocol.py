@@ -457,7 +457,14 @@ class TargetProductionAuthority(TargetProductionAuthorityPayload):
 
 
 class TargetProductionSealResponse(TargetProtocolModel):
-    production: TargetProductionAuthority
+    state: Literal["sealing", "sealed"]
+    production: TargetProductionAuthority | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealed") != (self.production is not None):
+            raise ValueError("target production seal response is inconsistent with state")
+        return self
 
 
 class TargetCallbackAcknowledgement(TargetProtocolModel):

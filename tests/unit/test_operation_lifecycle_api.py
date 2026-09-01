@@ -47,7 +47,9 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     ProducerEvidence,
     RecipeIdentity,
+    canonical_json_bytes,
     canonical_json_sha256,
+    derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Forbidden
 from riverhog_protocol.manifest import collection_content_identity
@@ -812,24 +814,16 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     disposition_identity = ArtifactDispositionSetIdentity.from_mapping(
         disposition_state.identity.model_dump(mode="json")
     )
-    assert (
-        len(
-            operator.list_processing_claim_dispositions(
-                claim_id,
-                authority_sha256=disposition_identity.sha256,
-            ).dispositions
-        )
-        == 1
+    disposition_page = operator.list_processing_claim_dispositions(
+        claim_id,
+        authority_sha256=disposition_identity.sha256,
     )
-    assert (
-        len(
-            operator.list_processing_claim_disposition_outputs(
-                claim_id,
-                authority_sha256=disposition_identity.sha256,
-            ).outputs
-        )
-        == 1
+    assert len(disposition_page.dispositions) == 1
+    output_page = operator.list_processing_claim_disposition_outputs(
+        claim_id,
+        authority_sha256=disposition_identity.sha256,
     )
+    assert len(output_page.outputs) == 1
     plan = sealed["plan"]
     derivation = CollectionDerivation(
         execution_id=execution_id,
@@ -860,9 +854,24 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     producer_evidence_path = output_root / PRODUCER_EVIDENCE_PATH
     producer_evidence_path.parent.mkdir(parents=True, exist_ok=True)
     producer_evidence_path.write_bytes(producer_evidence.to_json_bytes())
+    evidence_documents = {
+        derivation_evidence_page_path("dispositions", disposition_page.start_ordinal): (
+            canonical_json_bytes(disposition_page.model_dump(mode="json", exclude_none=True))
+        ),
+        derivation_evidence_page_path("output-edges", output_page.start_ordinal): (
+            canonical_json_bytes(output_page.model_dump(mode="json", exclude_none=True))
+        ),
+    }
+    evidence_paths: dict[str, Path] = {}
+    for path, content in evidence_documents.items():
+        evidence_path = output_root / path
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path.write_bytes(content)
+        evidence_paths[path] = evidence_path
     output_files = {
         output_relative_path: output_payload_path,
         PRODUCER_EVIDENCE_PATH: producer_evidence_path,
+        **evidence_paths,
         DERIVATION_EVIDENCE_PATH: derivation_path,
     }
     output_entries = [

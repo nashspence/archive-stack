@@ -325,6 +325,8 @@ def _branch_decision(
 
 def _queued_target_callback_execution(
     selection: ArtifactSelection | None = None,
+    *,
+    seal_batch_size: int = 100,
 ) -> tuple[
     InMemoryWorkStore,
     Stove0WorkService,
@@ -378,20 +380,33 @@ def _queued_target_callback_execution(
             return operation
 
     class Projector:
-        def project_target_production(
+        dispositions: list[ArtifactDisposition] = []
+        edges: list[ArtifactDispositionOutput] = []
+
+        def project_target_dispositions(
             self,
             _record: WorkRecord,
             dispositions: object,
+        ) -> None:
+            self.dispositions.extend(dispositions)  # type: ignore[arg-type]
+
+        def project_target_source_edges(
+            self,
+            _record: WorkRecord,
             edges: object,
+        ) -> None:
+            self.edges.extend(edges)  # type: ignore[arg-type]
+
+        def seal_target_projection(
+            self,
+            _record: WorkRecord,
         ) -> ArtifactDispositionSetIdentity:
-            disposition_values = tuple(dispositions)  # type: ignore[arg-type]
-            edge_values = tuple(edges)  # type: ignore[arg-type]
-            assert all(isinstance(item, ArtifactDisposition) for item in disposition_values)
-            assert all(isinstance(item, ArtifactDispositionOutput) for item in edge_values)
+            assert all(isinstance(item, ArtifactDisposition) for item in self.dispositions)
+            assert all(isinstance(item, ArtifactDispositionOutput) for item in self.edges)
             return ArtifactDispositionSetIdentity(
-                disposition_count=len(disposition_values),
-                output_edge_count=len(edge_values),
-                output_artifact_count=len({item.output_path for item in edge_values}),
+                disposition_count=len(self.dispositions),
+                output_edge_count=len(self.edges),
+                output_artifact_count=len({item.output_path for item in self.edges}),
                 sha256=_sha("e"),
             )
 
@@ -403,6 +418,7 @@ def _queued_target_callback_execution(
         ttl_seconds=900,
         operations=Operations(),
         projector=Projector(),
+        seal_batch_size=seal_batch_size,
     )
     access = callbacks.issue_access(record, "fixture-target")
     assert record.controller_evidence is not None
@@ -428,6 +444,19 @@ def _queued_target_callback_execution(
         expected_revision=record.revision,
     )
     return store, service, record, operation, callbacks, access
+
+
+def _seal_production(
+    callbacks: TargetCallbackAuthority,
+    token: str,
+    job_id: str,
+) -> TargetProductionAuthority:
+    for _ in range(32):
+        response = callbacks.seal_production(token, job_id=job_id)
+        if response.state == "sealed":
+            assert response.production is not None
+            return response.production
+    raise AssertionError("target production did not seal")
 
 
 def test_target_callback_authority_seals_exact_production_and_is_idempotent() -> None:
@@ -458,10 +487,84 @@ def test_target_callback_authority_seals_exact_production_and_is_idempotent() ->
         callbacks.declare_output(access.token, job_id=job_id, output=output)
         callbacks.declare_disposition(access.token, job_id=job_id, disposition=disposition)
         callbacks.declare_source_edge(access.token, job_id=job_id, edge=edge)
-    sealed = callbacks.seal_production(access.token, job_id=job_id).production
+    sealed = _seal_production(callbacks, access.token, job_id)
     assert sealed.outputs == OutputArtifactSetIdentity.seal((output,))
     assert sealed.disposition_count == 1
     assert sealed.source_edge_count == 1
+
+
+def test_target_production_seal_is_segmented_closes_declarations_and_replays() -> None:
+    selection = ArtifactSelection.seal(
+        tuple(
+            ArtifactSubject(
+                id=f"source-{ordinal}",
+                role="fixture.source/v1",
+                collection=_root(),
+                path=f"source/{ordinal}.bin",
+                bytes=ordinal + 1,
+                sha256=_sha(str(ordinal + 1)),
+            )
+            for ordinal in range(3)
+        )
+    )
+    _store, _service, record, _operation, callbacks, access = _queued_target_callback_execution(
+        selection, seal_batch_size=1
+    )
+    assert record.controller_evidence is not None
+    job_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    inputs = callbacks.input_page(
+        access.token,
+        job_id=job_id,
+        continuation=None,
+        limit=256,
+    ).artifacts
+    outputs = tuple(
+        OutputArtifact(
+            id=f"output-{ordinal}",
+            role="fixture.output/v1",
+            path=f"output/{ordinal}.bin",
+            bytes=source.bytes,
+            sha256=_sha(str(ordinal + 4)),
+        )
+        for ordinal, source in enumerate(inputs)
+    )
+    for source, output in zip(inputs, outputs, strict=True):
+        callbacks.declare_output(access.token, job_id=job_id, output=output)
+        callbacks.declare_disposition(
+            access.token,
+            job_id=job_id,
+            disposition=InputDispositionDeclaration(
+                input_id=source.id,
+                status="transformed",
+            ),
+        )
+        callbacks.declare_source_edge(
+            access.token,
+            job_id=job_id,
+            edge=OutputSourceEdge(output_id=output.id, input_id=source.id),
+        )
+
+    first = callbacks.seal_production(access.token, job_id=job_id)
+    assert first.state == "sealing"
+    with pytest.raises(Stove0StateError, match="declarations are closed"):
+        callbacks.declare_output(
+            access.token,
+            job_id=job_id,
+            output=outputs[0],
+        )
+
+    calls = 1
+    while True:
+        response = callbacks.seal_production(access.token, job_id=job_id)
+        calls += 1
+        if response.state == "sealed":
+            break
+        assert calls < 64
+    assert calls > 12
+    assert response.production is not None
+    replay = callbacks.seal_production(access.token, job_id=job_id)
+    assert replay.state == "sealed"
+    assert replay.production == response.production
 
 
 def test_target_callback_dispositions_cover_multi_input_selection_by_identity() -> None:
@@ -513,7 +616,7 @@ def test_target_callback_dispositions_cover_multi_input_selection_by_identity() 
             edge=OutputSourceEdge(output_id=output.id, input_id=source.id),
         )
 
-    sealed = callbacks.seal_production(access.token, job_id=job_id).production
+    sealed = _seal_production(callbacks, access.token, job_id)
 
     assert sealed.disposition_count == 2
     assert sealed.source_edge_count == 2
@@ -550,7 +653,7 @@ def test_target_callback_authority_rejects_unpermitted_disposition_and_stale_fen
         edge=OutputSourceEdge(output_id=output.id, input_id=source.id),
     )
     with pytest.raises(ValueError, match="disposition is not permitted"):
-        callbacks.seal_production(access.token, job_id=job_id)
+        _seal_production(callbacks, access.token, job_id)
 
     rebound = service.rebind_claim(
         record.work_id,
@@ -833,7 +936,8 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
 
 
 def test_new_claim_fence_resets_unsettled_execution_authorities() -> None:
-    service = Stove0WorkService(InMemoryWorkStore())
+    store = InMemoryWorkStore()
+    service = Stove0WorkService(store)
     work = _work()
     record = service.create_or_resume(work)
     record = service.bind_claim(
@@ -867,6 +971,15 @@ def test_new_claim_fence_resets_unsettled_execution_authorities() -> None:
         expected_revision=record.revision,
     )
     stale_execution_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    stale_output = OutputArtifact(
+        id="result",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=1,
+        sha256=_sha("1"),
+    )
+    store.ensure_target_production_receiving(work.work_id, stale_execution_id)
+    store.record_target_output(work.work_id, stale_execution_id, stale_output)
 
     rebound = service.rebind_claim(
         work.work_id,
@@ -899,6 +1012,15 @@ def test_new_claim_fence_resets_unsettled_execution_authorities() -> None:
         rebound.controller_evidence.execution_envelope.execution_envelope_sha256
         != stale_execution_id
     )
+    current_execution_id = rebound.controller_evidence.execution_envelope.execution_envelope_sha256
+    current_output = stale_output.model_copy(update={"bytes": 2, "sha256": _sha("2")})
+    store.ensure_target_production_receiving(work.work_id, current_execution_id)
+    store.record_target_output(work.work_id, current_execution_id, current_output)
+
+    assert store.load_target_output(work.work_id, stale_execution_id, "result") == stale_output
+    assert store.load_target_output(work.work_id, current_execution_id, "result") == current_output
+    with pytest.raises(Stove0StateError, match="generation is stale"):
+        store.record_target_output(work.work_id, stale_execution_id, stale_output)
 
 
 @pytest.mark.parametrize(

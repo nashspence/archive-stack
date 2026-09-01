@@ -21,7 +21,9 @@ from riverhog_protocol.collection_upload_transport import (
     validate_collection_upload_artifact_custody_receipt,
 )
 from riverhog_protocol.collection_workflows import (
+    DERIVATION_DISPOSITION_EVIDENCE_PREFIX,
     DERIVATION_EVIDENCE_PATH,
+    DERIVATION_OUTPUT_EVIDENCE_PREFIX,
     PRODUCER_EVIDENCE_PATH,
     JsonValue,
     ProducerEvidence,
@@ -699,6 +701,34 @@ class IncrementalCollectionProducer:
         if self._needs_upload_scan:
             self._upload_available()
         return tuple(self._custody[path] for path in sorted(set(self._custody) - before))
+
+    def append_derivation_evidence(
+        self, path: str, content: bytes
+    ) -> ProducerArtifactCustody | None:
+        """Append one bounded Riverhog derivation page after payload custody."""
+
+        normalized = normalize_relpath(path)
+        if not normalized.startswith(
+            (
+                f"{DERIVATION_DISPOSITION_EVIDENCE_PREFIX}/",
+                f"{DERIVATION_OUTPUT_EVIDENCE_PREFIX}/",
+            )
+        ):
+            raise ValueError("derivation evidence path is outside its reserved namespace")
+        value = bytes(content)
+        source = _Source(
+            path=normalized,
+            bytes=len(value),
+            sha256=hashlib.sha256(value).hexdigest(),
+            content=value,
+            provenance={}
+            if self.server_generated_provenance
+            else _omitted(self.provenance_omission_reason),
+        )
+        self._append_sources([source])
+        if self._needs_upload_scan:
+            self._upload_available()
+        return self._custody.get(normalized)
 
     def finish(
         self,

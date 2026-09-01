@@ -334,14 +334,18 @@ def _join_outcome(plan: JoinPlan, record: WorkRecord) -> JoinOutcome | None:
 def _output_selection(record: WorkRecord, store: WorkStore) -> ArtifactSelection:
     output = record.output
     status = record.target_status
+    settlement = record.target_settlement
     if (
         output is None
         or status is None
         or status.state != "succeeded"
         or status.output_collection != output
         or status.production is None
+        or settlement is None
+        or settlement.output_collection != output
+        or settlement.production_sha256 != status.production.production_sha256
     ):
-        raise RuntimeError("settled work lacks matching immutable target output evidence")
+        raise RuntimeError("settled work lacks matching post-root target settlement")
     root = _collection_root(output)
     return ArtifactSelection.seal(
         tuple(
@@ -354,7 +358,7 @@ def _output_selection(record: WorkRecord, store: WorkStore) -> ArtifactSelection
                 sha256=item.sha256,
                 media_type=item.media_type,
             )
-            for item in store.iter_target_outputs(record.work_id)
+            for item in store.iter_target_outputs(record.work_id, status.production.job_id)
         )
     )
 

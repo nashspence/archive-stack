@@ -1,15 +1,15 @@
 {
-  "contract_canonical_sha256": "28b48086fd375c3bc094629e7cbacfd1dc510e939ad76875eb419c1d640c372f",
-  "contract_projection_sha256": "fdb7d32ddbf5663ae29a02dc69eeb8e8ede5e219d09d50e318f2752292538509",
+  "contract_canonical_sha256": "598da643f9f561f61aa3a1eda21864fc5b0a29043cbb776d9323c7779814f227",
+  "contract_projection_sha256": "8d1ca50e5b55cc899d2c36b28525daa09abb0162633c104a130074cb772a5fa3",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1842,
-    "extent_source_links": 1842,
-    "source_authorities": 198,
+    "extent_decisions": 1843,
+    "extent_source_links": 1843,
+    "source_authorities": 199,
     "source_kinds": {
       "cli": 5,
       "configuration": 6,
-      "configuration-environment": 116,
+      "configuration-environment": 117,
       "openapi": 3,
       "protocol": 34,
       "python": 25,
@@ -2309,9 +2309,14 @@
       "source_pointer": "/external_contract/configuration_environment/108"
     },
     {
+      "id": "configuration-environment:STOVE0_TARGET_AUTHORITY_BATCH_SIZE:value",
+      "owner": "stove0-server",
+      "source_pointer": "/external_contract/configuration_environment/110"
+    },
+    {
       "id": "configuration-environment:STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:value",
       "owner": "stove0-target-support",
-      "source_pointer": "/external_contract/configuration_environment/113"
+      "source_pointer": "/external_contract/configuration_environment/114"
     },
     {
       "id": "configuration-pattern:RIVERHOG_ARCHIVE_STORE_{store}_{setting}:ADAPTER_MAX_CONNECTIONS:value",
@@ -12332,6 +12337,16 @@
       "bindings": [
         {
           "consumer": "stove0-server",
+          "expression": "_integer(values, 'STOVE0_TARGET_AUTHORITY_BATCH_SIZE', 100, minimum=1, maximum=128)",
+          "path": "companions/stove0/server/src/stove0_core/runtime_config.py"
+        }
+      ],
+      "id": "configuration-environment:STOVE0_TARGET_AUTHORITY_BATCH_SIZE"
+    },
+    {
+      "bindings": [
+        {
+          "consumer": "stove0-server",
           "expression": "_boolean(values, 'STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP', False)",
           "path": "companions/stove0/server/src/stove0_core/runtime_config.py"
         }
@@ -12831,7 +12846,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-          "sha256": "01c9d4dfcd2263bd4a0a715715853a98d65b1402f52d1fe46efeb786d12ebfac"
+          "sha256": "1d958b73fe147ea02aca17695b851b00a15f187593f73c7375199a6770975ea9"
         }
       ],
       "id": "state:stove0-control"

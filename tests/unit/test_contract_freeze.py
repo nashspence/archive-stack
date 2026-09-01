@@ -125,7 +125,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
     assert trace["coverage"]["source_kinds"] == {
         "cli": 5,
         "configuration": 6,
-        "configuration-environment": 116,
+        "configuration-environment": 117,
         "openapi": 3,
         "protocol": 34,
         "python": 25,

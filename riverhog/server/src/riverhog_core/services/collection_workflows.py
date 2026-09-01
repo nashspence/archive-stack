@@ -19,6 +19,7 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.collection_workflow_transport import (
     CONTROLLER_EVIDENCE_MAX_BYTES,
+    DISPOSITION_BATCH_MAX,
     WORK_DOCUMENT_MAX_BYTES,
     ExactSetAuthorityDocument,
 )
@@ -92,7 +93,6 @@ _RETIREMENT_POLICIES = frozenset({"retain", "retire-after-verified-output"})
 _CLAIM_STATES = closed_literal_values(ClaimState)
 _CLAIM_SORT_NAMES = closed_literal_values(ProcessingClaimSort)
 _SORT_ORDERS = closed_literal_values(SortOrder)
-_DISPOSITION_BATCH_MAX = 128
 _DISPOSITION_VALIDATION_BATCH = 128
 _CLAIM_SORT_FIELDS = {
     "created_at": CollectionProcessingClaimRecord.created_at,
@@ -341,7 +341,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingClaimInputRecord.collection_order >= start,
                     )
                     .order_by(CollectionProcessingClaimInputRecord.collection_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -454,7 +454,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingClaimArtifactRecord.artifact_order >= start,
                     )
                     .order_by(CollectionProcessingClaimArtifactRecord.artifact_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -569,7 +569,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingClaimOutputTagRecord.tag_order >= start,
                     )
                     .order_by(CollectionProcessingClaimOutputTagRecord.tag_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -1041,8 +1041,8 @@ class SqlAlchemyCollectionWorkflowService:
         """Insert one bounded idempotent disposition batch in any arrival order."""
 
         values = tuple(dispositions)
-        if not values or len(values) > _DISPOSITION_BATCH_MAX:
-            raise BadRequest(f"disposition batch must contain 1 to {_DISPOSITION_BATCH_MAX} facts")
+        if not values or len(values) > DISPOSITION_BATCH_MAX:
+            raise BadRequest(f"disposition batch must contain 1 to {DISPOSITION_BATCH_MAX} facts")
         keys = [
             (item.input_collection_id, item.input_archive_root_sha256, item.input_path)
             for item in values
@@ -1102,9 +1102,9 @@ class SqlAlchemyCollectionWorkflowService:
         """Insert one bounded idempotent source-to-output edge batch."""
 
         values = tuple(outputs)
-        if not values or len(values) > _DISPOSITION_BATCH_MAX:
+        if not values or len(values) > DISPOSITION_BATCH_MAX:
             raise BadRequest(
-                f"disposition output batch must contain 1 to {_DISPOSITION_BATCH_MAX} edges"
+                f"disposition output batch must contain 1 to {DISPOSITION_BATCH_MAX} edges"
             )
         keys = [(item.output_path, item.input_collection_id, item.input_path) for item in values]
         if len(keys) != len(set(keys)):
@@ -1256,7 +1256,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingDispositionRecord.disposition_order >= start,
                     )
                     .order_by(CollectionProcessingDispositionRecord.disposition_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -1292,7 +1292,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingDispositionOutputRecord.output_order >= start,
                     )
                     .order_by(CollectionProcessingDispositionOutputRecord.output_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -1616,7 +1616,7 @@ class SqlAlchemyCollectionWorkflowService:
                         CollectionProcessingOutcomeRecord.outcome_order >= start,
                     )
                     .order_by(CollectionProcessingOutcomeRecord.outcome_order)
-                    .limit(_DISPOSITION_BATCH_MAX)
+                    .limit(DISPOSITION_BATCH_MAX)
                 )
             )
             next_ordinal = start + len(rows)
@@ -2056,8 +2056,8 @@ def _require_sealed_transform_plan(claim: CollectionProcessingClaimRecord) -> No
 
 
 def _bounded_batch(values: Sequence[object], label: str) -> None:
-    if not values or len(values) > _DISPOSITION_BATCH_MAX:
-        raise BadRequest(f"{label} batch must contain 1 to {_DISPOSITION_BATCH_MAX} items")
+    if not values or len(values) > DISPOSITION_BATCH_MAX:
+        raise BadRequest(f"{label} batch must contain 1 to {DISPOSITION_BATCH_MAX} items")
 
 
 def _append_start(value: int, count: int) -> int:
@@ -2925,12 +2925,15 @@ def _verify_dispositions(
 ) -> None:
     if disposition_set.disposition_count != claim.artifact_count:
         raise Conflict("derivation does not account for every input artifact exactly once")
-    # A maintained derived-collection producer contributes exactly two Riverhog
-    # control files: producer evidence and this small derivation summary. Every
-    # other registered file was admitted only after its output-edge membership
-    # existed, so the scalar count proves exact output coverage without loading
-    # the collection or edge set.
-    if output.file_count != disposition_set.output_artifact_count + 2:
+    evidence_pages = (
+        disposition_set.disposition_count + DISPOSITION_BATCH_MAX - 1
+    ) // DISPOSITION_BATCH_MAX + (
+        disposition_set.output_edge_count + DISPOSITION_BATCH_MAX - 1
+    ) // DISPOSITION_BATCH_MAX
+    # The server validates each bounded recovery-evidence page against the sealed
+    # generic authority when its exact identity is registered. The scalar count
+    # then proves complete output and evidence coverage without loading either set.
+    if output.file_count != disposition_set.output_artifact_count + evidence_pages + 2:
         raise Conflict("derivation output paths do not match the derived collection artifacts")
 
 
