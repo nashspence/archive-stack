@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -112,6 +113,10 @@ type CollectionUploadIdempotencyKey = Annotated[
     CanonicalVisibleText,
     Field(max_length=200),
 ]
+type RetrievalPlanIdempotencyKey = Annotated[
+    CanonicalVisibleText,
+    Field(max_length=200),
+]
 _PROVENANCE_JOURNAL_ID: TypeAdapter[str] = TypeAdapter(ProvenanceJournalId)
 _APPLICATION_NAME: TypeAdapter[str] = TypeAdapter(ApplicationName)
 _APPLICATION_KEY_ID: TypeAdapter[str] = TypeAdapter(ApplicationKeyId)
@@ -146,6 +151,9 @@ _ARCHIVE_COPY_STATES = closed_literal_values(ArchiveCopyState)
 
 _COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
     CollectionUploadIdempotencyKey
+)
+_RETRIEVAL_PLAN_IDEMPOTENCY_KEY: TypeAdapter[RetrievalPlanIdempotencyKey] = TypeAdapter(
+    RetrievalPlanIdempotencyKey
 )
 
 
@@ -296,6 +304,15 @@ def _validated_collection_upload_idempotency_key(
 ) -> str:
     try:
         return _COLLECTION_UPLOAD_IDEMPOTENCY_KEY.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _validated_retrieval_plan_idempotency_key(
+    value: RetrievalPlanIdempotencyKey,
+) -> str:
+    try:
+        return _RETRIEVAL_PLAN_IDEMPOTENCY_KEY.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
 
@@ -604,7 +621,12 @@ class _HttpApiClient:
         progress: DownloadProgress | None = None,
     ) -> int:
         client = self._persistent_download_client()
-        with client.stream("GET", path) as response:
+        expected_identity = _sha256_identity(expected_sha256, "expected download SHA-256")
+        with client.stream(
+            "GET",
+            path,
+            headers={"If-Match": quote_sha256_identity(expected_identity)},
+        ) as response:
             if not response.is_success:
                 response.read()
                 self._raise_for_error(response)
@@ -619,7 +641,6 @@ class _HttpApiClient:
                     "download Content-Length does not match planned metadata: "
                     f"{returned_bytes} != {expected_bytes}"
                 )
-            expected_identity = _sha256_identity(expected_sha256, "expected download SHA-256")
             returned_etag = _response_sha256_etag(response.headers.get("ETag", ""))
             if returned_etag != expected_identity:
                 raise InvalidState("download ETag does not match planned SHA-256")
@@ -828,34 +849,57 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         files: Sequence[tuple[int, str]],
         *,
+        idempotency_key: RetrievalPlanIdempotencyKey | None = None,
         lease_seconds: int | None = None,
         restore_policy: RestorePolicy = "allow",
     ) -> dict[str, Any]:
         validated_restore_policy = _restore_policy(restore_policy)
         payload: dict[str, Any] = {
             "files": _file_selections_payload(files),
+            "idempotency_key": _validated_retrieval_plan_idempotency_key(
+                secrets.token_hex(16) if idempotency_key is None else idempotency_key
+            ),
             "restore_policy": validated_restore_policy,
         }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
-        return self._json("POST", "/v1/retrieval-plans", json=payload)
+        plan = self._json("POST", "/v1/retrieval-plans", json=payload)
+        while plan["state"] == "planning":
+            plan = self.advance_retrieval_plan(str(plan["id"]))
+        if plan["state"] != "ready":
+            failure = str(plan.get("failure") or plan["state"])
+            raise InvalidState(f"retrieval plan did not become ready: {failure}")
+        return plan
+
+    def get_retrieval_plan(self, plan_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/v1/retrieval-plans/{quote(plan_id, safe='')}")
+
+    def advance_retrieval_plan(self, plan_id: str) -> dict[str, Any]:
+        return self._json("POST", f"/v1/retrieval-plans/{quote(plan_id, safe='')}/advance")
+
+    def list_retrieval_plan_files(
+        self,
+        plan_id: str,
+        *,
+        plan_etag: str,
+        start_ordinal: int = 0,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/retrieval-plans/{quote(plan_id, safe='')}/files",
+            params={"start_ordinal": start_ordinal, "page_size": page_size},
+            headers={"If-Match": quote_sha256_identity(_sha256_identity(plan_etag, "plan ETag"))},
+        )
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[int, str]],
+        plan_id: str,
         *,
         plan_etag: str,
-        lease_seconds: int | None = None,
-        restore_policy: RestorePolicy = "allow",
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        validated_restore_policy = _restore_policy(restore_policy)
-        payload: dict[str, Any] = {
-            "files": _file_selections_payload(files),
-            "restore_policy": validated_restore_policy,
-        }
-        if lease_seconds is not None:
-            payload["lease_seconds"] = lease_seconds
+        payload: dict[str, Any] = {"plan_id": plan_id}
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json(
@@ -1013,7 +1057,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         partial = start != 0 or resolved_end != expected_bytes
         if partial and start == resolved_end:
             raise ValueError("retrieval byte range must be nonempty")
-        headers: dict[str, str] = {"Accept-Encoding": "identity"}
+        headers: dict[str, str] = {
+            "Accept-Encoding": "identity",
+            "If-Match": quote_sha256_identity(digest),
+        }
         if partial:
             headers["Range"] = f"bytes={start}-{resolved_end - 1}"
         client = self._persistent_download_client()

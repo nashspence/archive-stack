@@ -161,6 +161,7 @@ def test_terminal_job_responses_require_their_evidence() -> None:
     }
     retrieval_job = {
         "id": "job",
+        "plan_id": "plan",
         "state": "failed",
         "plan_etag": "a" * 64,
         "created_at": "2026-08-25T00:00:00.000000Z",
@@ -174,8 +175,6 @@ def test_terminal_job_responses_require_their_evidence() -> None:
         "lease_seconds": 1,
         "restore_policy": "allow",
         "requires_restore": False,
-        "files": [],
-        "objects": [],
     }
 
     with pytest.raises(ValidationError, match="completed_at"):
@@ -203,6 +202,7 @@ def test_operational_responses_reject_contradictory_state_evidence() -> None:
 
     retrieval_job = {
         "id": "job",
+        "plan_id": "plan",
         "state": "ready",
         "plan_etag": "a" * 64,
         "created_at": "2026-08-25T00:00:00.000000Z",
@@ -216,8 +216,6 @@ def test_operational_responses_reject_contradictory_state_evidence() -> None:
         "lease_seconds": 3600,
         "restore_policy": "allow",
         "requires_restore": False,
-        "files": [],
-        "objects": [],
     }
     with pytest.raises(ValidationError, match="canceled_at"):
         RetrievalJobOut.model_validate(retrieval_job)
@@ -891,7 +889,12 @@ def test_file_and_access_set_responses_reuse_their_canonical_owners() -> None:
         ).path
         == identity["path"]
     )
-    assert RetrievalPlanFileOut.model_validate({**identity, "collection_id": 1}).bytes == 42
+    assert (
+        RetrievalPlanFileOut.model_validate(
+            {**identity, "collection_id": 1, "requires_restore": False}
+        ).bytes
+        == 42
+    )
     assert (
         SearchFileOut.model_validate(
             {**identity, "collection_id": 1, "file_ref": "1/camera/clip.mp4"}

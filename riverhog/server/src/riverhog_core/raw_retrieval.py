@@ -123,7 +123,24 @@ class RawVolumeRangeReader:
         self._timing_observer = timing_observer
 
     def iter_volume(self, source: RawVolumeRetrievalSource) -> Iterator[bytes]:
-        if not source.parts:
+        yield from self.iter_volume_range(
+            source,
+            offset=0,
+            size=source.plaintext_bytes,
+        )
+
+    def iter_volume_range(
+        self,
+        source: RawVolumeRetrievalSource,
+        *,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        """Read only authenticated archive parts overlapping one logical range."""
+
+        if offset < 0 or size < 0 or offset + size > source.plaintext_bytes:
+            raise ValueError("raw volume requested range is invalid")
+        if size == 0:
             return
         state = UploadState.from_json_bytes(source.age_state_json)
         session = self._session_cache.get(state)
@@ -132,13 +149,22 @@ class RawVolumeRangeReader:
         for part in source.parts:
             part_offsets[part.number] = cursor
             cursor += part.stored_bytes
+        requested_end = offset + size
+        selected = tuple(
+            part
+            for part in source.parts
+            if part.plaintext_start + part.plaintext_bytes > offset
+            and part.plaintext_start < requested_end
+        )
+        if not selected:
+            raise RuntimeError("raw retrieval range has no archive parts")
         pending: dict[int, Future[_RetrievedRawPart]] = {}
         reservations: dict[int, int] = {}
-        next_submit = 1
+        next_submit = 0
         emitted = 0
 
-        def reserve_bytes(number: int) -> int:
-            part = source.parts[number - 1]
+        def reserve_bytes(index: int) -> int:
+            part = selected[index]
             return max(
                 1,
                 part.plaintext_bytes + min(part.stored_bytes, self._read_working_bytes),
@@ -146,11 +172,11 @@ class RawVolumeRangeReader:
 
         def submit(
             executor: ThreadPoolExecutor,
-            number: int,
+            index: int,
             *,
             block: bool,
         ) -> bool:
-            amount = reserve_bytes(number)
+            amount = reserve_bytes(index)
             if block:
                 queue_wait_seconds = self._byte_budget.acquire(amount)
             elif self._byte_budget.try_acquire(amount):
@@ -158,17 +184,17 @@ class RawVolumeRangeReader:
             else:
                 return False
             try:
-                part = source.parts[number - 1]
-                pending[number] = executor.submit(
+                part = selected[index]
+                pending[index] = executor.submit(
                     self._read_part,
                     source=source,
                     state=state,
                     session=session,
                     part=part,
-                    stored_offset=part_offsets[number],
+                    stored_offset=part_offsets[part.number],
                     queue_wait_seconds=queue_wait_seconds,
                 )
-                reservations[number] = amount
+                reservations[index] = amount
             except BaseException:
                 self._byte_budget.release(amount)
                 raise
@@ -176,41 +202,50 @@ class RawVolumeRangeReader:
 
         def fill(executor: ThreadPoolExecutor) -> None:
             nonlocal next_submit
-            while next_submit <= len(source.parts) and len(pending) < self._request_concurrency:
+            while next_submit < len(selected) and len(pending) < self._request_concurrency:
                 if not submit(executor, next_submit, block=False):
                     return
                 next_submit += 1
 
         with ThreadPoolExecutor(
-            max_workers=min(self._request_concurrency, len(source.parts)),
+            max_workers=min(self._request_concurrency, len(selected)),
             thread_name_prefix="riverhog-raw-read",
         ) as executor:
             submit(executor, next_submit, block=True)
             next_submit += 1
             fill(executor)
             try:
-                for expected_number in range(1, len(source.parts) + 1):
-                    if expected_number not in pending:
-                        submit(executor, expected_number, block=True)
-                        if next_submit == expected_number:
+                for expected_index, part in enumerate(selected):
+                    if expected_index not in pending:
+                        submit(executor, expected_index, block=True)
+                        if next_submit == expected_index:
                             next_submit += 1
-                    retrieved = pending.pop(expected_number).result()
-                    if retrieved.number != expected_number:
+                    retrieved = pending.pop(expected_index).result()
+                    if retrieved.number != part.number:
                         raise RuntimeError("raw retrieval returned an unexpected part number")
+                    local_start = max(offset, part.plaintext_start) - part.plaintext_start
+                    local_end = (
+                        min(requested_end, part.plaintext_start + part.plaintext_bytes)
+                        - part.plaintext_start
+                    )
                     downstream_seconds = 0.0
                     try:
-                        for offset in range(
-                            0,
-                            len(retrieved.content),
+                        for chunk_offset in range(
+                            local_start,
+                            local_end,
                             self._read_working_bytes,
                         ):
-                            chunk = retrieved.content[offset : offset + self._read_working_bytes]
+                            chunk = retrieved.content[
+                                chunk_offset : min(
+                                    local_end, chunk_offset + self._read_working_bytes
+                                )
+                            ]
                             emitted += len(chunk)
                             downstream_started = time.perf_counter()
                             yield chunk
                             downstream_seconds += time.perf_counter() - downstream_started
                     finally:
-                        self._byte_budget.release(reservations.pop(expected_number))
+                        self._byte_budget.release(reservations.pop(expected_index))
                     if self._timing_observer is not None:
                         self._timing_observer(
                             replace(
@@ -230,7 +265,7 @@ class RawVolumeRangeReader:
                 for amount in reservations.values():
                     self._byte_budget.release(amount)
                 reservations.clear()
-        if emitted != source.plaintext_bytes:
+        if emitted != size:
             raise RuntimeError("raw retrieval emitted an unexpected byte count")
 
     def _read_part(
@@ -347,14 +382,21 @@ class RawFileRangeReader:
         self._volume_reader = volume_reader
 
     def iter_file(self, volumes: Sequence[RawVolumeRetrievalSource]) -> Iterator[bytes]:
+        yield from self.iter_file_range(volumes, offset=0, size=None)
+
+    def iter_file_range(
+        self,
+        volumes: Sequence[RawVolumeRetrievalSource],
+        *,
+        offset: int,
+        size: int | None,
+    ) -> Iterator[bytes]:
         if not volumes:
             raise ValueError("raw file retrieval requires at least one volume")
         ordered = tuple(sorted(volumes, key=lambda current: current.file_offset))
         path = ordered[0].source_path
         file_bytes = ordered[0].file_bytes
         file_sha256 = ordered[0].file_sha256
-        digest = hashlib.sha256()
-        emitted = 0
         expected_offset = 0
         for volume in ordered:
             if (
@@ -364,10 +406,38 @@ class RawFileRangeReader:
                 or volume.file_offset != expected_offset
             ):
                 raise ValueError("raw file retrieval volumes are not one contiguous file")
-            for chunk in self._volume_reader.iter_volume(volume):
-                digest.update(chunk)
-                emitted += len(chunk)
-                yield chunk
             expected_offset += volume.plaintext_bytes
-        if emitted != file_bytes or digest.hexdigest() != file_sha256:
+        if expected_offset != file_bytes:
+            raise ValueError("raw file retrieval volumes do not cover the file")
+        resolved_size = file_bytes - offset if size is None else size
+        if offset < 0 or resolved_size < 0 or offset + resolved_size > file_bytes:
+            raise ValueError("raw file requested range is invalid")
+
+        requested_end = offset + resolved_size
+        digest = hashlib.sha256() if offset == 0 and resolved_size == file_bytes else None
+        emitted = 0
+        for volume in ordered:
+            volume_start = volume.file_offset
+            volume_end = volume_start + volume.plaintext_bytes
+            if volume_end <= offset or volume_start >= requested_end:
+                continue
+            local_start = max(offset, volume_start) - volume_start
+            local_end = min(requested_end, volume_end) - volume_start
+            volume_size = local_end - local_start
+            volume_emitted = 0
+            for current in self._volume_reader.iter_volume_range(
+                volume,
+                offset=local_start,
+                size=volume_size,
+            ):
+                emitted += len(current)
+                volume_emitted += len(current)
+                if digest is not None:
+                    digest.update(current)
+                yield current
+            if volume_emitted != volume_size:
+                raise ValueError("raw volume ended before the requested range")
+        if emitted != resolved_size:
+            raise ValueError("raw file retrieval emitted an unexpected byte count")
+        if digest is not None and digest.hexdigest() != file_sha256:
             raise ValueError("raw file retrieval verification failed")

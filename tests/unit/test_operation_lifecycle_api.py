@@ -524,10 +524,17 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert operator.list_retrieval_cache_objects(page_size=100, page_token=None)["objects"] == []
 
     plan = operator.plan_retrieval([(collection_id, "document.txt")], restore_policy="never")
-    job = operator.create_retrieval_job(
-        [(collection_id, "document.txt")],
+    plan = operator.advance_retrieval_plan(str(plan["id"]))
+    assert plan["state"] == "ready"
+    plan_files = operator.list_retrieval_plan_files(
+        str(plan["id"]),
         plan_etag=str(plan["etag"]),
-        restore_policy="never",
+    )
+    assert plan_files["complete"] is True
+    assert [current["path"] for current in plan_files["files"]] == ["document.txt"]
+    job = operator.create_retrieval_job(
+        str(plan["id"]),
+        plan_etag=str(plan["etag"]),
     )
     job_id = str(job["id"])
     assert operator.get_retrieval_job(job_id)["state"] == "ready"
@@ -535,10 +542,41 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     head = transport.head(
         f"/v1/retrieval-jobs/{job_id}/content",
         params={"collection_id": collection_id, "path": "document.txt"},
-        headers=operator_headers,
+        headers={**operator_headers, "If-Match": f'"{binding.sha256}"'},
     )
     assert head.status_code == 200
     assert head.headers["etag"] == f'"{binding.sha256}"'
+    partial = transport.get(
+        f"/v1/retrieval-jobs/{job_id}/content",
+        params={"collection_id": collection_id, "path": "document.txt"},
+        headers={
+            **operator_headers,
+            "If-Match": f'"{binding.sha256}"',
+            "Range": "bytes=-4",
+        },
+    )
+    assert partial.status_code == 206
+    assert partial.content == source.read_bytes()[-4:]
+    assert (
+        partial.headers["content-range"]
+        == f"bytes {binding.bytes - 4}-{binding.bytes - 1}/{binding.bytes}"
+    )
+    stale = transport.get(
+        f"/v1/retrieval-jobs/{job_id}/content",
+        params={"collection_id": collection_id, "path": "document.txt"},
+        headers={**operator_headers, "If-Match": f'"{"0" * 64}"'},
+    )
+    assert stale.status_code == 412
+    unsatisfiable = transport.get(
+        f"/v1/retrieval-jobs/{job_id}/content",
+        params={"collection_id": collection_id, "path": "document.txt"},
+        headers={
+            **operator_headers,
+            "If-Match": f'"{binding.sha256}"',
+            "Range": f"bytes={binding.bytes}-",
+        },
+    )
+    assert unsatisfiable.status_code == 416
     output = tmp_path / "retrieved.txt"
     operator.download_retrieval_file(
         job_id,
@@ -552,9 +590,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert operator.acknowledge_retrieval_job(job_id)["state"] == "completed"
     cancel_plan = operator.plan_retrieval([(collection_id, "document.txt")], restore_policy="never")
     cancel_job = operator.create_retrieval_job(
-        [(collection_id, "document.txt")],
+        str(cancel_plan["id"]),
         plan_etag=str(cancel_plan["etag"]),
-        restore_policy="never",
     )
     assert operator.cancel_retrieval_job(str(cancel_job["id"]))["state"] == "canceled"
 
@@ -919,9 +956,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         restore_policy="never",
     )
     target_retrieval = target.create_retrieval_job(
-        [(collection_id, "document.txt")],
+        str(target_retrieval_plan["id"]),
         plan_etag=str(target_retrieval_plan["etag"]),
-        restore_policy="never",
     )
     assert target_retrieval["state"] == "ready"
     assert target.acknowledge_retrieval_job(str(target_retrieval["id"]))["state"] == "completed"

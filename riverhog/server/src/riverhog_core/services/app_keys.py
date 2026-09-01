@@ -33,7 +33,6 @@ from riverhog_core.catalog_models import (
     AppKeyRecord,
     CollectionRecord,
     KeyDownloadReservationRecord,
-    RetrievalCacheLeaseRecord,
     RetrievalJobRecord,
     TagRecord,
 )
@@ -236,11 +235,6 @@ class SqlAlchemyAppKeyService:
                     job.state = "canceled"
                     job.canceled_at = now
                     job.next_poll_at = None
-                    session.execute(
-                        delete(RetrievalCacheLeaseRecord).where(
-                            RetrievalCacheLeaseRecord.owner == f"job:{job.id}"
-                        )
-                    )
                     session.execute(
                         delete(KeyDownloadReservationRecord).where(
                             KeyDownloadReservationRecord.job_id == job.id,

@@ -95,11 +95,23 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "created_at",
         "expires_at",
     }
-    assert {column["name"] for column in inspector.get_columns("retrieval_jobs")} >= {
+    assert {column["name"] for column in inspector.get_columns("retrieval_plans")} >= {
         "id",
         "app",
         "state",
+        "request_json",
+        "next_file_order",
+        "next_placement_sequence",
+        "file_commitment_sha256",
+        "segment_commitment_sha256",
+        "etag",
+    }
+    assert {column["name"] for column in inspector.get_columns("retrieval_jobs")} >= {
+        "id",
+        "plan_id",
+        "state",
         "plan_etag",
+        "lease_seconds",
         "restore_requested_at",
     }
     assert {column["name"] for column in inspector.get_columns("archive_copy_jobs")} >= {
@@ -167,11 +179,50 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "phase",
         "tag_id",
     }
-    assert {column["name"] for column in inspector.get_columns("retrieval_job_files")} == {
-        "job_id",
+    assert {column["name"] for column in inspector.get_columns("retrieval_plan_files")} == {
+        "plan_id",
+        "file_order",
         "collection_id",
         "path",
+        "bytes",
+        "sha256",
+        "source_store",
+        "requires_restore",
+    }
+    assert {column["name"] for column in inspector.get_columns("retrieval_plan_placements")} == {
+        "plan_id",
         "file_order",
+        "sequence",
+        "object_order",
+        "file_offset",
+        "object_offset",
+        "bytes",
+        "member",
+    }
+    assert {column["name"] for column in inspector.get_columns("retrieval_plan_objects")} == {
+        "plan_id",
+        "object_order",
+        "collection_id",
+        "source_store",
+        "object_id",
+        "kind",
+        "plaintext_bytes",
+        "stored_bytes",
+        "sha256",
+        "read_mode",
+        "cache_store",
+        "retrieval_bytes",
+    }
+    assert {
+        column["name"] for column in inspector.get_columns("retrieval_job_object_progress")
+    } == {
+        "job_id",
+        "object_order",
+        "plan_id",
+        "state",
+        "prepare_requested_at",
+        "next_poll_at",
+        "cache_store",
     }
     collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
     assert collection_columns["creation_identity_sha256"]["nullable"] is False

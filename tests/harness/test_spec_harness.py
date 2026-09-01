@@ -137,7 +137,7 @@ def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> N
     plan = harness.retrieval.plan(files)
     job = harness.retrieval.create(
         app="local",
-        files=files,
+        plan_id=str(plan["id"]),
         plan_etag=str(plan["etag"]),
     )
     chunks, byte_count, sha256 = harness.retrieval.content(

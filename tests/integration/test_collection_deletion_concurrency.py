@@ -30,6 +30,7 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     CollectionUploadRecord,
     RetrievalJobRecord,
+    RetrievalPlanObjectRecord,
     TagRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionDerivationRecord
@@ -995,7 +996,11 @@ def _seed_b2_copy(database_url: str) -> None:
 def _create_retrieval(service: SqlAlchemyRetrievalService) -> dict[str, object]:
     files = [(COLLECTION_ID, FILE_PATH)]
     plan = service.plan(files)
-    return service.create(app="local", files=files, plan_etag=str(plan["etag"]))
+    return service.create(
+        app="local",
+        plan_id=str(plan["id"]),
+        plan_etag=str(plan["etag"]),
+    )
 
 
 def _drain_deletions(service: SqlAlchemyCollectionDeletionService) -> int:
@@ -1784,9 +1789,6 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
         None,
     )
     files = [(COLLECTION_ID, FILE_PATH)]
-    stale_plan = retrieval.plan(files)
-    stale_objects = cast(list[dict[str, object]], stale_plan["objects"])
-    assert {str(item["source_store"]) for item in stale_objects} == {"deep"}
     challenge = str(retirement.plan(COLLECTION_ID, store="deep")["challenge"])
     failures: list[BaseException] = []
 
@@ -1801,14 +1803,21 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     assert deep.delete_started.wait(10)
     try:
         current_plan = retrieval.plan(files)
-        current_objects = cast(list[dict[str, object]], current_plan["objects"])
-        assert {str(item["source_store"]) for item in current_objects} == {"b2"}
-        with pytest.raises(Conflict, match="retrieval plan changed"):
-            retrieval.create(
-                app="local",
-                files=files,
-                plan_etag=str(stale_plan["etag"]),
+        with session_scope(make_session_factory(database_url)) as session:
+            current_stores = set(
+                session.scalars(
+                    select(RetrievalPlanObjectRecord.source_store).where(
+                        RetrievalPlanObjectRecord.plan_id == str(current_plan["id"])
+                    )
+                )
             )
+        assert current_stores == {"b2"}
+        current_job = retrieval.create(
+            app="local",
+            plan_id=str(current_plan["id"]),
+            plan_etag=str(current_plan["etag"]),
+        )
+        assert current_job["state"] == "ready"
     finally:
         deep.allow_delete.set()
         thread.join(10)

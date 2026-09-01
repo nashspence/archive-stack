@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-from riverhog_api.routers.retrieval import _iter_range
-
-
-def test_whole_file_response_exhausts_verified_retrieval_source() -> None:
-    completed: list[bool] = []
-
-    def chunks() -> Iterator[bytes]:
-        yield b"payload"
-        completed.append(True)
-
-    assert b"".join(_iter_range(chunks(), start=0, size=7, exhaust_source=True)) == b"payload"
-    assert completed == [True]
+import pytest
+from riverhog_api.routers.retrieval import _parse_range
+from riverhog_protocol import InvalidRange
 
 
-def test_partial_response_stops_after_requested_range() -> None:
-    completed: list[bool] = []
+def test_range_parser_resolves_exact_head_and_tail_ranges() -> None:
+    assert _parse_range("bytes=0-6", 20) == (0, 7)
+    assert _parse_range("bytes=10-999", 20) == (10, 20)
+    assert _parse_range("bytes=-7", 20) == (13, 20)
 
-    def chunks() -> Iterator[bytes]:
-        yield b"payload"
-        completed.append(True)
 
-    assert b"".join(_iter_range(chunks(), start=1, size=3)) == b"ayl"
-    assert completed == []
+def test_range_parser_declares_unsatisfiable_ranges() -> None:
+    with pytest.raises(InvalidRange):
+        _parse_range("bytes=20-21", 20)

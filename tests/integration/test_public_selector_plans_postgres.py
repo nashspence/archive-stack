@@ -192,6 +192,7 @@ _NON_PLAN_QUERY_OPERATIONS = {
     },
     ("riverhog", "get_collection_tags"): {"page_size", "page_token"},
     ("riverhog", "list_lifecycle_events"): {"after", "limit"},
+    ("riverhog", "list_retrieval_plan_files"): {"page_size", "start_ordinal"},
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
     ("riverhog", "resourcesync_change_list"): {"after"},
     ("riverhog", "trace_collection_file_provenance"): {"page_size", "page_token"},

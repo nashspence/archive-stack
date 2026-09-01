@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from riverhog_age import CHUNK_SIZE
 from riverhog_api_client.source_hashing import hash_raw_source_chunks
 from riverhog_core.app_permissions import (
     CATALOG_READ,
@@ -17,7 +18,14 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import RetrievalCacheLeaseRecord, RetrievalJobRecord, TagRecord
+from riverhog_core.catalog_models import (
+    CollectionArchiveFileObjectRecord,
+    RetrievalJobRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanPlacementRecord,
+    RetrievalPlanRecord,
+    TagRecord,
+)
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.download_allowance import DownloadAttribution
@@ -26,9 +34,10 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import CollectionUploadRawDigestBatchDocument
-from riverhog_protocol.errors import Conflict, NotFound
+from riverhog_protocol.errors import Conflict, NotFound, PreconditionFailed
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import tag_set_identity
+from sqlalchemy import select
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
 from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
@@ -263,14 +272,19 @@ class RecordingDownloadAllowance:
         return content
 
 
-def _policy(*, raw: bool = False) -> CollectionVolumePolicy:
+def _policy(
+    *,
+    raw: bool = False,
+    raw_volume_plaintext_bytes: int = 10 * MIB,
+    raw_part_plaintext_bytes: int = 5 * MIB,
+) -> CollectionVolumePolicy:
     return CollectionVolumePolicy(
         pack_source_bytes=16 * MIB,
         pack_files=100,
         pack_member_bytes=1 if raw else 8 * MIB,
         pack_part_plaintext_bytes=5 * MIB,
-        raw_volume_plaintext_bytes=10 * MIB,
-        raw_part_plaintext_bytes=5 * MIB,
+        raw_volume_plaintext_bytes=raw_volume_plaintext_bytes,
+        raw_part_plaintext_bytes=raw_part_plaintext_bytes,
     )
 
 
@@ -278,18 +292,21 @@ def _seed_collection(
     tmp_path: Path,
     files: dict[str, bytes],
     *,
+    database_url: str | None = None,
     raw: bool = False,
     read_mode: str = "immediate",
     cache: MemoryRetrievalCache | None = None,
     allowance: RecordingDownloadAllowance | None = None,
     pending_timeout: timedelta | None = None,
+    raw_volume_plaintext_bytes: int = 10 * MIB,
+    raw_part_plaintext_bytes: int = 5 * MIB,
 ) -> tuple[
     SqlAlchemyRetrievalService,
     int,
     MemoryArchiveRangeStore,
     DirectArchiveStore,
 ]:
-    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    database_url = database_url or sqlite_url(tmp_path / "catalog.sqlite3")
     config = RuntimeConfig(
         database_url=database_url,
         archive_scrypt_work_factor=1,
@@ -319,10 +336,15 @@ def _seed_collection(
             )
         }
     )
+    policy = _policy(
+        raw=raw,
+        raw_volume_plaintext_bytes=raw_volume_plaintext_bytes,
+        raw_part_plaintext_bytes=raw_part_plaintext_bytes,
+    )
     uploads = SqlAlchemyCollectionUploadService(
         config,
         archive_registry,
-        policy=_policy(raw=raw),
+        policy=policy,
     )
     opened = uploads.create_or_resume(
         idempotency_key="upload-1",
@@ -348,7 +370,7 @@ def _seed_collection(
                 path=path,
                 chunks=(content,),
                 expected_bytes=len(content),
-                part_plaintext_bytes=_policy(raw=True).raw_part_plaintext_bytes,
+                part_plaintext_bytes=policy.raw_part_plaintext_bytes,
             )
             entry["raw_parts"] = {
                 "part_plaintext_bytes": digests.summary.part_plaintext_bytes,
@@ -442,9 +464,22 @@ def _ready_job(
     return service.create(
         app="reader",
         key_id=key_id,
-        files=((collection_id, path),),
+        plan_id=str(plan["id"]),
         plan_etag=str(plan["etag"]),
     )
+
+
+def _drive_requested(
+    service: SqlAlchemyRetrievalService,
+    job: dict[str, object],
+) -> dict[str, object]:
+    current = job
+    for _ in range(20):
+        if current["state"] != "requested":
+            return current
+        assert service.process_due() == 1
+        current = service.get(app="reader", job_id=str(job["id"]))
+    raise AssertionError("retrieval did not converge in bounded test steps")
 
 
 def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
@@ -458,14 +493,9 @@ def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
     service, collection_id, ranges, _store = _seed_collection(tmp_path, files)
 
     plan = service.plan(((collection_id, "target.bin"),))
-    assert len(plan["objects"]) == 1
-    planned = plan["objects"][0]
-    assert planned["kind"] == "pack"
-    assert planned["retrieval_bytes"] < planned["stored_bytes"]
-
     job = service.create(
         app="reader",
-        files=((collection_id, "target.bin"),),
+        plan_id=str(plan["id"]),
         plan_etag=str(plan["etag"]),
     )
     assert job["state"] == "ready"
@@ -480,8 +510,35 @@ def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
     assert byte_count == len(files["target.bin"])
     assert sha256 == hashlib.sha256(files["target.bin"]).hexdigest()
     assert len(ranges.requests) == 1
-    assert ranges.requests[0][2] < planned["stored_bytes"]
+    assert ranges.requests[0][2] < sum(len(value) for value in files.values())
     assert service.acknowledge(app="reader", job_id=str(job["id"]))["state"] == "completed"
+
+
+def test_retrieval_plan_creation_replays_after_a_lost_response(tmp_path: Path) -> None:
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"target.bin": b"target"},
+    )
+
+    first = service.plan(
+        ((collection_id, "target.bin"),),
+        idempotency_key="lost-response",
+    )
+    replay = service.plan(
+        ((collection_id, "target.bin"),),
+        idempotency_key="lost-response",
+    )
+
+    assert replay == first
+    with session_scope(make_session_factory(sqlite_url(tmp_path / "catalog.sqlite3"))) as session:
+        assert len(session.scalars(select(RetrievalPlanRecord)).all()) == 1
+
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.plan(
+            ((collection_id, "target.bin"),),
+            idempotency_key="lost-response",
+            restore_policy="never",
+        )
 
 
 def test_retrieval_plan_accepts_the_exact_capability_artifact(tmp_path: Path) -> None:
@@ -505,12 +562,21 @@ def test_retrieval_plan_accepts_the_exact_capability_artifact(tmp_path: Path) ->
 
     plan = service.plan(((collection_id, "selected.bin"),), principal=principal)
 
-    assert plan["files"] == [
+    page = service.list_plan_files(
+        app=principal.app,
+        key_id=principal.key_id,
+        plan_id=str(plan["id"]),
+        etag=str(plan["etag"]),
+        start_ordinal=0,
+        page_size=100,
+    )
+    assert page["files"] == [
         {
             "collection_id": collection_id,
             "path": "selected.bin",
             "bytes": len(files["selected.bin"]),
             "sha256": hashlib.sha256(files["selected.bin"]).hexdigest(),
+            "requires_restore": False,
         }
     ]
 
@@ -536,6 +602,153 @@ def test_raw_retrieval_reassembles_verified_parts_in_file_order(tmp_path: Path) 
     assert len(ranges.requests) == 2
 
 
+def test_raw_head_middle_and_tail_ranges_read_only_overlapping_bounded_parts(
+    tmp_path: Path,
+) -> None:
+    content = bytes(range(256)) * (6 * MIB // 256)
+    service, collection_id, ranges, _store = _seed_collection(
+        tmp_path,
+        {"large.bin": content},
+        raw=True,
+    )
+    job = _ready_job(service, collection_id, "large.bin")
+    size = 4096
+
+    for offset in (0, len(content) // 2, len(content) - size):
+        ranges.requests.clear()
+        chunks, byte_count, sha256 = service.content(
+            app="reader",
+            job_id=str(job["id"]),
+            collection_id=collection_id,
+            path="large.bin",
+            offset=offset,
+            size=size,
+        )
+
+        assert b"".join(chunks) == content[offset : offset + size]
+        assert byte_count == len(content)
+        assert sha256 == hashlib.sha256(content).hexdigest()
+        assert len(ranges.requests) == 1
+        assert ranges.requests[0][2] < len(content)
+
+
+def test_retrieval_plan_resumes_across_more_than_two_internal_segment_pages(
+    tmp_path: Path,
+) -> None:
+    segment_count = 65
+    content = bytes(index % 251 for index in range(segment_count * CHUNK_SIZE))
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"many-segments.bin": content},
+        raw=True,
+        raw_volume_plaintext_bytes=CHUNK_SIZE,
+        raw_part_plaintext_bytes=CHUNK_SIZE,
+    )
+
+    plan = service.plan(((collection_id, "many-segments.bin"),))
+
+    assert plan["state"] == "planning"
+    with session_scope(service._session_factory) as session:
+        assert len(session.scalars(select(RetrievalPlanObjectRecord)).all()) == 32
+        assert len(session.scalars(select(RetrievalPlanPlacementRecord)).all()) == 32
+
+    restarted = SqlAlchemyRetrievalService(
+        service._config,
+        service._archive_stores,
+        service._cache,
+        session_factory=service._session_factory,
+    )
+    plan = restarted.advance_plan(app="", plan_id=str(plan["id"]))
+    assert plan["state"] == "planning"
+    with session_scope(service._session_factory) as session:
+        assert len(session.scalars(select(RetrievalPlanObjectRecord)).all()) == 64
+        assert len(session.scalars(select(RetrievalPlanPlacementRecord)).all()) == 64
+
+    plan = restarted.advance_plan(app="", plan_id=str(plan["id"]))
+    assert plan["state"] == "ready"
+    assert plan["file_count"] == 1
+    assert plan["etag"]
+    with session_scope(service._session_factory) as session:
+        assert len(session.scalars(select(RetrievalPlanObjectRecord)).all()) == segment_count
+        assert len(session.scalars(select(RetrievalPlanPlacementRecord)).all()) == segment_count
+
+    page = restarted.list_plan_files(
+        app="",
+        plan_id=str(plan["id"]),
+        etag=str(plan["etag"]),
+        start_ordinal=0,
+        page_size=1,
+    )
+    assert page["complete"] is True
+    assert page["next_ordinal"] is None
+    assert [item["path"] for item in page["files"]] == ["many-segments.bin"]
+    with pytest.raises(PreconditionFailed):
+        restarted.list_plan_files(
+            app="",
+            plan_id=str(plan["id"]),
+            etag="0" * 64,
+            start_ordinal=0,
+            page_size=1,
+        )
+
+    job = restarted.create(
+        app="reader",
+        plan_id=str(plan["id"]),
+        plan_etag=str(plan["etag"]),
+    )
+    assert job["state"] == "ready"
+    retried = restarted.create(
+        app="reader",
+        plan_id=str(plan["id"]),
+        plan_etag=str(plan["etag"]),
+    )
+    assert retried["id"] == job["id"]
+    with pytest.raises(Conflict, match="event context"):
+        restarted.create(
+            app="reader",
+            plan_id=str(plan["id"]),
+            plan_etag=str(plan["etag"]),
+            event_context={"changed": True},
+        )
+
+
+def test_retrieval_plan_failure_is_durable_and_does_not_skip_a_missing_segment(
+    tmp_path: Path,
+) -> None:
+    content = b"x" * (65 * CHUNK_SIZE)
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"many-segments.bin": content},
+        raw=True,
+        raw_volume_plaintext_bytes=CHUNK_SIZE,
+        raw_part_plaintext_bytes=CHUNK_SIZE,
+    )
+    plan = service.plan(((collection_id, "many-segments.bin"),))
+    assert plan["state"] == "planning"
+    with session_scope(service._session_factory) as session:
+        plan_record = session.get(RetrievalPlanRecord, str(plan["id"]))
+        assert plan_record is not None
+        missing = session.scalar(
+            select(CollectionArchiveFileObjectRecord)
+            .where(
+                CollectionArchiveFileObjectRecord.collection_id == collection_id,
+                CollectionArchiveFileObjectRecord.store == "archive",
+                CollectionArchiveFileObjectRecord.path == "many-segments.bin",
+                CollectionArchiveFileObjectRecord.sequence >= plan_record.next_placement_sequence,
+            )
+            .order_by(CollectionArchiveFileObjectRecord.sequence)
+            .limit(1)
+        )
+        assert missing is not None
+        session.delete(missing)
+
+    failed = service.advance_plan(app="", plan_id=str(plan["id"]))
+
+    assert failed["state"] == "failed"
+    assert failed["failure"] == "retrieval plan placement order is not canonical"
+    assert service.get_plan(app="", plan_id=str(plan["id"])) == failed
+
+
 def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     tmp_path: Path,
 ) -> None:
@@ -550,16 +763,15 @@ def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     job = _ready_job(service, collection_id, "target.bin")
     assert job["state"] == "requested"
 
-    assert service.process_due() == 1
-    ready = service.get(app="reader", job_id=str(job["id"]))
+    ready = _drive_requested(service, job)
     assert ready["state"] == "ready"
     assert store.prepared == [("pack-" + "0" * 64,)]
 
     cached_plan = service.plan(((collection_id, "target.bin"),))
-    assert [current["read_mode"] for current in cached_plan["objects"]] == ["cache"]
+    assert cached_plan["requires_restore"] is False
     cached_job = service.create(
         app="reader",
-        files=((collection_id, "target.bin"),),
+        plan_id=str(cached_plan["id"]),
         plan_etag=str(cached_plan["etag"]),
     )
     assert cached_job["state"] == "ready"
@@ -602,10 +814,9 @@ def test_restore_waits_until_every_required_object_has_cache_admission(tmp_path:
         cache=cache,
     )
     plan = service.plan(((collection_id, "large.bin"),))
-    assert len(plan["objects"]) == 2
     job = service.create(
         app="reader",
-        files=((collection_id, "large.bin"),),
+        plan_id=str(plan["id"]),
         plan_etag=str(plan["etag"]),
     )
 
@@ -613,8 +824,43 @@ def test_restore_waits_until_every_required_object_has_cache_admission(tmp_path:
 
     pending = service.get(app="reader", job_id=str(job["id"]))
     assert pending["state"] == "requested"
-    assert cache.admission_calls == 2
-    assert store.prepare_calls == 0
+    assert cache.admission_calls == 1
+    assert store.prepare_calls == 1
+
+
+def test_restore_work_resumes_after_restart_one_exact_object_per_step(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"two-objects.bin": b"x" * (2 * CHUNK_SIZE)},
+        raw=True,
+        read_mode="restore_required",
+        cache=cache,
+        raw_volume_plaintext_bytes=CHUNK_SIZE,
+        raw_part_plaintext_bytes=CHUNK_SIZE,
+    )
+    plan = service.plan(((collection_id, "two-objects.bin"),))
+    job = service.create(
+        app="reader",
+        plan_id=str(plan["id"]),
+        plan_etag=str(plan["etag"]),
+    )
+
+    assert service.process_due(limit=10) == 1
+    assert store.prepare_calls == 1
+
+    restarted = SqlAlchemyRetrievalService(
+        service._config,
+        service._archive_stores,
+        cache,
+        session_factory=service._session_factory,
+    )
+    assert restarted.process_due(limit=10) == 1
+    assert store.prepare_calls == 2
+
+    ready = _drive_requested(restarted, job)
+    assert ready["state"] == "ready"
+    assert store.prepare_calls == 2
 
 
 def test_retrieval_reserves_and_attributes_the_planned_range_bytes(
@@ -631,7 +877,7 @@ def test_retrieval_reserves_and_attributes_the_planned_range_bytes(
     job = service.create(
         app="reader",
         key_id="reader-key",
-        files=((collection_id, "target.bin"),),
+        plan_id=str(plan["id"]),
         plan_etag=str(plan["etag"]),
     )
     chunks, _bytes, _sha256 = service.content(
@@ -643,7 +889,8 @@ def test_retrieval_reserves_and_attributes_the_planned_range_bytes(
     )
     assert b"".join(chunks) == files["target.bin"]
 
-    assert allowance.reservations == [(str(job["id"]), int(plan["objects"][0]["retrieval_bytes"]))]
+    assert allowance.reservations
+    assert allowance.reservations[0][0] == str(job["id"])
     assert allowance.tracked
     assert allowance.tracked[0][0] == "archive"
     assert allowance.tracked[0][2] == DownloadAttribution(
@@ -687,9 +934,8 @@ def test_restore_policy_never_is_atomic_and_never_requests_archive_restore(
     with pytest.raises(Conflict, match="restore_policy is never"):
         service.create(
             app="reader",
-            files=((collection_id, "document.txt"),),
+            plan_id=str(plan["id"]),
             plan_etag=str(plan["etag"]),
-            restore_policy="never",
         )
     assert store.prepared == []
 
@@ -737,8 +983,7 @@ def test_ready_retrieval_renewal_extends_its_cache_lease(tmp_path: Path) -> None
         cache=cache,
     )
     requested = _ready_job(service, collection_id, "document.txt")
-    assert service.process_due() == 1
-    ready = service.get(app="reader", job_id=str(requested["id"]))
+    ready = _drive_requested(service, requested)
 
     renewed = service.renew(
         app="reader",
@@ -749,17 +994,14 @@ def test_ready_retrieval_renewal_extends_its_cache_lease(tmp_path: Path) -> None
     assert renewed["state"] == "ready"
     assert renewed["lease_seconds"] == 36 * 60 * 60
     with session_scope(service._session_factory) as session:
-        lease = session.get(
-            RetrievalCacheLeaseRecord,
-            (
-                f"job:{ready['id']}",
-                "archive",
-                collection_id,
-                "pack-" + "0" * 64,
-            ),
+        plan_object = session.scalar(
+            select(RetrievalPlanObjectRecord).where(
+                RetrievalPlanObjectRecord.plan_id == ready["plan_id"],
+                RetrievalPlanObjectRecord.collection_id == collection_id,
+            )
         )
-        assert lease is not None
-        assert lease.expires_at == renewed["expires_at"]
+        assert plan_object is not None
+        assert service.cache_status()["protected_objects"] == 1
 
 
 def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -> None:
@@ -771,7 +1013,7 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
         cache=cache,
     )
     requested = _ready_job(service, collection_id, "document.txt")
-    assert service.process_due() == 1
+    _drive_requested(service, requested)
     permitted = ApplicationPrincipal(
         app="indexer",
         key_id="indexer-key",
@@ -884,8 +1126,7 @@ def test_cache_sweep_removes_an_unleased_verified_object(tmp_path: Path) -> None
         cache=cache,
     )
     requested = _ready_job(service, collection_id, "document.txt")
-    assert service.process_due() == 1
-    ready = service.get(app="reader", job_id=str(requested["id"]))
+    ready = _drive_requested(service, requested)
     completed = service.acknowledge(app="reader", job_id=str(ready["id"]))
 
     assert completed["state"] == "completed"

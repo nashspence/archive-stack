@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
 from datetime import timedelta
 from typing import Annotated
 
@@ -8,11 +7,13 @@ from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from http_api_contracts import (
     QuotedSha256Identity,
+    exact_authority_page_operation,
     mutable_browse_operation,
     operation_interface,
     parse_quoted_sha256_identity,
 )
 from riverhog_protocol import (
+    RETRIEVAL_FILE_BATCH_MAX,
     ArchiveStoreName,
     CollectionIdParameter,
     RetrievalCacheProtection,
@@ -21,7 +22,7 @@ from riverhog_protocol import (
     RetrievalCacheStoreName,
     SortOrder,
 )
-from riverhog_protocol.errors import BadRequest
+from riverhog_protocol.errors import BadRequest, InvalidRange, PreconditionFailed
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
@@ -40,6 +41,7 @@ from riverhog_api.schemas.retrieval import (
     RetrievalCacheObjectOut,
     RetrievalCacheStatusOut,
     RetrievalJobOut,
+    RetrievalPlanFilePageOut,
     RetrievalPlanOut,
     RetrievalPlanRequest,
 )
@@ -162,6 +164,7 @@ def plan_retrieval(
 ) -> RetrievalPlanOut:
     payload = container.retrieval.plan(
         _files(request),
+        idempotency_key=request.idempotency_key,
         lease=(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
@@ -169,6 +172,77 @@ def plan_retrieval(
         principal=principal,
     )
     return RetrievalPlanOut.model_validate(payload)
+
+
+@router.get(
+    "/retrieval-plans/{plan_id}",
+    response_model=RetrievalPlanOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def get_retrieval_plan(
+    plan_id: str,
+    principal: RetrievalManager,
+    container: ContainerDep,
+) -> RetrievalPlanOut:
+    return RetrievalPlanOut.model_validate(
+        container.retrieval.get_plan(
+            app=principal.app,
+            key_id=principal.key_id,
+            plan_id=plan_id,
+        )
+    )
+
+
+@router.post(
+    "/retrieval-plans/{plan_id}/advance",
+    response_model=RetrievalPlanOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def advance_retrieval_plan(
+    plan_id: str,
+    principal: RetrievalManager,
+    container: ContainerDep,
+) -> RetrievalPlanOut:
+    return RetrievalPlanOut.model_validate(
+        container.retrieval.advance_plan(
+            app=principal.app,
+            key_id=principal.key_id,
+            plan_id=plan_id,
+        )
+    )
+
+
+@router.get(
+    "/retrieval-plans/{plan_id}/files",
+    response_model=RetrievalPlanFilePageOut,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **exact_authority_page_operation(
+            authority="retrieval-plan-files",
+            authority_parameter=None,
+            cursor_parameter="start_ordinal",
+            limit_parameter="page_size",
+        ),
+    },
+)
+def list_retrieval_plan_files(
+    plan_id: str,
+    principal: RetrievalManager,
+    container: ContainerDep,
+    if_match: Annotated[QuotedSha256Identity, Header(alias="If-Match")],
+    start_ordinal: int = Query(0, ge=0, le=RETRIEVAL_FILE_BATCH_MAX),
+    page_size: int = Query(100, ge=1, le=100),
+) -> RetrievalPlanFilePageOut:
+    return RetrievalPlanFilePageOut.model_validate(
+        container.retrieval.list_plan_files(
+            app=principal.app,
+            key_id=principal.key_id,
+            plan_id=plan_id,
+            etag=parse_quoted_sha256_identity(if_match),
+            start_ordinal=start_ordinal,
+            page_size=page_size,
+        )
+    )
 
 
 @router.post(
@@ -186,12 +260,8 @@ def create_retrieval_job(
     payload = container.retrieval.create(
         app=principal.app,
         key_id=principal.key_id,
-        files=_files(request),
+        plan_id=request.plan_id,
         plan_etag=plan_etag,
-        lease=(
-            timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
-        ),
-        restore_policy=request.restore_policy,
         event_context=request.event_context,
         principal=principal,
     )
@@ -289,6 +359,7 @@ def download_retrieval_file(
     container: ContainerDep,
     http_request: Request,
     collection_id: Annotated[CollectionIdParameter, Query()],
+    if_match: Annotated[QuotedSha256Identity, Header(alias="If-Match")],
     path: str = Query(),
     range_header: Annotated[str | None, Header(alias="Range")] = None,
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
@@ -301,6 +372,8 @@ def download_retrieval_file(
         key_id=principal.key_id,
     )
     etag = f'"{sha256}"'
+    if parse_quoted_sha256_identity(if_match) != sha256:
+        raise PreconditionFailed("retrieval file identity changed")
     headers = {
         "Accept-Ranges": "bytes",
         "ETag": etag,
@@ -321,17 +394,14 @@ def download_retrieval_file(
         job_id=job_id,
         collection_id=collection_id,
         path=path,
+        offset=start,
+        size=content_length,
         key_id=principal.key_id,
     )
     if returned_bytes != total_bytes or returned_sha256 != sha256:
         raise RuntimeError("retrieval content metadata changed")
     return StreamingResponse(
-        _iter_range(
-            chunks,
-            start=start,
-            size=content_length,
-            exhaust_source=range_header is None,
-        ),
+        chunks,
         status_code=status_code,
         headers=headers,
         media_type="application/octet-stream",
@@ -359,35 +429,6 @@ def _parse_range(value: str | None, total_bytes: int) -> tuple[int, int]:
             end = total_bytes if not end_raw else int(end_raw) + 1
     except ValueError as exc:
         raise BadRequest("invalid bytes range") from exc
-    if start < 0 or start >= total_bytes or end <= start or end > total_bytes:
-        raise BadRequest("bytes range is outside the file")
-    return start, end
-
-
-def _iter_range(
-    chunks: Iterable[bytes],
-    *,
-    start: int,
-    size: int,
-    exhaust_source: bool = False,
-) -> Iterator[bytes]:
-    skip = start
-    remaining = size
-    source = iter(chunks)
-    for chunk in source:
-        if skip >= len(chunk):
-            skip -= len(chunk)
-            continue
-        current = chunk[skip : skip + remaining]
-        skip = 0
-        if current:
-            yield current
-            remaining -= len(current)
-        if remaining == 0:
-            if exhaust_source:
-                for trailing in source:
-                    if trailing:
-                        raise RuntimeError("retrieval stream exceeded the declared file size")
-            return
-    if remaining:
-        raise RuntimeError("retrieval stream ended before the requested range")
+    if start < 0 or start >= total_bytes or end <= start:
+        raise InvalidRange("bytes range is outside the file")
+    return start, min(end, total_bytes)

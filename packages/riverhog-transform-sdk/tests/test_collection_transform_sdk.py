@@ -237,21 +237,47 @@ class RetrievalApi:
         **kwargs: Any,
     ) -> dict[str, Any]:
         self.restore_policies.append(str(kwargs["restore_policy"]))
-        return {"etag": "9" * 64, "files": self._rows(files)}
+        self.planned_files = self._rows(files)
+        return {
+            "id": "plan-1",
+            "etag": "9" * 64,
+            "file_count": len(self.planned_files),
+        }
+
+    def list_retrieval_plan_files(
+        self,
+        plan_id: str,
+        *,
+        plan_etag: str,
+        start_ordinal: int = 0,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        assert plan_id == "plan-1"
+        assert plan_etag == "9" * 64
+        assert start_ordinal == 0
+        assert page_size == 100
+        return {
+            "plan_id": plan_id,
+            "etag": plan_etag,
+            "start_ordinal": start_ordinal,
+            "files": self.planned_files,
+            "complete": True,
+            "next_ordinal": None,
+        }
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[int, str]],
+        plan_id: str,
         *,
         plan_etag: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        self.restore_policies.append(str(kwargs["restore_policy"]))
+        assert plan_id == "plan-1"
         return {
             "id": "retrieval-1",
+            "plan_id": plan_id,
             "state": "ready",
             "plan_etag": plan_etag,
-            "files": self._rows(files),
         }
 
     def get_retrieval_job(self, job_id: str) -> dict[str, Any]:
@@ -314,7 +340,7 @@ def test_claimed_reader_verifies_roots_filters_control_and_reads_ranges(tmp_path
 
     assert api.acknowledged == ["retrieval-1"]
     assert not api.canceled
-    assert api.restore_policies == ["available-only", "available-only"]
+    assert api.restore_policies == ["available-only"]
 
 
 def test_claimed_reader_fails_closed_when_root_changed() -> None:

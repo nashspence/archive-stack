@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from http_api_contracts import BrowsePageToken, Sha256Identity
+from http_api_contracts import BrowsePageToken, CanonicalVisibleText, Sha256Identity
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
+    RETRIEVAL_FILE_BATCH_MAX,
     ArchiveStoreName,
     CollectionId,
     ImmutableFileIdentityDocument,
@@ -26,48 +27,68 @@ class RetrievalFileIn(RetrievalFileReferenceDocument):
 
 
 class RetrievalPlanRequest(RetrievalFileReferenceSetDocument):
+    idempotency_key: CanonicalVisibleText = Field(max_length=200)
     lease_seconds: int | None = Field(default=None, ge=1)
     restore_policy: Literal["allow", "never"] = "allow"
 
 
 class RetrievalPlanFileOut(ImmutableFileIdentityDocument):
     collection_id: CollectionId
-
-
-class RetrievalPlanObjectPlacementOut(RiverhogModel):
-    path: str
-    sequence: int
-    file_offset: int
-    object_offset: int
-    bytes: int
-    member: str | None
-
-
-class RetrievalPlanObjectOut(RiverhogModel):
-    collection_id: CollectionId
-    source_store: ArchiveStoreName
-    object_id: str
-    kind: Literal["pack", "segment"]
-    plaintext_bytes: int
-    stored_bytes: int
-    sha256: str | None
-    retrieval_bytes: int
-    read_mode: Literal["immediate", "restore_required", "cache"]
-    cache_store: RetrievalCacheStoreName | None
-    placements: list[RetrievalPlanObjectPlacementOut]
+    requires_restore: bool
 
 
 class RetrievalPlanOut(RiverhogModel):
     format: Literal["riverhog-retrieval-plan/v1"]
+    id: str
+    state: Literal["planning", "ready", "consumed", "expired", "failed"]
+    created_at: str
+    ready_at: str | None
+    expires_at: str
+    failure: str | None = Field(min_length=1)
     lease_seconds: int
     restore_policy: Literal["allow", "never"]
     requires_restore: bool
-    files: list[RetrievalPlanFileOut]
-    objects: list[RetrievalPlanObjectOut]
+    file_count: int = Field(ge=1, le=RETRIEVAL_FILE_BATCH_MAX)
+    etag: Sha256Identity | None
+
+    @model_validator(mode="after")
+    def validate_state_evidence(self) -> Self:
+        if (self.failure is not None) != (self.state == "failed"):
+            raise ValueError("retrieval plan failure must match failed state")
+        if self.state in {"ready", "consumed"} and (self.ready_at is None or self.etag is None):
+            raise ValueError("sealed retrieval plans require ready evidence")
+        if self.state == "planning" and (self.ready_at is not None or self.etag is not None):
+            raise ValueError("planning retrieval plans cannot carry ready evidence")
+        if self.state == "expired" and ((self.ready_at is None) != (self.etag is None)):
+            raise ValueError("expired retrieval plan ready evidence must remain consistent")
+        return self
+
+
+class RetrievalPlanFilePageOut(RiverhogModel):
+    format: Literal["riverhog-retrieval-plan-files/v1"]
+    plan_id: str
     etag: Sha256Identity
+    start_ordinal: int = Field(ge=0, le=RETRIEVAL_FILE_BATCH_MAX)
+    next_ordinal: int | None = Field(
+        default=None,
+        ge=1,
+        le=RETRIEVAL_FILE_BATCH_MAX,
+    )
+    complete: bool
+    files: list[RetrievalPlanFileOut] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def validate_progression(self) -> Self:
+        if self.complete:
+            if self.next_ordinal is not None:
+                raise ValueError("complete retrieval plan pages cannot continue")
+        elif not self.files or self.next_ordinal != self.start_ordinal + len(self.files):
+            raise ValueError("retrieval plan page continuation must advance exactly")
+        return self
 
 
-class CreateRetrievalJobRequest(RetrievalPlanRequest):
+class CreateRetrievalJobRequest(RiverhogModel):
+    plan_id: str
     event_context: EventContext | None = None
 
 
@@ -102,6 +123,7 @@ class RetrievalJobOut(RiverhogModel):
     )
 
     id: str
+    plan_id: str
     state: Literal["requested", "ready", "completed", "expired", "failed", "canceled"]
     plan_etag: Sha256Identity
     created_at: str
@@ -115,8 +137,6 @@ class RetrievalJobOut(RiverhogModel):
     lease_seconds: int
     restore_policy: Literal["allow", "never"]
     requires_restore: bool
-    files: list[RetrievalPlanFileOut]
-    objects: list[RetrievalPlanObjectOut]
 
     @model_validator(mode="after")
     def validate_terminal_evidence(self) -> Self:

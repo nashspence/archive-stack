@@ -11178,7 +11178,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "a9e6b104f8384a45eff3e0a5f2c14a21fb07c5573e2f2ac1f4e1445d57444c21"
+            "85411e270ff7c1c21ff0ee47337b9cb6c18b1ee539eb3d84a517378801702e45"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11256,8 +11256,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1839,
-        "discovered": 1839,
+        "classified": 1841,
+        "discovered": 1841,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11292,7 +11292,7 @@
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json": 7,
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json": 2,
           "mango-fish": 2,
-          "riverhog": 751,
+          "riverhog": 753,
           "riverhog-api-client": 7,
           "riverhog-client": 3,
           "riverhog-ftp-adapter": 21,
@@ -11312,11 +11312,11 @@
           "stove0-target-support": 1
         },
         "policies": {
-          "contract_max": 375,
+          "contract_max": 381,
           "extension_owned": 55,
-          "fixed": 835,
-          "operational_policy": 497,
-          "segmented_no_total_max": 77
+          "fixed": 836,
+          "operational_policy": 491,
+          "segmented_no_total_max": 78
         },
         "stale": 0,
         "undecided": 0
@@ -21534,21 +21534,6 @@
           "unit": "entries"
         },
         {
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/CreateRetrievalJobRequest/properties/files:cardinality",
-          "maximum": 10000,
-          "minimum": 1,
-          "owner": "riverhog",
-          "policy": "segmented_no_total_max",
-          "progression": {
-            "progression": "multiple-retrieval-jobs"
-          },
-          "reason": "bounded-retrieval-work-request",
-          "rule": "bounded-segment/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CreateRetrievalJobRequest/properties/files",
-          "unit": "items"
-        },
-        {
           "dimension": "encoded-size",
           "id": "http:riverhog:components:/schemas/DeleteCollectionRequest/properties/event_context/anyOf/0:encoded-bytes",
           "maximum": 4096,
@@ -23553,38 +23538,6 @@
           "unit": "characters"
         },
         {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/RetrievalJobOut/properties/files:cardinality",
-          "maximum": null,
-          "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalJobOut/properties/files",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/RetrievalJobOut/properties/objects:cardinality",
-          "maximum": null,
-          "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalJobOut/properties/objects",
-          "unit": "items"
-        },
-        {
           "dimension": "length",
           "id": "http:riverhog:components:/schemas/RetrievalJobOut/properties/plan_etag:length",
           "maximum": 64,
@@ -23631,40 +23584,8 @@
           "unit": "characters"
         },
         {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/RetrievalPlanObjectOut/properties/placements:cardinality",
-          "maximum": null,
-          "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanObjectOut/properties/placements",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
-          "dimension": "value",
-          "id": "http:riverhog:components:/schemas/RetrievalPlanObjectPlacementOut/properties/bytes:open-value",
-          "maximum": null,
-          "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanObjectPlacementOut/properties/bytes",
-          "unit": "schema-value"
-        },
-        {
           "dimension": "length",
-          "id": "http:riverhog:components:/schemas/RetrievalPlanOut/properties/etag:length",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanFilePageOut/properties/etag:length",
           "maximum": 64,
           "minimum": 64,
           "owner": "riverhog",
@@ -23674,40 +23595,76 @@
           "source_constraint": {
             "pattern": "^[0-9a-f]{64}$"
           },
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/etag",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/etag",
           "unit": "characters"
         },
         {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
           "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/RetrievalPlanOut/properties/files:cardinality",
-          "maximum": null,
+          "id": "http:riverhog:components:/schemas/RetrievalPlanFilePageOut/properties/files:cardinality",
+          "maximum": 100,
           "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/files",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "authority": "retrieval-plan-files",
+            "cursor_parameter": "start_ordinal",
+            "kind": "exact-authority-page",
+            "limit_parameter": "page_size"
+          },
+          "reason": "bounded-route-page",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/files",
           "unit": "items"
         },
         {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "riverhog"
-          },
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/RetrievalPlanOut/properties/objects:cardinality",
-          "maximum": null,
+          "dimension": "value",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanFilePageOut/properties/next_ordinal/anyOf/0:value",
+          "maximum": 10000.0,
+          "minimum": 1.0,
           "owner": "riverhog",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/objects",
-          "unit": "items"
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/next_ordinal/anyOf/0",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanFilePageOut/properties/start_ordinal:value",
+          "maximum": 10000.0,
+          "minimum": 0.0,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/start_ordinal",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanOut/properties/etag/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/etag/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanOut/properties/file_count:value",
+          "maximum": 10000.0,
+          "minimum": 1.0,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/file_count",
+          "unit": "schema-value"
         },
         {
           "dimension": "cardinality",
@@ -23723,6 +23680,18 @@
           "rule": "bounded-segment/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanRequest/properties/files",
           "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/RetrievalPlanRequest/properties/idempotency_key:length",
+          "maximum": 200,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanRequest/properties/idempotency_key",
+          "unit": "characters"
         },
         {
           "dimension": "length",
@@ -25406,6 +25375,46 @@
           "reason": "schema-maximum",
           "rule": "schema-bound/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-cache~1objects/get/parameters/0/schema",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "logical-result-cardinality",
+          "id": "http:riverhog:operation:list_retrieval_plan_files:logical-result",
+          "owner": "riverhog",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "authority": "retrieval-plan-files",
+            "cursor_parameter": "start_ordinal",
+            "kind": "exact-authority-page",
+            "limit_parameter": "page_size"
+          },
+          "reason": "bounded-route-progression",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-plans~1{plan_id}~1files/get",
+          "unit": "items"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:operation:list_retrieval_plan_files:parameter:query:page_size:/:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-plans~1{plan_id}~1files/get/parameters/2/schema",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:operation:list_retrieval_plan_files:parameter:query:start_ordinal:/:value",
+          "maximum": 10000,
+          "minimum": 0,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-plans~1{plan_id}~1files/get/parameters/1/schema",
           "unit": "schema-value"
         },
         {
@@ -38208,7 +38217,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "ff7ea5dc4ddba286159093c05b24db3569ec916a1991f0810b731907f8f30837"
+      "sha256": "49273562fc7d5d976c5530a9820648dca6fa3457c7b8796b53c48eaaaf22801b"
     },
     "http_openapi": {
       "riverhog": {
@@ -45615,44 +45624,13 @@
                   ],
                   "title": "Event Context"
                 },
-                "files": {
-                  "items": {
-                    "$ref": "#/components/schemas/RetrievalFileReferenceDocument"
-                  },
-                  "maxItems": 10000,
-                  "minItems": 1,
-                  "title": "Files",
-                  "type": "array",
-                  "x-riverhog-extent": {
-                    "policy": "segmented_no_total_max",
-                    "progression": "multiple-retrieval-jobs",
-                    "reason": "bounded-retrieval-work-request"
-                  }
-                },
-                "lease_seconds": {
-                  "anyOf": [
-                    {
-                      "minimum": 1.0,
-                      "type": "integer"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Lease Seconds"
-                },
-                "restore_policy": {
-                  "default": "allow",
-                  "enum": [
-                    "allow",
-                    "never"
-                  ],
-                  "title": "Restore Policy",
+                "plan_id": {
+                  "title": "Plan Id",
                   "type": "string"
                 }
               },
               "required": [
-                "files"
+                "plan_id"
               ],
               "title": "CreateRetrievalJobRequest",
               "type": "object"
@@ -50155,13 +50133,6 @@
                   ],
                   "title": "Failure"
                 },
-                "files": {
-                  "items": {
-                    "$ref": "#/components/schemas/RetrievalPlanFileOut"
-                  },
-                  "title": "Files",
-                  "type": "array"
-                },
                 "id": {
                   "title": "Id",
                   "type": "string"
@@ -50170,16 +50141,13 @@
                   "title": "Lease Seconds",
                   "type": "integer"
                 },
-                "objects": {
-                  "items": {
-                    "$ref": "#/components/schemas/RetrievalPlanObjectOut"
-                  },
-                  "title": "Objects",
-                  "type": "array"
-                },
                 "plan_etag": {
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Plan Etag",
+                  "type": "string"
+                },
+                "plan_id": {
+                  "title": "Plan Id",
                   "type": "string"
                 },
                 "ready_at": {
@@ -50242,6 +50210,7 @@
               },
               "required": [
                 "id",
+                "plan_id",
                 "state",
                 "plan_etag",
                 "created_at",
@@ -50254,9 +50223,7 @@
                 "failure",
                 "lease_seconds",
                 "restore_policy",
-                "requires_restore",
-                "files",
-                "objects"
+                "requires_restore"
               ],
               "title": "RetrievalJobOut",
               "type": "object"
@@ -50275,6 +50242,10 @@
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
                 },
+                "requires_restore": {
+                  "title": "Requires Restore",
+                  "type": "boolean"
+                },
                 "sha256": {
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
@@ -50285,147 +50256,19 @@
                 "path",
                 "bytes",
                 "sha256",
-                "collection_id"
+                "collection_id",
+                "requires_restore"
               ],
               "title": "RetrievalPlanFileOut",
               "type": "object"
             },
-            "RetrievalPlanObjectOut": {
+            "RetrievalPlanFilePageOut": {
               "additionalProperties": false,
               "properties": {
-                "cache_store": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/RetrievalCacheStoreName"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                "complete": {
+                  "title": "Complete",
+                  "type": "boolean"
                 },
-                "collection_id": {
-                  "$ref": "#/components/schemas/CollectionId"
-                },
-                "kind": {
-                  "enum": [
-                    "pack",
-                    "segment"
-                  ],
-                  "title": "Kind",
-                  "type": "string"
-                },
-                "object_id": {
-                  "title": "Object Id",
-                  "type": "string"
-                },
-                "placements": {
-                  "items": {
-                    "$ref": "#/components/schemas/RetrievalPlanObjectPlacementOut"
-                  },
-                  "title": "Placements",
-                  "type": "array"
-                },
-                "plaintext_bytes": {
-                  "title": "Plaintext Bytes",
-                  "type": "integer"
-                },
-                "read_mode": {
-                  "enum": [
-                    "immediate",
-                    "restore_required",
-                    "cache"
-                  ],
-                  "title": "Read Mode",
-                  "type": "string"
-                },
-                "retrieval_bytes": {
-                  "title": "Retrieval Bytes",
-                  "type": "integer"
-                },
-                "sha256": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Sha256"
-                },
-                "source_store": {
-                  "$ref": "#/components/schemas/ArchiveStoreName"
-                },
-                "stored_bytes": {
-                  "title": "Stored Bytes",
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "collection_id",
-                "source_store",
-                "object_id",
-                "kind",
-                "plaintext_bytes",
-                "stored_bytes",
-                "sha256",
-                "retrieval_bytes",
-                "read_mode",
-                "cache_store",
-                "placements"
-              ],
-              "title": "RetrievalPlanObjectOut",
-              "type": "object"
-            },
-            "RetrievalPlanObjectPlacementOut": {
-              "additionalProperties": false,
-              "properties": {
-                "bytes": {
-                  "title": "Bytes",
-                  "type": "integer"
-                },
-                "file_offset": {
-                  "title": "File Offset",
-                  "type": "integer"
-                },
-                "member": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Member"
-                },
-                "object_offset": {
-                  "title": "Object Offset",
-                  "type": "integer"
-                },
-                "path": {
-                  "title": "Path",
-                  "type": "string"
-                },
-                "sequence": {
-                  "title": "Sequence",
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "path",
-                "sequence",
-                "file_offset",
-                "object_offset",
-                "bytes",
-                "member"
-              ],
-              "title": "RetrievalPlanObjectPlacementOut",
-              "type": "object"
-            },
-            "RetrievalPlanOut": {
-              "additionalProperties": false,
-              "properties": {
                 "etag": {
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Etag",
@@ -50435,24 +50278,114 @@
                   "items": {
                     "$ref": "#/components/schemas/RetrievalPlanFileOut"
                   },
+                  "maxItems": 100,
                   "title": "Files",
                   "type": "array"
+                },
+                "format": {
+                  "const": "riverhog-retrieval-plan-files/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "next_ordinal": {
+                  "anyOf": [
+                    {
+                      "maximum": 10000.0,
+                      "minimum": 1.0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Ordinal"
+                },
+                "plan_id": {
+                  "title": "Plan Id",
+                  "type": "string"
+                },
+                "start_ordinal": {
+                  "maximum": 10000.0,
+                  "minimum": 0.0,
+                  "title": "Start Ordinal",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "format",
+                "plan_id",
+                "etag",
+                "start_ordinal",
+                "complete",
+                "files"
+              ],
+              "title": "RetrievalPlanFilePageOut",
+              "type": "object"
+            },
+            "RetrievalPlanOut": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "etag": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Etag"
+                },
+                "expires_at": {
+                  "title": "Expires At",
+                  "type": "string"
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure"
+                },
+                "file_count": {
+                  "maximum": 10000.0,
+                  "minimum": 1.0,
+                  "title": "File Count",
+                  "type": "integer"
                 },
                 "format": {
                   "const": "riverhog-retrieval-plan/v1",
                   "title": "Format",
                   "type": "string"
                 },
+                "id": {
+                  "title": "Id",
+                  "type": "string"
+                },
                 "lease_seconds": {
                   "title": "Lease Seconds",
                   "type": "integer"
                 },
-                "objects": {
-                  "items": {
-                    "$ref": "#/components/schemas/RetrievalPlanObjectOut"
-                  },
-                  "title": "Objects",
-                  "type": "array"
+                "ready_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Ready At"
                 },
                 "requires_restore": {
                   "title": "Requires Restore",
@@ -50465,15 +50398,31 @@
                   ],
                   "title": "Restore Policy",
                   "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "planning",
+                    "ready",
+                    "consumed",
+                    "expired",
+                    "failed"
+                  ],
+                  "title": "State",
+                  "type": "string"
                 }
               },
               "required": [
                 "format",
+                "id",
+                "state",
+                "created_at",
+                "ready_at",
+                "expires_at",
+                "failure",
                 "lease_seconds",
                 "restore_policy",
                 "requires_restore",
-                "files",
-                "objects",
+                "file_count",
                 "etag"
               ],
               "title": "RetrievalPlanOut",
@@ -50495,6 +50444,13 @@
                     "progression": "multiple-retrieval-jobs",
                     "reason": "bounded-retrieval-work-request"
                   }
+                },
+                "idempotency_key": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+                  "title": "Idempotency Key",
+                  "type": "string"
                 },
                 "lease_seconds": {
                   "anyOf": [
@@ -50519,7 +50475,8 @@
                 }
               },
               "required": [
-                "files"
+                "files",
+                "idempotency_key"
               ],
               "title": "RetrievalPlanRequest",
               "type": "object"
@@ -65829,6 +65786,16 @@
                 },
                 {
                   "in": "header",
+                  "name": "If-Match",
+                  "required": true,
+                  "schema": {
+                    "pattern": "^\"[0-9a-f]{64}\"$",
+                    "title": "If-Match",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "header",
                   "name": "Range",
                   "required": false,
                   "schema": {
@@ -65927,6 +65894,32 @@
                   "description": "Conflict",
                   "x-riverhog-error-codes": [
                     "invalid_state"
+                  ]
+                },
+                "412": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Precondition Failed",
+                  "x-riverhog-error-codes": [
+                    "precondition_failed"
+                  ]
+                },
+                "416": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Requested Range Not Satisfiable",
+                  "x-riverhog-error-codes": [
+                    "invalid_range"
                   ]
                 },
                 "429": {
@@ -66194,7 +66187,7 @@
                   },
                   "description": "Conflict",
                   "x-riverhog-error-codes": [
-                    "invalid_state"
+                    "conflict"
                   ]
                 },
                 "500": {
@@ -66228,6 +66221,402 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/retrieval-plans/{plan_id}": {
+            "get": {
+              "operationId": "get_retrieval_plan",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "plan_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Plan Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/RetrievalPlanOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Get Retrieval Plan",
+              "tags": [
+                "retrieval"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "retrieval:manage"
+                  ]
+                }
+              ]
+            }
+          },
+          "/v1/retrieval-plans/{plan_id}/advance": {
+            "post": {
+              "operationId": "advance_retrieval_plan",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "plan_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Plan Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/RetrievalPlanOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Advance Retrieval Plan",
+              "tags": [
+                "retrieval"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "retrieval:manage"
+                  ]
+                }
+              ]
+            }
+          },
+          "/v1/retrieval-plans/{plan_id}/files": {
+            "get": {
+              "operationId": "list_retrieval_plan_files",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "plan_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Plan Id",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "start_ordinal",
+                  "required": false,
+                  "schema": {
+                    "default": 0,
+                    "maximum": 10000,
+                    "minimum": 0,
+                    "title": "Start Ordinal",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_size",
+                  "required": false,
+                  "schema": {
+                    "default": 100,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Page Size",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "header",
+                  "name": "If-Match",
+                  "required": true,
+                  "schema": {
+                    "pattern": "^\"[0-9a-f]{64}\"$",
+                    "title": "If-Match",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/RetrievalPlanFilePageOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "409": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Conflict",
+                  "x-riverhog-error-codes": [
+                    "invalid_state"
+                  ]
+                },
+                "412": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Precondition Failed",
+                  "x-riverhog-error-codes": [
+                    "precondition_failed"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "List Retrieval Plan Files",
+              "tags": [
+                "retrieval"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "retrieval:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "authority": "retrieval-plan-files",
+                "cursor_parameter": "start_ordinal",
+                "kind": "exact-authority-page",
+                "limit_parameter": "page_size"
+              }
             }
           },
           "/v1/search": {
@@ -78012,6 +78401,53 @@
         "path": "/v1/retrieval-plans",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "get_retrieval_plan",
+        "path": "/v1/retrieval-plans/{plan_id}",
+        "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "local repair",
+          "local sync"
+        ],
+        "client": "ApiClient",
+        "method": "POST",
+        "operation_id": "advance_retrieval_plan",
+        "path": "/v1/retrieval-plans/{plan_id}/advance",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "local repair",
+          "local sync"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_retrieval_plan_files",
+        "path": "/v1/retrieval-plans/{plan_id}/files",
+        "provider_evidence": null,
+        "read_collection": {
+          "authority": "retrieval-plan-files",
+          "cursor_parameter": "start_ordinal",
+          "kind": "exact-authority-page",
+          "limit_parameter": "page_size"
+        },
         "response_authority": "http-json"
       },
       {
@@ -97369,6 +97805,7 @@
               "insufficient_storage": 507,
               "internal_error": 500,
               "invalid_path": 400,
+              "invalid_range": 416,
               "invalid_state": 409,
               "invalid_target": 400,
               "job_template_revision_conflict": 409,
@@ -97576,6 +98013,7 @@
               "insufficient_storage",
               "internal_error",
               "invalid_path",
+              "invalid_range",
               "invalid_state",
               "invalid_target",
               "job_template_revision_conflict",
@@ -98050,6 +98488,10 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', tag: 'str') -> 'dict[str, Any]'"
               },
+              "advance_retrieval_plan": {
+                "kind": "method",
+                "signature": "(self, plan_id: 'str') -> 'dict[str, Any]'"
+              },
               "append_collection_upload_session_provenance_journal": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, offset: 'int', content: 'bytes') -> 'CollectionUploadProvenanceJournalStatusDocument'"
@@ -98100,7 +98542,7 @@
               },
               "create_retrieval_job": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[tuple[int, str]]', *, plan_etag: 'str', lease_seconds: 'int | None' = None, restore_policy: 'RestorePolicy' = 'allow', event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, plan_id: 'str', *, plan_etag: 'str', event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
               },
               "create_tag": {
                 "kind": "method",
@@ -98178,6 +98620,10 @@
                 "kind": "method",
                 "signature": "(self, job_id: 'str') -> 'dict[str, Any]'"
               },
+              "get_retrieval_plan": {
+                "kind": "method",
+                "signature": "(self, plan_id: 'str') -> 'dict[str, Any]'"
+              },
               "get_tag": {
                 "kind": "method",
                 "signature": "(self, tag: 'str') -> 'dict[str, Any]'"
@@ -98246,6 +98692,10 @@
                 "kind": "method",
                 "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, cache_store: 'RetrievalCacheStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
+              "list_retrieval_plan_files": {
+                "kind": "method",
+                "signature": "(self, plan_id: 'str', *, plan_etag: 'str', start_ordinal: 'int' = 0, page_size: 'int' = 100) -> 'dict[str, Any]'"
+              },
               "list_tags": {
                 "kind": "method",
                 "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
@@ -98264,7 +98714,7 @@
               },
               "plan_retrieval": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[tuple[int, str]]', *, lease_seconds: 'int | None' = None, restore_policy: 'RestorePolicy' = 'allow') -> 'dict[str, Any]'"
+                "signature": "(self, files: 'Sequence[tuple[int, str]]', *, idempotency_key: 'RetrievalPlanIdempotencyKey | None' = None, lease_seconds: 'int | None' = None, restore_policy: 'RestorePolicy' = 'allow') -> 'dict[str, Any]'"
               },
               "plan_tag_deletion": {
                 "kind": "method",
@@ -98469,6 +98919,10 @@
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
+          "InvalidRange": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
           "InvalidState": {
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
@@ -98658,6 +99112,10 @@
             ],
             "kind": "class",
             "signature": "(collection_id: 'CollectionId', path: 'str', output: 'Path', expected_bytes: 'int', expected_sha256: 'str') -> None"
+          },
+          "RetrievalPlanIdempotencyKey": {
+            "kind": "type-alias",
+            "value": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=None, pattern='^\\\\S(?:[\\\\s\\\\S]*\\\\S)?$', ascii_only=None), FieldInfo(annotation=NoneType, required=True, metadata=[MaxLen(max_length=200)])]"
           },
           "RiverhogError": {
             "kind": "class",
@@ -100260,6 +100718,10 @@
             "signature": "(*, path: CanonicalRelPath, bytes: Annotated[int, Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
           },
           "InvalidPath": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "InvalidRange": {
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
@@ -103010,7 +103472,7 @@
               },
               "create_retrieval_job": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[tuple[CollectionId, str]]', *, plan_etag: 'str', lease_seconds: 'int | None' = None, restore_policy: 'RetrievalPolicy' = 'available-only', event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, plan_id: 'str', *, plan_etag: 'str', event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
               },
               "download_retrieval_file": {
                 "kind": "method",
@@ -103027,6 +103489,10 @@
               "get_retrieval_job": {
                 "kind": "method",
                 "signature": "(self, job_id: 'str') -> 'dict[str, Any]'"
+              },
+              "list_retrieval_plan_files": {
+                "kind": "method",
+                "signature": "(self, plan_id: 'str', *, plan_etag: 'str', start_ordinal: 'int' = 0, page_size: 'int' = 100) -> 'dict[str, Any]'"
               },
               "plan_retrieval": {
                 "kind": "method",
