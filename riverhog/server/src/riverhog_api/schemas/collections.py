@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, cast
 
-from http_api_contracts import CanonicalVisibleText
+from http_api_contracts import BrowsePageToken, CanonicalVisibleText
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
@@ -389,7 +389,7 @@ class CollectionSummaryOut(RiverhogModel):
 
 class ListCollectionsResponse(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: CollectionSort
     order: SortOrder
     query: str | None
@@ -402,7 +402,7 @@ class ListCollectionsResponse(RiverhogModel):
 class CollectionArchiveCopyListOut(RiverhogModel):
     collection_id: CollectionId
     page_size: int = Field(ge=1, le=100, strict=True)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     copies: list[ArchiveCopyOut]
 
 
@@ -523,7 +523,7 @@ CollectionUploadVolumeSummaryOut = CollectionUploadVolumeSummaryDocument
 class ListCollectionUploadSessionFilesResponse(RiverhogModel):
     collection_id: CollectionId
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     files: list[CollectionUploadFileOut]
 
     @model_validator(mode="after")
@@ -545,7 +545,7 @@ class CollectionUploadTagOut(RiverhogModel):
 class ListCollectionUploadSessionTagsResponse(RiverhogModel):
     collection_id: CollectionId
     page_size: int = Field(ge=1, le=100, strict=True)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     tags: list[CollectionUploadTagOut]
 
 
@@ -600,7 +600,7 @@ class CollectionUploadListFiltersOut(RiverhogModel):
 
 class ListCollectionUploadSessionsResponse(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: CollectionUploadSort
     order: SortOrder
     query: str | None

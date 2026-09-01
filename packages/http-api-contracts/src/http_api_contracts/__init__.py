@@ -11,7 +11,16 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
-from .browse import BrowseScalar, BrowseTokenCodec, BrowseTokenError
+from .browse import (
+    MAX_BROWSE_QUERY_CHARACTERS,
+    MAX_BROWSE_TOKEN_BYTES,
+    BrowsePageToken,
+    BrowseQuery,
+    BrowseScalar,
+    BrowseTokenCodec,
+    BrowseTokenError,
+    validate_browse_query,
+)
 
 CANONICAL_VISIBLE_TEXT_PATTERN = r"^\S(?:[\s\S]*\S)?$"
 CanonicalVisibleText = Annotated[
@@ -757,6 +766,10 @@ def parse_declared_error_payload(
 
 
 __all__ = [
+    "MAX_BROWSE_QUERY_CHARACTERS",
+    "MAX_BROWSE_TOKEN_BYTES",
+    "BrowsePageToken",
+    "BrowseQuery",
     "BrowseScalar",
     "BrowseTokenCodec",
     "BrowseTokenError",
@@ -801,6 +814,7 @@ __all__ = [
     "safe_http_base_url",
     "status_for_error_code",
     "structural_model_catalog",
+    "validate_browse_query",
     "validate_sha256_identity",
     "mutable_browse_operation",
 ]

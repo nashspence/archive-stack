@@ -7,7 +7,13 @@ from http_api_contracts import mutable_browse_operation
 from riverhog_protocol import CollectionIdParameter, SearchSort, SortOrder
 
 from riverhog_api.auth import CatalogReader
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.search import SearchFileOut, SearchResponse
 
@@ -22,9 +28,9 @@ router = APIRouter(tags=["search"])
 def search(
     container: ContainerDep,
     principal: CatalogReader,
-    q: str | None = Query(None, min_length=1),
+    q: BrowseQueryParameter = None,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
     sort: Annotated[SearchSort, Query()] = "file_ref",
     order: Annotated[SortOrder, Query()] = "asc",
     collection: Annotated[CollectionIdParameter | None, Query()] = None,

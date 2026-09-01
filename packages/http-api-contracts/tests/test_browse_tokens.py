@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import pytest
-from http_api_contracts import BrowseTokenCodec, BrowseTokenError
+from http_api_contracts import (
+    MAX_BROWSE_QUERY_CHARACTERS,
+    MAX_BROWSE_TOKEN_BYTES,
+    BrowsePageToken,
+    BrowseQuery,
+    BrowseTokenCodec,
+    BrowseTokenError,
+)
+from pydantic import TypeAdapter, ValidationError
 
 
 def _codec(*, now: float = 100.0) -> BrowseTokenCodec:
@@ -107,3 +115,25 @@ def test_browse_token_rejects_a_different_runtime_signing_configuration() -> Non
             principal="reader",
             selectors={},
         )
+
+
+def test_browse_query_is_bounded_canonical_visible_text() -> None:
+    adapter = TypeAdapter(BrowseQuery)
+
+    assert adapter.validate_python("A query") == "A query"
+    assert adapter.validate_python("x" * MAX_BROWSE_QUERY_CHARACTERS) == (
+        "x" * MAX_BROWSE_QUERY_CHARACTERS
+    )
+    for invalid in ("", " ", " leading", "trailing ", "e\u0301", "x" * 4097):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(invalid)
+
+
+def test_browse_page_token_has_one_public_encoded_bound() -> None:
+    adapter = TypeAdapter(BrowsePageToken)
+
+    assert adapter.validate_python("x" * MAX_BROWSE_TOKEN_BYTES) == ("x" * MAX_BROWSE_TOKEN_BYTES)
+    with pytest.raises(ValidationError):
+        adapter.validate_python("")
+    with pytest.raises(ValidationError):
+        adapter.validate_python("x" * (MAX_BROWSE_TOKEN_BYTES + 1))

@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Annotated
 
-from http_api_contracts.browse import BrowseScalar, BrowseTokenError
+from fastapi import Query
+from http_api_contracts.browse import (
+    BrowsePageToken,
+    BrowseQuery,
+    BrowseScalar,
+    BrowseTokenError,
+)
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_protocol.errors import BadRequest
 
 from riverhog_api.deps import ServiceContainer
 
+type BrowsePageTokenQuery = Annotated[BrowsePageToken | None, Query()]
+type BrowseQueryParameter = Annotated[BrowseQuery | None, Query()]
+
 
 def canonical_selectors(**values: object) -> dict[str, object]:
     """Return the exact selector projection bound into a page token."""
 
-    result = dict(values)
-    query = result.get("q")
-    if isinstance(query, str):
-        result["q"] = query.strip().casefold() or None
-    return result
+    return dict(values)
 
 
 def page_position(
@@ -67,4 +73,10 @@ def page_payload(
     return result
 
 
-__all__ = ["canonical_selectors", "page_payload", "page_position"]
+__all__ = [
+    "BrowsePageTokenQuery",
+    "BrowseQueryParameter",
+    "canonical_selectors",
+    "page_payload",
+    "page_position",
+]

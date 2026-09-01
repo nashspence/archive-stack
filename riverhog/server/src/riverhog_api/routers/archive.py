@@ -15,7 +15,13 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_store, map_archive_store_list
 from riverhog_api.schemas.archive import (
@@ -59,8 +65,8 @@ def list_archive_copy_jobs(
     container: ContainerDep,
     principal: ArchiveManager,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     state: Annotated[ArchiveCopyState | None, Query()] = None,
     sort: Annotated[ArchiveCopySort, Query()] = "requested_at",
     order: Annotated[SortOrder, Query()] = "desc",
@@ -178,8 +184,8 @@ def list_archive_stores(
     container: ContainerDep,
     principal: ArchiveReader,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
-    q: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     sort: Annotated[ArchiveStoreSort, Query()] = "store",
     order: Annotated[SortOrder, Query()] = "asc",
 ) -> ArchiveStoreListOut:

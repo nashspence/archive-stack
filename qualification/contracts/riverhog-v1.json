@@ -10587,6 +10587,12 @@
         "consumers": [
           "riverhog-server"
         ],
+        "name": "RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
         "name": "RIVERHOG_BROWSE_TOKEN_LIFETIME"
       },
       {
@@ -11286,7 +11292,7 @@
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json": 7,
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json": 2,
           "mango-fish": 2,
-          "riverhog": 753,
+          "riverhog": 751,
           "riverhog-api-client": 7,
           "riverhog-client": 3,
           "riverhog-ftp-adapter": 21,
@@ -11294,7 +11300,7 @@
           "riverhog-recover": 1,
           "riverhog-server": 32,
           "riverhog-storage-adapter-protocol": 63,
-          "stove0": 372,
+          "stove0": 374,
           "stove0-api-client": 1,
           "stove0-observer-protocol": 76,
           "stove0-recipes": 42,
@@ -17617,7 +17623,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/24",
+          "source_pointer": "/external_contract/configuration_environment/25",
           "unit": "configured-value"
         },
         {
@@ -17629,7 +17635,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/26",
+          "source_pointer": "/external_contract/configuration_environment/27",
           "unit": "configured-value"
         },
         {
@@ -17641,7 +17647,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/27",
+          "source_pointer": "/external_contract/configuration_environment/28",
           "unit": "configured-value"
         },
         {
@@ -17653,7 +17659,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/28",
+          "source_pointer": "/external_contract/configuration_environment/29",
           "unit": "configured-value"
         },
         {
@@ -17665,7 +17671,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/29",
+          "source_pointer": "/external_contract/configuration_environment/30",
           "unit": "configured-value"
         },
         {
@@ -17677,7 +17683,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/35",
+          "source_pointer": "/external_contract/configuration_environment/36",
           "unit": "configured-value"
         },
         {
@@ -17689,7 +17695,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/39",
+          "source_pointer": "/external_contract/configuration_environment/40",
           "unit": "configured-value"
         },
         {
@@ -17701,7 +17707,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/40",
+          "source_pointer": "/external_contract/configuration_environment/41",
           "unit": "configured-value"
         },
         {
@@ -17713,7 +17719,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/41",
+          "source_pointer": "/external_contract/configuration_environment/42",
           "unit": "configured-value"
         },
         {
@@ -17725,7 +17731,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/46",
+          "source_pointer": "/external_contract/configuration_environment/47",
           "unit": "configured-value"
         },
         {
@@ -17737,7 +17743,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/47",
+          "source_pointer": "/external_contract/configuration_environment/48",
           "unit": "configured-value"
         },
         {
@@ -17749,7 +17755,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/51",
+          "source_pointer": "/external_contract/configuration_environment/52",
           "unit": "configured-value"
         },
         {
@@ -17761,7 +17767,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/53",
+          "source_pointer": "/external_contract/configuration_environment/54",
           "unit": "configured-value"
         },
         {
@@ -17773,7 +17779,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/55",
+          "source_pointer": "/external_contract/configuration_environment/56",
           "unit": "configured-value"
         },
         {
@@ -17785,7 +17791,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/56",
+          "source_pointer": "/external_contract/configuration_environment/57",
           "unit": "configured-value"
         },
         {
@@ -17797,7 +17803,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/57",
+          "source_pointer": "/external_contract/configuration_environment/58",
           "unit": "configured-value"
         },
         {
@@ -17809,7 +17815,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/59",
+          "source_pointer": "/external_contract/configuration_environment/60",
           "unit": "configured-value"
         },
         {
@@ -17821,7 +17827,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/60",
+          "source_pointer": "/external_contract/configuration_environment/61",
           "unit": "configured-value"
         },
         {
@@ -17833,7 +17839,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/61",
+          "source_pointer": "/external_contract/configuration_environment/62",
           "unit": "configured-value"
         },
         {
@@ -17845,7 +17851,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/62",
+          "source_pointer": "/external_contract/configuration_environment/63",
           "unit": "configured-value"
         },
         {
@@ -17857,7 +17863,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/64",
+          "source_pointer": "/external_contract/configuration_environment/65",
           "unit": "configured-value"
         },
         {
@@ -17869,7 +17875,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/65",
+          "source_pointer": "/external_contract/configuration_environment/66",
           "unit": "configured-value"
         },
         {
@@ -17881,7 +17887,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/66",
+          "source_pointer": "/external_contract/configuration_environment/67",
           "unit": "configured-value"
         },
         {
@@ -17893,7 +17899,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/67",
+          "source_pointer": "/external_contract/configuration_environment/68",
           "unit": "configured-value"
         },
         {
@@ -17905,7 +17911,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/69",
+          "source_pointer": "/external_contract/configuration_environment/70",
           "unit": "configured-value"
         },
         {
@@ -17917,7 +17923,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/70",
+          "source_pointer": "/external_contract/configuration_environment/71",
           "unit": "configured-value"
         },
         {
@@ -17929,7 +17935,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/71",
+          "source_pointer": "/external_contract/configuration_environment/72",
           "unit": "configured-value"
         },
         {
@@ -17941,7 +17947,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/72",
+          "source_pointer": "/external_contract/configuration_environment/73",
           "unit": "configured-value"
         },
         {
@@ -17953,7 +17959,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/73",
+          "source_pointer": "/external_contract/configuration_environment/74",
           "unit": "configured-value"
         },
         {
@@ -17965,7 +17971,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/74",
+          "source_pointer": "/external_contract/configuration_environment/75",
           "unit": "configured-value"
         },
         {
@@ -17977,7 +17983,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/78",
+          "source_pointer": "/external_contract/configuration_environment/79",
           "unit": "configured-value"
         },
         {
@@ -17989,7 +17995,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/80",
+          "source_pointer": "/external_contract/configuration_environment/81",
           "unit": "configured-value"
         },
         {
@@ -18001,7 +18007,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/81",
+          "source_pointer": "/external_contract/configuration_environment/82",
           "unit": "configured-value"
         },
         {
@@ -18013,7 +18019,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/101",
+          "source_pointer": "/external_contract/configuration_environment/102",
           "unit": "configured-value"
         },
         {
@@ -18025,7 +18031,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/104",
+          "source_pointer": "/external_contract/configuration_environment/105",
           "unit": "configured-value"
         },
         {
@@ -18037,7 +18043,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/106",
+          "source_pointer": "/external_contract/configuration_environment/107",
           "unit": "configured-value"
         },
         {
@@ -18049,7 +18055,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/111",
+          "source_pointer": "/external_contract/configuration_environment/112",
           "unit": "configured-value"
         },
         {
@@ -19776,6 +19782,30 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactSetAuthorityDocument/properties/sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/BrowsePageToken:length",
+          "maximum": 8192,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/BrowsePageToken",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/BrowseQuery:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/BrowseQuery",
           "unit": "characters"
         },
         {
@@ -21701,6 +21731,18 @@
           "rule": "route-progression/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/KeyDownloadQuotaListOut/properties/quotas",
           "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/LifecycleEventCursor:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/LifecycleEventCursor",
+          "unit": "characters"
         },
         {
           "dimension": "cardinality",
@@ -24788,17 +24830,6 @@
           "unit": "schema-value"
         },
         {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_collection_archive_copies:parameter:query:page_token:/anyOf/0:length",
-          "maximum": 8192,
-          "owner": "riverhog",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1archive-copies/get/parameters/2/schema/anyOf/0",
-          "unit": "characters"
-        },
-        {
           "dimension": "logical-result-cardinality",
           "id": "http:riverhog:operation:list_collection_provenance:logical-result",
           "owner": "riverhog",
@@ -24889,17 +24920,6 @@
           "unit": "schema-value"
         },
         {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_collection_upload_session_files:parameter:query:page_token:/anyOf/0:length",
-          "maximum": 8192,
-          "owner": "riverhog",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions~1{collection_id}~1files/get/parameters/2/schema/anyOf/0",
-          "unit": "characters"
-        },
-        {
           "dimension": "logical-result-cardinality",
           "id": "http:riverhog:operation:list_collection_upload_session_tags:logical-result",
           "owner": "riverhog",
@@ -24928,17 +24948,6 @@
           "rule": "schema-bound/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions~1{collection_id}~1tags/get/parameters/1/schema",
           "unit": "schema-value"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_collection_upload_session_tags:parameter:query:page_token:/anyOf/0:length",
-          "maximum": 8192,
-          "owner": "riverhog",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions~1{collection_id}~1tags/get/parameters/2/schema/anyOf/0",
-          "unit": "characters"
         },
         {
           "dimension": "logical-result-cardinality",
@@ -24971,17 +24980,6 @@
           "unit": "schema-value"
         },
         {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_collection_upload_sessions:parameter:query:page_token:/anyOf/0:length",
-          "maximum": 8192,
-          "owner": "riverhog",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions/get/parameters/1/schema/anyOf/0",
-          "unit": "characters"
-        },
-        {
           "dimension": "logical-result-cardinality",
           "id": "http:riverhog:operation:list_collections:logical-result",
           "owner": "riverhog",
@@ -25010,17 +25008,6 @@
           "rule": "schema-bound/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections/get/parameters/0/schema",
           "unit": "schema-value"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_collections:parameter:query:page_token:/anyOf/0:length",
-          "maximum": 8192,
-          "owner": "riverhog",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections/get/parameters/1/schema/anyOf/0",
-          "unit": "characters"
         },
         {
           "dimension": "logical-result-cardinality",
@@ -26525,6 +26512,30 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/BranchWorkBinding/properties/parent_work_id",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/BrowsePageToken:length",
+          "maximum": 8192,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/BrowsePageToken",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/BrowseQuery:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/BrowseQuery",
           "unit": "characters"
         },
         {
@@ -38221,7 +38232,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "c4a544aecd697bf5596b5ce996c77f89a89c697863b9eac1330a0b373728f836"
+      "sha256": "51aa27dade5af125b2715fe14f86455ecff04939d52b8a5461c1a80dd91ad53d"
     },
     "http_openapi": {
       "riverhog": {
@@ -38426,13 +38437,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -38647,13 +38657,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -38840,13 +38849,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -39557,13 +39565,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -40244,13 +40251,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -40813,6 +40819,17 @@
               "title": "ArtifactSetAuthorityDocument",
               "type": "object"
             },
+            "BrowsePageToken": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            },
+            "BrowseQuery": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+              "type": "string"
+            },
             "CanonicalRelPath": {
               "allOf": [
                 {
@@ -40924,13 +40941,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -41015,13 +41031,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -41167,13 +41182,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -42392,13 +42406,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -46126,13 +46139,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -46256,6 +46268,12 @@
               "title": "KeyDownloadQuotaOut",
               "type": "object"
             },
+            "LifecycleEventCursor": {
+              "maxLength": 19,
+              "minLength": 1,
+              "pattern": "^(?:0|[1-9][0-9]*)$",
+              "type": "string"
+            },
             "ListCollectionFileProvenanceResponse": {
               "discriminator": {
                 "mapping": {
@@ -46294,13 +46312,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -46327,13 +46344,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -46367,13 +46383,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -46442,13 +46457,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -46528,13 +46542,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -46569,13 +46582,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -46845,13 +46857,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -46936,13 +46947,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "page_size": {
                   "maximum": 100.0,
@@ -47918,13 +47928,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -47941,6 +47950,7 @@
               },
               "required": [
                 "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "filters",
@@ -48860,13 +48870,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "objects": {
                   "items": {
@@ -51142,8 +51151,7 @@
                   "type": "boolean"
                 },
                 "next_cursor": {
-                  "title": "Next Cursor",
-                  "type": "string"
+                  "$ref": "#/components/schemas/LifecycleEventCursor"
                 }
               },
               "required": [
@@ -51280,13 +51288,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -51530,13 +51537,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
@@ -52427,7 +52433,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -52461,7 +52467,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -52664,7 +52670,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -52698,7 +52704,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -52847,7 +52853,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -52881,7 +52887,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -53920,7 +53926,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -53936,7 +53942,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -54720,7 +54726,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -54736,7 +54742,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -55187,7 +55193,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -59044,8 +59050,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "maxLength": 8192,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -59061,7 +59066,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -59924,8 +59929,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "maxLength": 8192,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -60984,8 +60988,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "maxLength": 8192,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -61767,8 +61770,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "maxLength": 8192,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -61784,7 +61786,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -62093,8 +62095,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "maxLength": 8192,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -62613,7 +62614,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -62629,7 +62630,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -63235,7 +63236,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -63407,7 +63408,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -63892,7 +63893,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -64530,7 +64531,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -64564,7 +64565,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -64707,7 +64708,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/LifecycleEventCursor"
                       },
                       {
                         "type": "null"
@@ -64924,7 +64925,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -64940,7 +64941,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -66261,8 +66262,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "minLength": 1,
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -66290,7 +66290,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -66447,7 +66447,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -66463,7 +66463,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -68368,6 +68368,17 @@
               "title": "BranchWorkBinding",
               "type": "object"
             },
+            "BrowsePageToken": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "type": "string"
+            },
+            "BrowseQuery": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+              "type": "string"
+            },
             "CollectionId": {
               "minimum": 1.0,
               "type": "integer"
@@ -68979,13 +68990,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "enum": [
@@ -69013,6 +69023,7 @@
               },
               "required": [
                 "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "filters",
@@ -72695,13 +72706,12 @@
                 "next_page_token": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "$ref": "#/components/schemas/BrowsePageToken"
                     },
                     {
                       "type": "null"
                     }
-                  ],
-                  "title": "Next Page Token"
+                  ]
                 },
                 "order": {
                   "enum": [
@@ -72736,6 +72746,7 @@
               },
               "required": [
                 "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "filters",
@@ -73814,7 +73825,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -73854,7 +73865,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -75473,7 +75484,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowsePageToken"
                       },
                       {
                         "type": "null"
@@ -75524,7 +75535,7 @@
                   "schema": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "$ref": "#/components/schemas/BrowseQuery"
                       },
                       {
                         "type": "null"
@@ -97380,6 +97391,14 @@
       {
         "distribution": "http-api-contracts",
         "exports": {
+          "BrowsePageToken": {
+            "kind": "type-alias",
+            "value": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=8192, pattern=None, ascii_only=None)]"
+          },
+          "BrowseQuery": {
+            "kind": "type-alias",
+            "value": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=4096, pattern='^\\\\S(?:[\\\\s\\\\S]*\\\\S)?$', ascii_only=None), AfterValidator(func=<function validate_browse_query>)]"
+          },
           "BrowseScalar": {
             "kind": "type-alias",
             "value": "str | int | bool | bytes | None"
@@ -97605,6 +97624,14 @@
             "kind": "constant",
             "value": "application/json-seq"
           },
+          "MAX_BROWSE_QUERY_CHARACTERS": {
+            "kind": "constant",
+            "value": 4096
+          },
+          "MAX_BROWSE_TOKEN_BYTES": {
+            "kind": "constant",
+            "value": 8192
+          },
           "OperationInterface": {
             "kind": "object",
             "type": "typing._LiteralGenericAlias"
@@ -97732,6 +97759,10 @@
           "structural_model_catalog": {
             "kind": "function",
             "signature": "(contracts: 'Sequence[HttpOperationContract]', *, additional_models: 'Sequence[type[BaseModel]]' = ()) -> 'dict[str, dict[str, Any]]'"
+          },
+          "validate_browse_query": {
+            "kind": "function",
+            "signature": "(value: 'str') -> 'str'"
           },
           "validate_sha256_identity": {
             "kind": "function",
@@ -98282,7 +98313,7 @@
               },
               "list_lifecycle_events": {
                 "kind": "method",
-                "signature": "(self, *, after: 'str | None' = None, limit: 'int' = 100) -> 'RiverhogEventPage'"
+                "signature": "(self, *, after: 'LifecycleEventCursor | None' = None, limit: 'int' = 100) -> 'RiverhogEventPage'"
               },
               "list_retrieval_cache_objects": {
                 "kind": "method",
@@ -100293,6 +100324,14 @@
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
+          "LifecycleEventCursor": {
+            "kind": "type-alias",
+            "value": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:0|[1-9][0-9]*)$', ascii_only=None), AfterValidator(func=<function validate_lifecycle_event_cursor>)]"
+          },
+          "MAX_LIFECYCLE_EVENT_SEQUENCE": {
+            "kind": "constant",
+            "value": 9223372036854775807
+          },
           "NotFound": {
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
@@ -100484,8 +100523,8 @@
           },
           "ProcessingClaimPageDocument": {
             "kind": "class",
-            "schema_sha256": "322ce736d101299945edb87b0a460e282556c91f9ea0655030f8d028517418d0",
-            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
+            "schema_sha256": "505f800a7f311f7e9c1bd961b0dbfb21307adcb49af3b07784aaa8a4a5430d66",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
           },
           "ProcessingClaimPlanSealDocument": {
             "kind": "class",
@@ -100720,8 +100759,8 @@
                 "signature": "(self, cursor: 'str') -> 'None'"
               }
             },
-            "schema_sha256": "896c0bfa09cc1b4b4a26d85bd54707b4879b6f65fd0014a4aab2df9a484f02e8",
-            "signature": "(*, events: list[RiverhogLifecycleEvent], next_cursor: str, has_more: bool) -> None"
+            "schema_sha256": "1b92ba92bb685ee271eb891e07f852d5ece8eeb22b0f0858cd8e14fbbaf35d40",
+            "signature": "(*, events: list[RiverhogLifecycleEvent], next_cursor: LifecycleEventCursor, has_more: bool) -> None"
           },
           "RiverhogLifecycleEvent": {
             "kind": "type-alias",
@@ -100884,6 +100923,10 @@
           "validate_collection_upload_batch_against_registration_constraints": {
             "kind": "function",
             "signature": "(batch: 'CollectionUploadFileBatchDocument', constraints: 'CollectionUploadRegistrationConstraintsDocument') -> 'CollectionUploadFileBatchDocument'"
+          },
+          "validate_lifecycle_event_cursor": {
+            "kind": "function",
+            "signature": "(value: 'str') -> 'str'"
           },
           "validate_riverhog_event": {
             "kind": "function",
@@ -104163,8 +104206,8 @@
                 "signature": "(cls, page: 'Mapping[str, Any]') -> 'EvaluationPage'"
               }
             },
-            "schema_sha256": "fc9e1853e05a7be560605cfc480cccfb137c892756121a1f88d08008e38410a2",
-            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: Literal['updated_at', 'phase', 'evaluation_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], evaluations: tuple[stove0_operator_contracts.EvaluationView, ...]) -> None"
+            "schema_sha256": "00a56a81565ce9921f29db6856ca944ed6f8167189d80c36c596df55ec5c0950",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: Literal['updated_at', 'phase', 'evaluation_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], evaluations: tuple[stove0_operator_contracts.EvaluationView, ...]) -> None"
           },
           "EvaluationPhase": {
             "kind": "object",
@@ -104412,8 +104455,8 @@
                 "signature": "(cls, page: 'Mapping[str, Any]') -> 'WorkPage'"
               }
             },
-            "schema_sha256": "9a4ca3667d06324e37b6c111700bddeef8a0af87370c68776369195e67dc4990",
-            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
+            "schema_sha256": "f33000af3810446a4b3ed6ce275f74fa9766322715b22454462616ac2eb71ff9",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
           },
           "WorkPhase": {
             "kind": "object",

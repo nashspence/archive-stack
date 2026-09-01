@@ -19,7 +19,13 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import KeyManager
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.apps import (
     AppAccessListOut,
@@ -45,10 +51,10 @@ def list_apps(
     container: ContainerDep,
     principal: KeyManager,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
     sort: Annotated[ApplicationSort, Query()] = "name",
     order: Annotated[SortOrder, Query()] = "asc",
-    q: str | None = Query(None),
+    q: BrowseQueryParameter = None,
     active: bool | None = Query(None),
 ) -> AppListOut:
     selectors = canonical_selectors(q=q, sort=sort, order=order, active=active)
@@ -119,10 +125,10 @@ def list_app_key_access(
     container: ContainerDep,
     principal: KeyManager,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
     sort: Annotated[ApplicationAccessSort, Query()] = "permission",
     order: Annotated[SortOrder, Query()] = "asc",
-    q: str | None = Query(None),
+    q: BrowseQueryParameter = None,
     app: Annotated[ApplicationName | None, Query()] = None,
     key_id: Annotated[ApplicationKeyId | None, Query(alias="key")] = None,
     permission: Annotated[ApplicationPermission | None, Query()] = None,
@@ -240,10 +246,10 @@ def list_app_keys(
     container: ContainerDep,
     principal: KeyManager,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
     sort: Annotated[ApplicationKeySort, Query()] = "created_at",
     order: Annotated[SortOrder, Query()] = "desc",
-    q: str | None = Query(None),
+    q: BrowseQueryParameter = None,
     active: bool | None = Query(None),
 ) -> AppKeyListOut:
     selectors = canonical_selectors(app=app, q=q, sort=sort, order=order, active=active)

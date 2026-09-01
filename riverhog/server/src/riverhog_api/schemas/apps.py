@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
+from http_api_contracts import BrowsePageToken
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_application_access import (
     ApplicationAccessGrant,
@@ -31,7 +32,7 @@ class AppSummaryOut(RiverhogModel):
 
 class AppListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: ApplicationSort
     order: SortOrder
     query: str | None
@@ -104,7 +105,7 @@ class AppKeyCreatedOut(AppKeyOut):
 
 class AppKeyListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: ApplicationKeySort
     order: SortOrder
     query: str | None
@@ -128,7 +129,7 @@ class MutateAppAccessRequest(AppAccessIn):
 
 class AppAccessListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: ApplicationAccessSort
     order: SortOrder
     query: str | None

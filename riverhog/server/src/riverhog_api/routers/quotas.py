@@ -9,7 +9,13 @@ from riverhog_protocol import DownloadQuotaSort, SortOrder
 from riverhog_protocol.errors import Forbidden
 
 from riverhog_api.auth import QuotaManager, RetrievalManager
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.quotas import (
     KeyDownloadQuotaListOut,
@@ -41,10 +47,10 @@ def list_download_quotas(
     container: ContainerDep,
     principal: QuotaManager,
     page_size: int = Query(25, ge=1, le=100),
-    page_token: str | None = Query(None),
+    page_token: BrowsePageTokenQuery = None,
     sort: Annotated[DownloadQuotaSort, Query()] = "app",
     order: Annotated[SortOrder, Query()] = "asc",
-    q: str | None = Query(None),
+    q: BrowseQueryParameter = None,
     app: Annotated[ApplicationName | None, Query()] = None,
     active: bool | None = Query(None),
 ) -> KeyDownloadQuotaListOut:

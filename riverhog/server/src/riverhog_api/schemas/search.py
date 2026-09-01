@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http_api_contracts import BrowsePageToken
 from pydantic import Field, model_validator
 from riverhog_protocol import (
     CollectionId,
@@ -26,7 +27,7 @@ class SearchResponse(RiverhogModel):
     query: str | None
     collection: CollectionId | None
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: SearchSort
     order: SortOrder
     files: list[SearchFileOut]

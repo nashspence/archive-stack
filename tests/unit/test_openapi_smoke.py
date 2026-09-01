@@ -252,14 +252,32 @@ def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() ->
 
 
 def test_lifecycle_event_openapi_exposes_the_complete_discriminated_vocabulary() -> None:
-    schemas = create_app().openapi()["components"]["schemas"]
+    document = create_app().openapi()
+    schemas = document["components"]["schemas"]
     page = schemas["RiverhogEventPage"]
     event_items = page["properties"]["events"]["items"]
     event_union = schemas[event_items["$ref"].rsplit("/", 1)[-1]]
+    operation = document["paths"]["/v1/events"]["get"]
+    cursor_parameter = next(
+        parameter for parameter in operation["parameters"] if parameter["name"] == "after"
+    )
+    cursor_reference = next(
+        option["$ref"] for option in cursor_parameter["schema"]["anyOf"] if "$ref" in option
+    )
+    cursor = schemas[cursor_reference.rsplit("/", 1)[-1]]
 
     assert event_union["discriminator"]["propertyName"] == "type"
     assert set(event_union["discriminator"]["mapping"]) == RIVERHOG_EVENT_TYPES
     assert len(event_union["oneOf"]) == len(RIVERHOG_EVENT_TYPES)
+    assert cursor == {
+        "type": "string",
+        "maxLength": 19,
+        "minLength": 1,
+        "pattern": r"^(?:0|[1-9][0-9]*)$",
+    }
+    assert page["required"] == ["events", "next_cursor", "has_more"]
+    assert page["properties"]["next_cursor"] == {"$ref": cursor_reference}
+    assert set(operation["responses"]["200"]["content"]) == {"application/json"}
 
 
 def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:

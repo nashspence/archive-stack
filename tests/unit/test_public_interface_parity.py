@@ -25,6 +25,8 @@ from fastapi import FastAPI
 from http_api_contracts import (
     ERROR_STATUS_BY_CODE,
     JSON_SEQUENCE_MEDIA_TYPE,
+    MAX_BROWSE_QUERY_CHARACTERS,
+    MAX_BROWSE_TOKEN_BYTES,
     closed_literal_values,
     safe_http_base_url,
 )
@@ -33,6 +35,7 @@ from http_api_contracts import (
 )
 from pydantic import TypeAdapter, ValidationError
 from riverhog_api.app import create_app as create_riverhog_app
+from riverhog_api.browse import canonical_selectors
 from riverhog_api.error_contracts import RIVERHOG_OPERATION_ERROR_CODES
 from riverhog_api_client import (
     ApplicationPermission,
@@ -584,6 +587,24 @@ def _http_operations(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def _schema_variants(
+    schema: dict[str, Any],
+    components: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    reference = schema.get("$ref")
+    if reference is not None:
+        return _schema_variants(components[str(reference).rsplit("/", 1)[-1]], components)
+    alternatives = schema.get("oneOf") or schema.get("anyOf")
+    if alternatives is not None:
+        return tuple(
+            variant
+            for alternative in alternatives
+            if alternative.get("type") != "null"
+            for variant in _schema_variants(alternative, components)
+        )
+    return (schema,)
+
+
 def _parameters(operation: dict[str, Any], *, exclude: set[str] | None = None) -> dict[str, Any]:
     omitted = exclude or set()
     return {
@@ -667,6 +688,37 @@ def test_public_read_collection_selectors_are_bounded_and_frozen(
                 item for item in operation["parameters"] if item["name"] == "page_size"
             )
             assert page_size["schema"]["maximum"] >= 1
+            page_token = next(
+                item for item in operation["parameters"] if item["name"] == "page_token"
+            )
+            token_reference = next(
+                option["$ref"] for option in page_token["schema"]["anyOf"] if "$ref" in option
+            )
+            token_schema = schema["components"]["schemas"][token_reference.rsplit("/", 1)[-1]]
+            assert token_schema["minLength"] == 1
+            assert token_schema["maxLength"] == MAX_BROWSE_TOKEN_BYTES
+            query = next(
+                (item for item in operation["parameters"] if item["name"] == "q"),
+                None,
+            )
+            if query is not None:
+                query_reference = next(
+                    option["$ref"] for option in query["schema"]["anyOf"] if "$ref" in option
+                )
+                query_schema = schema["components"]["schemas"][query_reference.rsplit("/", 1)[-1]]
+                assert query_schema["minLength"] == 1
+                assert query_schema["maxLength"] == MAX_BROWSE_QUERY_CHARACTERS
+            response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+            for response_variant in _schema_variants(
+                response_schema, schema["components"]["schemas"]
+            ):
+                assert "next_page_token" in response_variant["required"]
+                next_token_options = response_variant["properties"]["next_page_token"]["anyOf"]
+                assert any(option.get("type") == "null" for option in next_token_options)
+                next_token_reference = next(
+                    option["$ref"] for option in next_token_options if "$ref" in option
+                )
+                assert next_token_reference == token_reference
             continue
         raise AssertionError(f"unsupported read-collection classification: {kind}")
 
@@ -684,6 +736,23 @@ def test_no_public_http_operation_exposes_an_all_selector() -> None:
             assert "all" not in {
                 parameter["name"] for parameter in operation.get("parameters", [])
             }, operation_id
+
+
+def test_browse_selector_identity_preserves_non_ascii_query_meaning() -> None:
+    assert canonical_selectors(q="Straße") == {"q": "Straße"}
+    assert canonical_selectors(q="Straße") != canonical_selectors(q="STRASSE")
+
+
+def test_official_client_never_drops_a_supplied_query_by_truthiness() -> None:
+    tree = ast.parse(Path(riverhog_client_module.__file__).read_text(encoding="utf-8"))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id in {"q", "query"}
+    ]
+    assert offenders == []
 
 
 def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
