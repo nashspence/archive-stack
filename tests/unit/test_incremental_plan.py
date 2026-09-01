@@ -137,3 +137,23 @@ def test_incremental_checkpoint_has_canonical_identity() -> None:
     ).checkpoint
     payload = json.loads(incremental_volume_planner_checkpoint_bytes(checkpoint))
     assert payload["schema"] == "incremental-volume-planner-checkpoint/v1"
+
+
+def test_incremental_checkpoint_preserves_the_full_v1_sequence_domain() -> None:
+    payload = json.loads(
+        incremental_volume_planner_checkpoint_bytes(
+            new_incremental_volume_planner(policy=_policy())
+        )
+    )
+    payload["next_sequence"] = (1 << 256) - 1
+
+    restored = parse_incremental_volume_planner_checkpoint(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    )
+
+    assert restored.next_sequence == (1 << 256) - 1
+    payload["next_sequence"] = 1 << 256
+    with pytest.raises(ValueError, match="sequence exceeds"):
+        parse_incremental_volume_planner_checkpoint(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        )

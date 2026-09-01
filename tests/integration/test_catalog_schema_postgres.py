@@ -21,12 +21,18 @@ from riverhog_core.catalog_db import (
     session_scope,
     validate_db,
 )
-from riverhog_core.catalog_models import TagRecord
+from riverhog_core.catalog_models import (
+    CollectionArchiveObjectUploadRecord,
+    CollectionUploadProvenanceArchiveVolumeRecord,
+    CollectionUploadRecord,
+    TagRecord,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol.paths import tag_set_identity
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
 
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
@@ -161,4 +167,111 @@ def test_postgres_upload_idempotency_is_independent_per_application(
         tuple(str(column) for column in constraint["constrained_columns"])
         for constraint in inspect(engine).get_foreign_keys("collection_upload_tags")
     } == {("collection_id",), ("tag_id",)}
+    engine.dispose()
+
+
+def test_postgres_archive_sequence_state_round_trips_full_v1_domain(
+    isolated_database_url: str,
+) -> None:
+    initialize_db(isolated_database_url)
+    with session_scope(make_session_factory(isolated_database_url)) as session:
+        session.add(
+            TagRecord(
+                id="archive-sequence",
+                created_by_app="fixture",
+                created_at="2026-01-01T00:00:00.000000Z",
+            )
+        )
+    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:archive-sequence")})
+    service = SqlAlchemyCollectionUploadService(
+        RuntimeConfig(database_url=isolated_database_url),
+        ArchiveStoreRegistry({"archive": archive_store_binding(MemoryArchiveStore())}),
+    )
+    created = service.create_or_resume(
+        idempotency_key="archive-sequence-persistence",
+        initial_tag="archive-sequence",
+        tag_set_identity_sha256=tag_set_identity(("archive-sequence",)),
+        ingest_source="postgres-fixture",
+        archive_store=None,
+        initiator=ApplicationPrincipal(app="fixture", key_id="fixture-key", access=access),
+        event_context=None,
+    )
+    collection_id = int(created["collection_id"])
+    values = (1 << 63, (1 << 256) - 1)
+    with session_scope(make_session_factory(isolated_database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.archive_volume_next_sequence = values[-1]
+        upload.provenance_archive_next_sequence = values[-1]
+        for index, sequence in enumerate(values):
+            session.add(
+                CollectionArchiveObjectUploadRecord(
+                    collection_id=collection_id,
+                    object_id=f"pack-{sequence:064x}",
+                    sequence=sequence,
+                    kind="pack",
+                    relative_path=f"volumes/pack-{sequence:064x}.tar.age",
+                    object_path=f"archives/fixture/volumes/pack-{sequence:064x}.tar.age",
+                    plaintext_bytes=0,
+                    source_bytes=0,
+                    source_path=None,
+                    source_first_part=None,
+                    source_part_count=None,
+                    unit_plaintext_bytes=1,
+                    plan_json="{}",
+                    plan_sha256=f"{index + 1:064x}",
+                    state="planned",
+                    checkpoint_json=None,
+                    sealed_receipt_json=None,
+                    metadata_receipt_json=None,
+                    failure=None,
+                    uploaded_bytes=0,
+                    uploaded_units=0,
+                    total_units=0,
+                    updated_at="2026-01-01T00:00:00.000000Z",
+                    sealed_at=None,
+                )
+            )
+            session.add(
+                CollectionUploadProvenanceArchiveVolumeRecord(
+                    collection_id=collection_id,
+                    sequence=sequence,
+                    kind="bindings",
+                    document_json="{}",
+                    payload_receipt_json="{}",
+                    metadata_receipt_json="{}",
+                )
+            )
+
+    with session_scope(make_session_factory(isolated_database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert upload.archive_volume_next_sequence == values[-1]
+        assert upload.provenance_archive_next_sequence == values[-1]
+        assert list(
+            session.scalars(
+                select(CollectionArchiveObjectUploadRecord.sequence)
+                .where(CollectionArchiveObjectUploadRecord.collection_id == collection_id)
+                .order_by(CollectionArchiveObjectUploadRecord.sequence)
+            )
+        ) == list(values)
+
+    engine = create_catalog_engine(isolated_database_url)
+    with engine.begin() as connection:
+        assert connection.execute(
+            text(
+                "SELECT archive_volume_next_sequence, provenance_archive_next_sequence "
+                "FROM collection_uploads WHERE collection_id = :collection_id"
+            ),
+            {"collection_id": collection_id},
+        ).one() == (f"{values[-1]:064x}", f"{values[-1]:064x}")
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE collection_uploads SET archive_volume_next_sequence = :sequence "
+                    "WHERE collection_id = :collection_id"
+                ),
+                {"sequence": "g" * 64, "collection_id": collection_id},
+            )
     engine.dispose()

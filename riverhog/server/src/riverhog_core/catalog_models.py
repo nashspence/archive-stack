@@ -22,8 +22,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from riverhog_core.catalog_base import Base
+from riverhog_core.catalog_types import archive_object_order_type, archive_sequence_type
 
 COLLECTION_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
+_ARCHIVE_SEQUENCE_ZERO = "0" * 64
+
+
+def _fixed_lowercase_integer_check(column: str, width: int) -> str:
+    remainder = column
+    for character in "0123456789abcdef":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return f"length({column}) = {width} AND lower({column}) = {column} AND length({remainder}) = 0"
 
 
 class TagRecord(Base):
@@ -623,6 +632,7 @@ class CollectionArchiveCopyRecord(Base):
         back_populates="copy",
         cascade="all, delete-orphan",
         passive_deletes=True,
+        order_by="CollectionArchiveObjectRecord.object_order",
     )
 
     __table_args__ = (
@@ -697,7 +707,7 @@ class CollectionArchiveObjectRecord(Base):
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
-    object_order: Mapped[int] = mapped_column(Integer)
+    object_order: Mapped[int] = mapped_column(archive_object_order_type())
     kind: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)
     plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
@@ -724,7 +734,10 @@ class CollectionArchiveObjectRecord(Base):
             "store",
             "object_order",
         ),
-        CheckConstraint("object_order >= 0", name="ck_collection_archive_objects_order"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("object_order", 65),
+            name="ck_collection_archive_objects_order",
+        ),
         CheckConstraint("plaintext_bytes >= 0", name="ck_collection_archive_objects_plaintext"),
         CheckConstraint("stored_bytes >= 0", name="ck_collection_archive_objects_stored"),
     )
@@ -829,8 +842,10 @@ class ArchiveCopyJobRecord(Base):
     read_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    batch_start_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    batch_end_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_start_order: Mapped[int | None] = mapped_column(
+        archive_object_order_type(), nullable=True
+    )
+    batch_end_order: Mapped[int | None] = mapped_column(archive_object_order_type(), nullable=True)
     destination_discarded_at: Mapped[str | None] = mapped_column(String, nullable=True)
     next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -869,6 +884,15 @@ class ArchiveCopyJobRecord(Base):
             "batch_start_order IS NULL AND batch_end_order IS NULL OR "
             "batch_start_order IS NOT NULL AND batch_end_order >= batch_start_order",
             name="ck_archive_copy_jobs_batch",
+        ),
+        CheckConstraint(
+            "batch_start_order IS NULL OR "
+            f"{_fixed_lowercase_integer_check('batch_start_order', 65)}",
+            name="ck_archive_copy_jobs_batch_start_order",
+        ),
+        CheckConstraint(
+            f"batch_end_order IS NULL OR {_fixed_lowercase_integer_check('batch_end_order', 65)}",
+            name="ck_archive_copy_jobs_batch_end_order",
         ),
     )
 
@@ -1442,7 +1466,7 @@ class CollectionUploadRecord(Base):
     archive_tree_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     archive_tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     archive_volume_next_sequence: Mapped[int] = mapped_column(
-        BigInteger, default=0, server_default=text("0")
+        archive_sequence_type(), default=0, server_default=text(f"'{_ARCHIVE_SEQUENCE_ZERO}'")
     )
     archive_volume_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     archive_ordered_volume_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1468,7 +1492,7 @@ class CollectionUploadRecord(Base):
         BigInteger, default=0, server_default=text("0")
     )
     provenance_archive_next_sequence: Mapped[int] = mapped_column(
-        BigInteger, default=0, server_default=text("0")
+        archive_sequence_type(), default=0, server_default=text(f"'{_ARCHIVE_SEQUENCE_ZERO}'")
     )
     provenance_archive_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_archive_ordered_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1565,14 +1589,14 @@ class CollectionUploadRecord(Base):
             name="ck_collection_uploads_tree_progress",
         ),
         CheckConstraint(
-            "archive_volume_next_sequence >= 0",
+            _fixed_lowercase_integer_check("archive_volume_next_sequence", 64),
             name="ck_collection_uploads_volume_progress",
         ),
         CheckConstraint(
             "provenance_validation_next_file_order >= 0 AND "
             "provenance_archive_next_file_order >= 0 AND "
             "provenance_archive_current_journal_offset >= 0 AND "
-            "provenance_archive_next_sequence >= 0",
+            f"{_fixed_lowercase_integer_check('provenance_archive_next_sequence', 64)}",
             name="ck_collection_uploads_provenance_progress",
         ),
         CheckConstraint(
@@ -1919,7 +1943,7 @@ class CollectionUploadProvenanceArchiveVolumeRecord(Base):
     __tablename__ = "collection_upload_provenance_archive_volumes"
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sequence: Mapped[int] = mapped_column(archive_sequence_type(), primary_key=True)
     kind: Mapped[str] = mapped_column(String)
     document_json: Mapped[str] = mapped_column(Text)
     payload_receipt_json: Mapped[str] = mapped_column(Text)
@@ -1935,7 +1959,10 @@ class CollectionUploadProvenanceArchiveVolumeRecord(Base):
             ["collection_uploads.collection_id"],
             ondelete="CASCADE",
         ),
-        CheckConstraint("sequence >= 0", name="ck_upload_provenance_archive_volumes_sequence"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("sequence", 64),
+            name="ck_upload_provenance_archive_volumes_sequence",
+        ),
         CheckConstraint(
             "kind IN ('bindings','journal')",
             name="ck_upload_provenance_archive_volumes_kind",
@@ -1948,7 +1975,7 @@ class CollectionArchiveObjectUploadRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String, primary_key=True)
-    sequence: Mapped[int] = mapped_column(Integer)
+    sequence: Mapped[int] = mapped_column(archive_sequence_type())
     kind: Mapped[str] = mapped_column(String)
     relative_path: Mapped[str] = mapped_column(String)
     object_path: Mapped[str] = mapped_column(String)
@@ -1983,7 +2010,10 @@ class CollectionArchiveObjectUploadRecord(Base):
             "sequence",
             unique=True,
         ),
-        CheckConstraint("sequence >= 0", name="ck_archive_object_uploads_sequence"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("sequence", 64),
+            name="ck_archive_object_uploads_sequence",
+        ),
         CheckConstraint("plaintext_bytes >= 0", name="ck_archive_object_uploads_plaintext"),
         CheckConstraint("source_bytes >= 0", name="ck_archive_object_uploads_source"),
         CheckConstraint(
