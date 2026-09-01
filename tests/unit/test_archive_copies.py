@@ -675,6 +675,7 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
     assert destination.objects == {}
+    assert destination._writes == {}
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is None

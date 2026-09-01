@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt as RetrievalCacheReceipt
@@ -31,12 +30,6 @@ class RetrievalCache(Protocol):
     def request_accounting_reconciliation_for_startup(self) -> int: ...
 
     def process_accounting_reconciliation(self, *, limit: int = 100) -> int: ...
-
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int: ...
 
     def admit(
         self,

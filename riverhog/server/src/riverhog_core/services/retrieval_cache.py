@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import datetime
 
 from riverhog_storage_adapter_protocol import StorageAdapterRejection
 from sqlalchemy import delete, select, tuple_
@@ -49,12 +48,6 @@ class SqlAlchemyRetrievalCache:
     @property
     def store_names(self) -> tuple[str, ...]:
         return tuple(self._stores)
-
-    def abort_incomplete_writes(self, *, initiated_before: datetime) -> int:
-        return sum(
-            store.abort_incomplete_writes(initiated_before=initiated_before)
-            for store in self._stores.values()
-        )
 
     def request_accounting_reconciliation_for_startup(self) -> int:
         requested = 0
@@ -164,7 +157,6 @@ class SqlAlchemyRetrievalCache:
             collection_id=collection_id,
             object_id=object_id,
             expected_bytes=expected_bytes,
-            eviction_attempted=frozenset(),
         )
 
     def _admit(
@@ -175,7 +167,6 @@ class SqlAlchemyRetrievalCache:
         collection_id: int,
         object_id: str,
         expected_bytes: int,
-        eviction_attempted: frozenset[str],
     ) -> RetrievalCacheAdmission | None:
         if not owner.strip():
             raise ValueError("retrieval cache admission owner must be non-empty")
@@ -252,6 +243,12 @@ class SqlAlchemyRetrievalCache:
             registration = self._registrations[cache_store]
             if selected is None and not registration.admission_enabled:
                 continue
+            if (
+                selected is None
+                and registration.admission_budget_bytes is not None
+                and expected_bytes > registration.admission_budget_bytes
+            ):
+                continue
             if selected is None:
                 claimed = self._reserve_and_claim(cache_store, key, expected_bytes)
                 if claimed is None:
@@ -261,23 +258,14 @@ class SqlAlchemyRetrievalCache:
                         collection_id=collection_id,
                         object_id=object_id,
                         expected_bytes=expected_bytes,
-                        eviction_attempted=eviction_attempted,
                     )
                 if not claimed:
                     deficit = self._reservation_deficit(cache_store, expected_bytes)
-                    if (
-                        cache_store not in eviction_attempted
-                        and deficit > 0
-                        and self._evict_one(cache_store=cache_store, minimum_bytes=deficit)
-                    ):
-                        return self._admit(
-                            owner=owner,
-                            source_store=source_store,
-                            collection_id=collection_id,
-                            object_id=object_id,
-                            expected_bytes=expected_bytes,
-                            eviction_attempted=eviction_attempted | {cache_store},
-                        )
+                    if deficit > 0 and self._evict_one(cache_store=cache_store):
+                        # One provider mutation is the bounded admission step. The
+                        # durable waiting population retries this preferred store and
+                        # may combine further eligible victims on later steps.
+                        return None
                     continue
             candidate = self._stores[cache_store]
             completed = candidate.find_completed_population(
@@ -311,17 +299,8 @@ class SqlAlchemyRetrievalCache:
                 if exc.code != "insufficient_storage":
                     raise
                 self._release_reservation(cache_store, key, expected_bytes, waiting=True)
-                if cache_store not in eviction_attempted and self._evict_one(
-                    cache_store=cache_store, minimum_bytes=1
-                ):
-                    return self._admit(
-                        owner=owner,
-                        source_store=source_store,
-                        collection_id=collection_id,
-                        object_id=object_id,
-                        expected_bytes=expected_bytes,
-                        eviction_attempted=eviction_attempted | {cache_store},
-                    )
+                if self._evict_one(cache_store=cache_store):
+                    return None
                 selected = None
                 continue
             with session_scope(self._session_factory) as session:
@@ -701,14 +680,13 @@ class SqlAlchemyRetrievalCache:
                 accounting.reserved_bytes + accounting.committed_bytes + expected_bytes - budget,
             )
 
-    def _evict_one(self, *, cache_store: str, minimum_bytes: int) -> bool:
+    def _evict_one(self, *, cache_store: str) -> bool:
         with session_scope(self._session_factory) as session:
             cached = session.scalar(
                 select(RetrievalCacheObjectRecord)
                 .where(
                     RetrievalCacheObjectRecord.cache_store == cache_store,
                     RetrievalCacheObjectRecord.state == "ready",
-                    RetrievalCacheObjectRecord.stored_bytes >= minimum_bytes,
                     ~select(RetrievalCacheLeaseRecord.owner)
                     .where(
                         RetrievalCacheLeaseRecord.source_store

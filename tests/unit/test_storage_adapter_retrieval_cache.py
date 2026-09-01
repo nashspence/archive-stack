@@ -9,7 +9,6 @@ from riverhog_core.ports.archive_objects import CompletedObjectReceipt
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
@@ -191,10 +190,6 @@ class _Adapter:
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self.deleted.append(request)
         self.objects.pop(request.object.object_path, None)
-
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        assert request.object_prefix == "objects/"
-        return 2
 
     def _completed(
         self,

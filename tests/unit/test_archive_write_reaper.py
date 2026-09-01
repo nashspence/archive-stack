@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
@@ -9,28 +9,6 @@ from unittest.mock import Mock
 import pytest
 from riverhog_api import app as api_app
 from riverhog_api.deps import ServiceContainer
-
-
-class _ArchiveWriteService:
-    def __init__(self, *, result: int = 2) -> None:
-        self.initiated_before: datetime | None = None
-        self.result = result
-
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int:
-        self.initiated_before = initiated_before
-        return self.result
-
-    def abort_incomplete_cache_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int:
-        self.initiated_before = initiated_before
-        return self.result
 
 
 class _RetrievalService:
@@ -175,64 +153,6 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-
-    asyncio.run(exercise())
-
-
-def test_archive_write_sweep_uses_the_configured_max_age(monkeypatch) -> None:
-    service = _ArchiveWriteService()
-    cache_service = _ArchiveWriteService(result=3)
-    container = cast(
-        ServiceContainer,
-        SimpleNamespace(archive_maintenance=service, retrieval=cache_service),
-    )
-    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
-    monkeypatch.setattr(api_app, "utc_now", lambda: now)
-
-    aborted = api_app._abort_incomplete_archive_writes(
-        container,
-        max_age=timedelta(days=3),
-    )
-
-    assert aborted == 5
-    assert service.initiated_before == datetime(2026, 7, 13, 12, tzinfo=UTC)
-    assert cache_service.initiated_before == datetime(2026, 7, 13, 12, tzinfo=UTC)
-
-
-def test_archive_write_sweep_waits_for_archive_operations() -> None:
-    async def exercise() -> None:
-        service = _ArchiveWriteService()
-        cache_service = _ArchiveWriteService(result=0)
-        container = cast(
-            ServiceContainer,
-            SimpleNamespace(archive_maintenance=service, retrieval=cache_service),
-        )
-        operation_lock = asyncio.Lock()
-        await operation_lock.acquire()
-        task = asyncio.create_task(
-            api_app._run_archive_write_reaper(
-                lambda: container,
-                sweep_interval=timedelta(days=1),
-                max_age=timedelta(days=3),
-                operation_lock=operation_lock,
-            )
-        )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert service.initiated_before is None
-
-        operation_lock.release()
-        for _ in range(100):
-            if service.initiated_before is not None:
-                break
-            await asyncio.sleep(0.001)
-        assert service.initiated_before is not None
-
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
     asyncio.run(exercise())
 

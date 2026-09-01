@@ -48,4 +48,3 @@ compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket al
 if [[ "${cache_access_key_id}" != "${archive_access_key_id}" || "${cache_bucket}" != "${archive_bucket}" ]]; then
   compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket allow --read --write --owner "${cache_bucket}" --key "${cache_access_key_id}"
 fi
-compose run --rm --entrypoint python "${COMPOSE_RUN_TTY_ARGS[@]}" test tests/harness/configure_garage.py

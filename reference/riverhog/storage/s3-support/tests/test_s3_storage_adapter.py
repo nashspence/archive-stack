@@ -10,7 +10,6 @@ from typing import Any, cast
 import pytest
 from botocore.exceptions import ClientError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
@@ -170,17 +169,19 @@ class _FakeS3Client:
 
     def list_multipart_uploads(self, **request: Any) -> dict[str, object]:
         prefix = str(request["Prefix"])
+        limit = int(request.get("MaxUploads", 1000))
+        uploads = [
+            {
+                "Key": str(upload["request"]["Key"]),
+                "UploadId": upload_id,
+                "Initiated": upload["Initiated"],
+            }
+            for upload_id, upload in sorted(self.uploads.items())
+            if str(upload["request"]["Key"]).startswith(prefix)
+        ][:limit]
         return {
             "IsTruncated": False,
-            "Uploads": [
-                {
-                    "Key": str(upload["request"]["Key"]),
-                    "UploadId": upload_id,
-                    "Initiated": upload["Initiated"],
-                }
-                for upload_id, upload in sorted(self.uploads.items())
-                if str(upload["request"]["Key"]).startswith(prefix)
-            ],
+            "Uploads": uploads,
         }
 
     def head_object(self, **request: Any) -> dict[str, object]:
@@ -598,7 +599,7 @@ def test_read_preparation_mechanics_remain_adapter_private() -> None:
     assert "storage_class" not in schema
 
 
-def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
+def test_lost_begin_response_reconciles_the_exact_nonterminal_write() -> None:
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
     session = adapter.begin_write(
@@ -611,15 +612,19 @@ def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
         )
     )
 
-    aborted = adapter.abort_incomplete_writes(
-        AbortIncompleteWritesRequest(
-            object_prefix="archives/",
-            initiated_before="2026-01-02T00:00:00.000000Z",
+    restarted = S3StorageAdapter(client, _config())
+    recovered = restarted.begin_write(
+        WriteStartRequest(
+            object_path="archives/collection/volume.age",
+            expected_bytes=1,
+            content_type="application/octet-stream",
+            required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
+            placement="archive",
         )
     )
 
-    assert aborted == 1
-    assert session.write_token not in client.uploads
+    assert recovered == session
+    assert tuple(client.uploads) == (session.write_token,)
 
 
 def test_s3_transport_and_source_boundary_are_adapter_owned() -> None:
