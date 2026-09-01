@@ -315,6 +315,7 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
+        "RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):

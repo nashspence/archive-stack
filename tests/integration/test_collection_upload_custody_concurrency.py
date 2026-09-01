@@ -26,11 +26,14 @@ from riverhog_core.catalog_db import (
 )
 from riverhog_core.catalog_models import (
     CollectionUploadFileRecord,
+    CollectionUploadProvenanceJournalChunkRecord,
+    CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
     TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_protocol import CollectionUploadProvenanceJournalCreateDocument
 from riverhog_protocol.errors import Conflict
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import tag_set_identity
@@ -180,6 +183,134 @@ def test_exact_concurrent_registration_is_one_append_only_planner_step(
         assert upload.planner_checkpoint_json is not None
         assert '"next_file_order":1' in upload.planner_checkpoint_json
         assert (upload.file_count, upload.file_bytes) == (1, 0)
+
+
+def test_concurrent_provenance_retry_commits_one_next_ordinal(
+    database_url: str,
+) -> None:
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000077"
+    first, second = _services(database_url)
+    opened = first.create_or_resume(
+        idempotency_key="fixture-provenance",
+        initial_tag="derived",
+        tag_set_identity_sha256=tag_set_identity(("derived",)),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="captured",
+        provenance_omission_reason=None,
+    )
+    collection_id = int(opened["collection_id"])
+    content = b"one bounded provenance append"
+    first.create_provenance_journal(
+        collection_id,
+        journal_id,
+        CollectionUploadProvenanceJournalCreateDocument(
+            bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        ),
+    )
+
+    results = _race(
+        lambda: first.append_provenance_journal(
+            collection_id, journal_id, offset=0, content=content
+        ),
+        lambda: second.append_provenance_journal(
+            collection_id, journal_id, offset=0, content=content
+        ),
+    )
+
+    assert all(not isinstance(result, Exception) for result in results)
+    with session_scope(make_session_factory(database_url)) as session:
+        journal = session.get(
+            CollectionUploadProvenanceJournalRecord,
+            (collection_id, journal_id),
+        )
+        assert journal is not None
+        assert journal.next_chunk_ordinal == 1
+        assert (
+            session.scalar(
+                select(func.count(CollectionUploadProvenanceJournalChunkRecord.ordinal)).where(
+                    CollectionUploadProvenanceJournalChunkRecord.collection_id == collection_id,
+                    CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
+                )
+            )
+            == 1
+        )
+
+
+def test_provenance_append_and_expiry_serialize_at_the_custody_fence(
+    database_url: str,
+) -> None:
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000078"
+    first, second = _services(database_url)
+    opened = first.create_or_resume(
+        idempotency_key="fixture-provenance-fence",
+        initial_tag="derived",
+        tag_set_identity_sha256=tag_set_identity(("derived",)),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="captured",
+        provenance_omission_reason=None,
+        custody_mode="custody-transfer",
+    )
+    collection_id = int(opened["collection_id"])
+    content = b"one fenced provenance append"
+    first.create_provenance_journal(
+        collection_id,
+        journal_id,
+        CollectionUploadProvenanceJournalCreateDocument(
+            bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+        ),
+    )
+    _expire(database_url, collection_id)
+
+    appended, reaped = _race(
+        lambda: first.append_provenance_journal(
+            collection_id, journal_id, offset=0, content=content
+        ),
+        lambda: second.reap_expired_custody_transfers(),
+    )
+    state = str(first.get(collection_id)["state"])
+
+    with session_scope(make_session_factory(database_url)) as session:
+        journal = session.get(
+            CollectionUploadProvenanceJournalRecord,
+            (collection_id, journal_id),
+        )
+        assert journal is not None
+        if state == "open":
+            assert not isinstance(appended, Exception)
+            assert reaped == 0
+            assert journal.next_chunk_ordinal == 1
+        else:
+            assert state == "orphaned"
+            assert isinstance(appended, Conflict)
+            assert reaped == 1
+            assert journal.next_chunk_ordinal == 0
+
+    if state == "orphaned":
+        resumed = first.create_or_resume(
+            idempotency_key="fixture-provenance-fence",
+            initial_tag="derived",
+            tag_set_identity_sha256=tag_set_identity(("derived",)),
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="captured",
+            provenance_omission_reason=None,
+            custody_mode="custody-transfer",
+        )
+        assert resumed["state"] == "open"
+        current = first.append_provenance_journal(
+            collection_id, journal_id, offset=0, content=content
+        )
+        assert current["accepted_bytes"] == len(content)
 
 
 def test_heartbeat_and_expiry_serialize_without_losing_resumable_custody(

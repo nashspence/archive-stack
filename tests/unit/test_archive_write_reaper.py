@@ -79,6 +79,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         requeue_interrupted_verifications_for_startup=Mock(return_value=0),
         process_due_verifications=Mock(return_value=0),
     )
+    lifecycle_events = SimpleNamespace(reap_expired_contexts=Mock(return_value=1))
     container = cast(
         ServiceContainer,
         SimpleNamespace(
@@ -87,6 +88,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             archive_copies=archive_copies,
             archive_maintenance=archive_maintenance,
             provenance=provenance,
+            lifecycle_events=lifecycle_events,
         ),
     )
 
@@ -105,6 +107,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_workflows.process_due_outcome_sets.assert_called_once_with(limit=1)
     provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
     provenance.process_due_verifications.assert_called_once_with(limit=1)
+    lifecycle_events.reap_expired_contexts.assert_called_once_with()
 
 
 def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> None:
@@ -139,6 +142,7 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
                     requeue_interrupted_verifications_for_startup=zero,
                     process_due_verifications=zero,
                 ),
+                lifecycle_events=SimpleNamespace(reap_expired_contexts=zero),
             ),
         )
         task = asyncio.create_task(

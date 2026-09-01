@@ -191,6 +191,7 @@ class RuntimeConfig:
     public_base_url: str | None = None
     event_source: str = "urn:riverhog"
     event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
+    event_context_reap_batch_size: int = 100
     browse_token_signing_key: str = DEFAULT_BROWSE_TOKEN_SIGNING_KEY
     browse_require_explicit_signing_key: bool = False
     browse_token_lifetime: timedelta = field(default_factory=lambda: timedelta(hours=24))
@@ -211,6 +212,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
         if self.event_context_retention.total_seconds() <= 0:
             raise ValueError("RIVERHOG_EVENT_CONTEXT_RETENTION must be > 0")
+        if self.event_context_reap_batch_size < 1:
+            raise ValueError("RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE must be positive")
         if self.collection_upload_custody_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE must be > 0")
         if not self.database_url:
@@ -654,6 +657,11 @@ def load_runtime_config() -> RuntimeConfig:
         event_source=os.getenv("RIVERHOG_EVENT_SOURCE", "urn:riverhog").strip(),
         event_context_retention=parse_duration(
             os.getenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "30d")
+        ),
+        event_context_reap_batch_size=_parse_int(
+            os.getenv("RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE", "100"),
+            name="RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE",
+            minimum=1,
         ),
         browse_token_signing_key=os.getenv(
             "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY",

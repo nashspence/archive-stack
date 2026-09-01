@@ -69,3 +69,9 @@ def archive_object_order_type() -> CanonicalUnsignedInteger:
     # sequence domains are exhausted. The fixed 65-hex-digit private encoding
     # therefore uses its complete 260-bit storage domain.
     return CanonicalUnsignedInteger(bits=260)
+
+
+def authority_ordinal_type() -> CanonicalUnsignedInteger:
+    """Return the private database encoding for a durable authority ordinal."""
+
+    return CanonicalUnsignedInteger(bits=256)
