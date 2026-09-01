@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import hmac
 import json
 import time
-from collections.abc import Iterable, Mapping
-from itertools import zip_longest
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Protocol
 
+from riverhog_protocol.collection_workflow_transport import DISPOSITION_BATCH_MAX
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
     ArtifactDispositionOutput,
@@ -22,6 +21,7 @@ from stove0_target_protocol import (
     InputDispositionDeclaration,
     OperationContract,
     OutputArtifact,
+    OutputArtifactRoleCount,
     OutputArtifactSetIdentity,
     OutputSourceEdge,
     TargetCallbackAccess,
@@ -30,10 +30,18 @@ from stove0_target_protocol import (
     TargetProductionAuthorityPayload,
     TargetProductionSealResponse,
     update_input_disposition_commitment,
+    update_output_artifact_commitment,
     update_output_source_edge_commitment,
 )
 
-from stove0_core.work_state import WorkRecord, WorkStore
+from stove0_core._checkpoint_sha256 import CheckpointSHA256
+from stove0_core.work_state import (
+    ConcurrentWorkUpdate,
+    TargetProductionSealCheckpoint,
+    TargetProductionSealRecord,
+    WorkRecord,
+    WorkStore,
+)
 
 CallbackAction = Literal[
     "inputs:read",
@@ -50,12 +58,22 @@ class OperationAuthority(Protocol):
 
 
 class ProductionProjector(Protocol):
-    def project_target_production(
+    def project_target_dispositions(
         self,
         record: WorkRecord,
-        dispositions: Iterable[ArtifactDisposition],
-        edges: Iterable[ArtifactDispositionOutput],
-    ) -> ArtifactDispositionSetIdentity: ...
+        dispositions: Sequence[ArtifactDisposition],
+    ) -> None: ...
+
+    def project_target_source_edges(
+        self,
+        record: WorkRecord,
+        edges: Sequence[ArtifactDispositionOutput],
+    ) -> None: ...
+
+    def seal_target_projection(
+        self,
+        record: WorkRecord,
+    ) -> ArtifactDispositionSetIdentity | None: ...
 
 
 def _b64encode(value: bytes) -> str:
@@ -80,6 +98,7 @@ class TargetCallbackAuthority:
         ttl_seconds: int,
         operations: OperationAuthority | None = None,
         projector: ProductionProjector | None = None,
+        seal_batch_size: int = 100,
     ) -> None:
         if len(signing_key.encode("utf-8")) < 16:
             raise ValueError("target callback signing key is too short")
@@ -96,12 +115,19 @@ class TargetCallbackAuthority:
         self.ttl_seconds = ttl_seconds
         self.operations = operations
         self.projector = projector
+        if seal_batch_size < 1 or seal_batch_size > DISPOSITION_BATCH_MAX:
+            raise ValueError(
+                f"target production seal batch size must be between 1 and {DISPOSITION_BATCH_MAX}"
+            )
+        self.seal_batch_size = seal_batch_size
 
     def issue_access(
         self,
         record: WorkRecord,
         target_registration_id: str,
     ) -> TargetCallbackAccess:
+        job_id = _target_job_id(record)
+        self.store.ensure_target_production_receiving(record.work_id, job_id)
         payload = self._payload(
             record,
             target_registration_id,
@@ -161,7 +187,7 @@ class TargetCallbackAuthority:
 
     def declare_output(self, token: str, *, job_id: str, output: OutputArtifact) -> None:
         record, _ = self._authorize(token, action="outputs:declare", job_id=job_id)
-        self.store.record_target_output(record.work_id, output)
+        self.store.record_target_output(record.work_id, job_id, output)
 
     def declare_disposition(
         self,
@@ -171,7 +197,7 @@ class TargetCallbackAuthority:
         disposition: InputDispositionDeclaration,
     ) -> None:
         record, _ = self._authorize(token, action="dispositions:declare", job_id=job_id)
-        self.store.record_target_disposition(record.work_id, disposition)
+        self.store.record_target_disposition(record.work_id, job_id, disposition)
 
     def declare_source_edge(
         self,
@@ -181,7 +207,7 @@ class TargetCallbackAuthority:
         edge: OutputSourceEdge,
     ) -> None:
         record, _ = self._authorize(token, action="source-edges:declare", job_id=job_id)
-        self.store.record_target_source_edge(record.work_id, edge)
+        self.store.record_target_source_edge(record.work_id, job_id, edge)
 
     def seal_production(self, token: str, *, job_id: str) -> TargetProductionSealResponse:
         record, _ = self._authorize(token, action="production:seal", job_id=job_id)
@@ -189,56 +215,212 @@ class TargetCallbackAuthority:
             raise RuntimeError("target production settlement is unavailable")
         if record.workflow_plan is None or record.target_plan is None:
             raise RuntimeError("target production has no sealed plan")
-        operation = self.operations.operation_contract(record.workflow_plan.operation)
-        outputs = OutputArtifactSetIdentity.seal_iterable(
-            self.store.iter_target_outputs(record.work_id)
-        )
-        _validate_output_roles(outputs, operation)
-        disposition_count, disposition_sha256 = self._validate_dispositions(record, operation)
-        source_edge_count, source_edge_sha256 = self._validate_edges(record, operation)
-        generic = self.projector.project_target_production(
-            record,
-            self._generic_dispositions(record),
-            self._generic_edges(record),
-        )
-        if (
-            generic.disposition_count != disposition_count
-            or generic.output_edge_count != source_edge_count
-            or generic.output_artifact_count != outputs.artifact_count
-        ):
-            raise RuntimeError("Riverhog sealed a different generic derivation authority")
-        production = TargetProductionAuthority.seal(
-            TargetProductionAuthorityPayload(
-                job_id=job_id,
-                plan_sha256=record.target_plan.plan_sha256,
-                outputs=outputs,
-                disposition_count=disposition_count,
-                disposition_sha256=disposition_sha256,
-                source_edge_count=source_edge_count,
-                source_edge_sha256=source_edge_sha256,
-                riverhog_disposition_set=generic,
+        seal = self.store.ensure_target_production_receiving(record.work_id, job_id)
+        if seal.state == "receiving":
+            seal = self._replace_seal(
+                seal,
+                state="sealing",
+                checkpoint=TargetProductionSealCheckpoint(
+                    output_hash_state=CheckpointSHA256().export_state(),
+                    disposition_hash_state=CheckpointSHA256().export_state(),
+                    source_edge_hash_state=CheckpointSHA256().export_state(),
+                ),
             )
-        )
+        if seal.state == "failed":
+            raise ValueError(seal.failure or "target production sealing failed")
+        if seal.state == "sealing":
+            try:
+                self._advance_seal(record.work_id, job_id)
+            except ConcurrentWorkUpdate:
+                # Another callback or scheduler worker durably advanced the same
+                # immutable checkpoint. Re-read that authority instead of exposing
+                # ordinary concurrent progress as a target failure.
+                pass
+            loaded = self.store.load_target_production_seal(record.work_id, job_id)
+            if loaded is None:
+                raise RuntimeError("target production seal disappeared")
+            seal = loaded
+        if seal.state == "failed":
+            raise ValueError(seal.failure or "target production sealing failed")
         return TargetProductionSealResponse(
-            production=production,
+            state="sealed" if seal.state == "sealed" else "sealing",
+            production=seal.production,
         )
 
-    def _validate_dispositions(
+    def process_due_production_seals(self, *, limit: int = 1) -> int:
+        seals = self.store.scan_target_production_seals(state="sealing", limit=limit)
+        for seal in seals:
+            try:
+                self._advance_seal(seal.work_id, seal.job_id)
+            except ConcurrentWorkUpdate:
+                continue
+        return len(seals)
+
+    def _advance_seal(self, work_id: str, job_id: str) -> None:
+        seal = self.store.load_target_production_seal(work_id, job_id)
+        record = self.store.load(work_id)
+        if seal is None or seal.state != "sealing" or seal.checkpoint is None:
+            return
+        current_job = (
+            record.controller_evidence.execution_envelope.execution_envelope_sha256
+            if record is not None and record.controller_evidence is not None
+            else None
+        )
+        if record is not None and current_job != job_id:
+            self._replace_seal(
+                seal,
+                state="failed",
+                checkpoint=None,
+                failure="target execution generation was retired",
+            )
+            return
+        if (
+            record is None
+            or record.workflow_plan is None
+            or record.target_plan is None
+            or record.controller_evidence is None
+            or self.operations is None
+            or self.projector is None
+        ):
+            raise RuntimeError("target production work authority is unavailable")
+        operation = self.operations.operation_contract(record.workflow_plan.operation)
+        try:
+            checkpoint, production = self._advance_checkpoint(
+                record,
+                operation,
+                seal.checkpoint,
+            )
+        except ValueError as exc:
+            self._replace_seal(
+                seal,
+                state="failed",
+                checkpoint=None,
+                failure=str(exc)[:1000],
+            )
+            raise
+        if production is not None:
+            self._replace_seal(
+                seal,
+                state="sealed",
+                checkpoint=None,
+                production=production,
+            )
+        elif checkpoint != seal.checkpoint:
+            self._replace_seal(seal, checkpoint=checkpoint)
+
+    def _advance_checkpoint(
         self,
         record: WorkRecord,
         operation: OperationContract,
-    ) -> tuple[int, str]:
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> tuple[TargetProductionSealCheckpoint, TargetProductionAuthority | None]:
         assert record.target_plan is not None
-        declarations = self.store.iter_target_dispositions(record.work_id)
+        if checkpoint.phase == "outputs":
+            return self._advance_outputs(record, operation, checkpoint), None
+        if checkpoint.phase == "dispositions":
+            return self._advance_dispositions(record, operation, checkpoint), None
+        if checkpoint.phase == "source-edges":
+            return self._advance_source_edges(record, operation, checkpoint), None
+        if checkpoint.phase == "source-inputs":
+            return self._advance_source_inputs(record, checkpoint), None
+        if checkpoint.phase == "project-dispositions":
+            return self._project_dispositions(record, checkpoint), None
+        if checkpoint.phase == "project-source-edges":
+            return self._project_source_edges(record, checkpoint), None
+        if checkpoint.phase != "riverhog-seal":
+            raise RuntimeError("target production seal has no current phase")
+        assert self.projector is not None
+        generic = self.projector.seal_target_projection(record)
+        if generic is None:
+            return checkpoint, None
+        outputs = _output_identity(checkpoint)
+        if (
+            generic.disposition_count != checkpoint.disposition_count
+            or generic.output_edge_count != checkpoint.source_edge_count
+            or generic.output_artifact_count != checkpoint.output_count
+        ):
+            raise ValueError("Riverhog sealed a different generic derivation authority")
+        if record.controller_evidence is None:
+            raise RuntimeError("target production has no controller evidence")
+        return checkpoint, TargetProductionAuthority.seal(
+            TargetProductionAuthorityPayload(
+                job_id=record.controller_evidence.execution_envelope.execution_envelope_sha256,
+                plan_sha256=record.target_plan.plan_sha256,
+                outputs=outputs,
+                disposition_count=checkpoint.disposition_count,
+                disposition_sha256=CheckpointSHA256.from_state(
+                    checkpoint.disposition_hash_state
+                ).hexdigest(),
+                source_edge_count=checkpoint.source_edge_count,
+                source_edge_sha256=CheckpointSHA256.from_state(
+                    checkpoint.source_edge_hash_state
+                ).hexdigest(),
+                riverhog_disposition_set=generic,
+            )
+        )
+
+    def _advance_outputs(
+        self,
+        record: WorkRecord,
+        operation: OperationContract,
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
+        page = self.store.target_output_page(
+            record.work_id,
+            _target_job_id(record),
+            after_id=checkpoint.output_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            _validate_output_roles(_output_identity(checkpoint), operation)
+            return checkpoint.model_copy(update={"phase": "dispositions"})
+        digest = CheckpointSHA256.from_state(checkpoint.output_hash_state)
+        counts = {item.role: item.count for item in checkpoint.output_roles}
+        count = checkpoint.output_count
+        for output in page:
+            update_output_artifact_commitment(digest, ordinal=count, artifact=output)
+            counts[output.role] = counts.get(output.role, 0) + 1
+            count += 1
+        return checkpoint.model_copy(
+            update={
+                "output_cursor": page[-1].id,
+                "output_hash_state": digest.export_state(),
+                "output_count": count,
+                "output_bytes": checkpoint.output_bytes + sum(item.bytes for item in page),
+                "output_roles": tuple(
+                    OutputArtifactRoleCount(role=role, count=value)
+                    for role, value in sorted(counts.items())
+                ),
+            }
+        )
+
+    def _advance_dispositions(
+        self,
+        record: WorkRecord,
+        operation: OperationContract,
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
+        assert record.target_plan is not None
+        page = self.store.target_disposition_page(
+            record.work_id,
+            _target_job_id(record),
+            after_id=checkpoint.disposition_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            if checkpoint.disposition_count != record.target_plan.inputs.selection.artifact_count:
+                raise ValueError("target dispositions must cover the exact input authority")
+            return checkpoint.model_copy(update={"phase": "source-edges"})
         contracts = {item.role: item for item in operation.inputs}
-        digest = hashlib.sha256()
-        count = 0
-        for declaration in declarations:
+        digest = CheckpointSHA256.from_state(checkpoint.disposition_hash_state)
+        count = checkpoint.disposition_count
+        transformed = checkpoint.transformed_count
+        for declaration in page:
             subject = self.store.load_selection_artifact(
                 record.target_plan.inputs.selection.selection_sha256,
                 declaration.input_id,
             )
-            if subject is None:
+            if subject is None or subject.role not in contracts:
                 raise ValueError("target dispositions must cover the exact input authority")
             allowed = contracts[subject.role].allowed_dispositions
             if allowed is None or declaration.status not in allowed:
@@ -251,82 +433,194 @@ class TargetCallbackAuthority:
                 disposition=declaration,
             )
             count += 1
-        if count != record.target_plan.inputs.selection.artifact_count:
-            raise ValueError("target dispositions must cover the exact input authority")
-        return count, digest.hexdigest()
+            transformed += int(declaration.status == "transformed")
+        return checkpoint.model_copy(
+            update={
+                "disposition_cursor": page[-1].input_id,
+                "disposition_hash_state": digest.export_state(),
+                "disposition_count": count,
+                "transformed_count": transformed,
+            }
+        )
 
-    def _validate_edges(
+    def _advance_source_edges(
         self,
         record: WorkRecord,
         operation: OperationContract,
-    ) -> tuple[int, str]:
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
         assert record.target_plan is not None
+        page = self.store.target_source_edge_page(
+            record.work_id,
+            _target_job_id(record),
+            order="output",
+            after_output_id=checkpoint.source_edge_output_cursor,
+            after_input_id=checkpoint.source_edge_input_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            if (
+                checkpoint.source_edge_count == 0
+                or checkpoint.source_output_count != checkpoint.output_count
+            ):
+                raise ValueError("every target output must have source-edge evidence")
+            return checkpoint.model_copy(update={"phase": "source-inputs"})
         output_contracts = {item.role: item for item in operation.outputs}
-        digest = hashlib.sha256()
-        count = 0
-        last_output_id: str | None = None
-        outputs_with_edges = 0
-        for edge in self.store.iter_target_source_edges(record.work_id):
-            output = self.store.load_target_output(record.work_id, edge.output_id)
+        digest = CheckpointSHA256.from_state(checkpoint.source_edge_hash_state)
+        count = checkpoint.source_edge_count
+        output_count = checkpoint.source_output_count
+        last_output = checkpoint.last_source_output_id
+        for edge in page:
+            job_id = _target_job_id(record)
+            output = self.store.load_target_output(record.work_id, job_id, edge.output_id)
             source = self.store.load_selection_artifact(
                 record.target_plan.inputs.selection.selection_sha256,
                 edge.input_id,
             )
-            disposition = self.store.load_target_disposition(record.work_id, edge.input_id)
-            if output is None or source is None or disposition is None:
+            disposition = self.store.load_target_disposition(record.work_id, job_id, edge.input_id)
+            contract = output_contracts.get(output.role) if output is not None else None
+            if output is None or source is None or disposition is None or contract is None:
                 raise ValueError("target source edge references an undeclared authority member")
             if disposition.status != "transformed":
                 raise ValueError("only transformed inputs may produce source edges")
-            if source.role not in output_contracts[output.role].derived_from_roles:
+            if source.role not in contract.derived_from_roles:
                 raise ValueError("target source edge violates the output role contract")
             update_output_source_edge_commitment(digest, ordinal=count, edge=edge)
             count += 1
-            if edge.output_id != last_output_id:
-                outputs_with_edges += 1
-                last_output_id = edge.output_id
-        output_count = sum(1 for _ in self.store.iter_target_outputs(record.work_id))
-        if count == 0 or outputs_with_edges != output_count:
-            raise ValueError("every target output must have source-edge evidence")
-        transformed = (
-            item.input_id
-            for item in self.store.iter_target_dispositions(record.work_id)
-            if item.status == "transformed"
+            if edge.output_id != last_output:
+                output_count += 1
+                last_output = edge.output_id
+        return checkpoint.model_copy(
+            update={
+                "source_edge_output_cursor": page[-1].output_id,
+                "source_edge_input_cursor": page[-1].input_id,
+                "source_edge_hash_state": digest.export_state(),
+                "source_edge_count": count,
+                "source_output_count": output_count,
+                "last_source_output_id": last_output,
+            }
         )
-        edge_inputs = _unique_edge_inputs(
-            self.store.iter_target_source_edges_by_input(record.work_id)
-        )
-        if any(left != right for left, right in zip_longest(transformed, edge_inputs)):
-            raise ValueError("every transformed input must have source-edge evidence")
-        return count, digest.hexdigest()
 
-    def _generic_dispositions(self, record: WorkRecord) -> Iterable[ArtifactDisposition]:
-        assert record.target_plan is not None
-        selection_sha256 = record.target_plan.inputs.selection.selection_sha256
-        for declaration in self.store.iter_target_dispositions(record.work_id):
-            subject = self.store.load_selection_artifact(selection_sha256, declaration.input_id)
+    def _advance_source_inputs(
+        self,
+        record: WorkRecord,
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
+        page = self.store.target_source_edge_page(
+            record.work_id,
+            _target_job_id(record),
+            order="input",
+            after_output_id=checkpoint.source_input_output_cursor,
+            after_input_id=checkpoint.source_input_input_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            if checkpoint.source_input_count != checkpoint.transformed_count:
+                raise ValueError("every transformed input must have source-edge evidence")
+            return checkpoint.model_copy(update={"phase": "project-dispositions"})
+        input_count = checkpoint.source_input_count
+        last_input = checkpoint.last_source_input_id
+        for edge in page:
+            if edge.input_id != last_input:
+                input_count += 1
+                last_input = edge.input_id
+        return checkpoint.model_copy(
+            update={
+                "source_input_output_cursor": page[-1].output_id,
+                "source_input_input_cursor": page[-1].input_id,
+                "source_input_count": input_count,
+                "last_source_input_id": last_input,
+            }
+        )
+
+    def _project_dispositions(
+        self,
+        record: WorkRecord,
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
+        assert record.target_plan is not None and self.projector is not None
+        page = self.store.target_disposition_page(
+            record.work_id,
+            _target_job_id(record),
+            after_id=checkpoint.projected_disposition_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            return checkpoint.model_copy(update={"phase": "project-source-edges"})
+        selection = record.target_plan.inputs.selection.selection_sha256
+        projected: list[ArtifactDisposition] = []
+        for declaration in page:
+            subject = self.store.load_selection_artifact(selection, declaration.input_id)
             if subject is None:
-                raise RuntimeError("target disposition input disappeared")
-            yield ArtifactDisposition(
-                input_collection_id=subject.collection.collection_id,
-                input_archive_root_sha256=subject.collection.archive_root_sha256,
-                input_path=subject.path,
-                status=declaration.status,
+                raise ValueError("target disposition input disappeared")
+            projected.append(
+                ArtifactDisposition(
+                    input_collection_id=subject.collection.collection_id,
+                    input_archive_root_sha256=subject.collection.archive_root_sha256,
+                    input_path=subject.path,
+                    status=declaration.status,
+                )
             )
+        self.projector.project_target_dispositions(record, projected)
+        return checkpoint.model_copy(update={"projected_disposition_cursor": page[-1].input_id})
 
-    def _generic_edges(self, record: WorkRecord) -> Iterable[ArtifactDispositionOutput]:
-        assert record.target_plan is not None
-        selection_sha256 = record.target_plan.inputs.selection.selection_sha256
-        for edge in self.store.iter_target_source_edges(record.work_id):
-            subject = self.store.load_selection_artifact(selection_sha256, edge.input_id)
-            output = self.store.load_target_output(record.work_id, edge.output_id)
-            if subject is None or output is None:
-                raise RuntimeError("target source edge authority disappeared")
-            yield ArtifactDispositionOutput(
-                input_collection_id=subject.collection.collection_id,
-                input_archive_root_sha256=subject.collection.archive_root_sha256,
-                input_path=subject.path,
-                output_path=output.path,
+    def _project_source_edges(
+        self,
+        record: WorkRecord,
+        checkpoint: TargetProductionSealCheckpoint,
+    ) -> TargetProductionSealCheckpoint:
+        assert record.target_plan is not None and self.projector is not None
+        page = self.store.target_source_edge_page(
+            record.work_id,
+            _target_job_id(record),
+            order="output",
+            after_output_id=checkpoint.projected_source_output_cursor,
+            after_input_id=checkpoint.projected_source_input_cursor,
+            limit=self.seal_batch_size,
+        )
+        if not page:
+            return checkpoint.model_copy(update={"phase": "riverhog-seal"})
+        selection = record.target_plan.inputs.selection.selection_sha256
+        projected: list[ArtifactDispositionOutput] = []
+        for edge in page:
+            subject = self.store.load_selection_artifact(selection, edge.input_id)
+            output = self.store.load_target_output(
+                record.work_id, _target_job_id(record), edge.output_id
             )
+            if subject is None or output is None:
+                raise ValueError("target source edge authority disappeared")
+            projected.append(
+                ArtifactDispositionOutput(
+                    input_collection_id=subject.collection.collection_id,
+                    input_archive_root_sha256=subject.collection.archive_root_sha256,
+                    input_path=subject.path,
+                    output_path=output.path,
+                )
+            )
+        self.projector.project_target_source_edges(record, projected)
+        return checkpoint.model_copy(
+            update={
+                "projected_source_output_cursor": page[-1].output_id,
+                "projected_source_input_cursor": page[-1].input_id,
+            }
+        )
+
+    def _replace_seal(
+        self,
+        seal: TargetProductionSealRecord,
+        **updates: object,
+    ) -> TargetProductionSealRecord:
+        replacement = TargetProductionSealRecord.model_validate(
+            seal.model_copy(update={**updates, "revision": seal.revision + 1}).model_dump(
+                mode="python"
+            )
+        )
+        return self.store.compare_and_swap_target_production_seal(
+            seal.work_id,
+            seal.job_id,
+            expected_revision=seal.revision,
+            replacement=replacement,
+        )
 
     def _payload(
         self,
@@ -418,12 +712,19 @@ def _validate_output_roles(
             raise ValueError(f"target output role cardinality is invalid: {role}")
 
 
-def _unique_edge_inputs(edges: Iterable[OutputSourceEdge]) -> Iterable[str]:
-    previous: str | None = None
-    for edge in edges:
-        if edge.input_id != previous:
-            yield edge.input_id
-            previous = edge.input_id
+def _target_job_id(record: WorkRecord) -> str:
+    if record.controller_evidence is None:
+        raise RuntimeError("target execution has no immutable job identity")
+    return record.controller_evidence.execution_envelope.execution_envelope_sha256
+
+
+def _output_identity(checkpoint: TargetProductionSealCheckpoint) -> OutputArtifactSetIdentity:
+    return OutputArtifactSetIdentity(
+        artifact_count=checkpoint.output_count,
+        total_bytes=checkpoint.output_bytes,
+        roles=checkpoint.output_roles,
+        sha256=CheckpointSHA256.from_state(checkpoint.output_hash_state).hexdigest(),
+    )
 
 
 __all__ = ["TargetCallbackAuthority"]

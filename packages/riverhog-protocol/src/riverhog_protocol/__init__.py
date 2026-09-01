@@ -91,7 +91,10 @@ from riverhog_protocol.collection_workflow_transport import (
     TransformCapabilityDocument,
 )
 from riverhog_protocol.collection_workflows import (
+    DERIVATION_DISPOSITION_EVIDENCE_PREFIX,
+    DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH,
     DERIVATION_EVIDENCE_PATH,
+    DERIVATION_OUTPUT_EVIDENCE_PREFIX,
     PRODUCER_EVIDENCE_PATH,
     ArtifactDisposition,
     CollectionArtifactIdentity,
@@ -104,7 +107,9 @@ from riverhog_protocol.collection_workflows import (
     TransformIntent,
     canonical_json_bytes,
     canonical_json_sha256,
+    derivation_evidence_page_path,
 )
+from riverhog_protocol.derivation_evidence import verify_derivation_evidence
 from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.lifecycle_events import (
     COLLECTION_FINALIZED,
@@ -203,6 +208,9 @@ __all__ += [
     "CollectionId",
     "CollectionIdParameter",
     "DERIVATION_EVIDENCE_PATH",
+    "DERIVATION_DISPOSITION_EVIDENCE_PREFIX",
+    "DERIVATION_OUTPUT_EVIDENCE_PREFIX",
+    "DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH",
     "OperationIdentity",
     "FileProvenanceBinding",
     "ImmutableFileIdentityDocument",
@@ -218,11 +226,13 @@ __all__ += [
     "RetrievalCacheStoreName",
     "ArchiveCopyStoreSelectionDocument",
     "collection_upload_raw_digest_summary",
+    "derivation_evidence_page_path",
     "collection_upload_path_order_key",
     "validate_collection_upload_artifact_custody_receipt",
     "validate_collection_upload_batch_against_registration_constraints",
     "validate_archive_store_name",
     "validate_collection_id",
+    "verify_derivation_evidence",
     "canonical_json_bytes",
     "canonical_json_sha256",
     "COLLECTION_UPLOAD_FILE_BATCH_MAX",

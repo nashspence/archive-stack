@@ -7,11 +7,8 @@ settlement verification. It never receives or exposes archive credentials.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
-import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from itertools import zip_longest
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal, Protocol
 
 from riverhog_protocol import Conflict, NotFound
@@ -39,7 +36,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.paths import tag_set_identity
 from riverhog_protocol.portable_collection import PortableCollectionInventoryPage
 from stove0_observer_protocol import ObservationRequest, ObserverRuntimeAuthority
@@ -54,8 +50,6 @@ from stove0_protocol import (
 )
 from stove0_target_protocol import (
     InputArtifact,
-    OperationContract,
-    OutputArtifact,
     OutputCollectionRef,
     TargetOutputBinding,
     TargetOutputBindingSetIdentity,
@@ -66,11 +60,19 @@ from stove0_target_protocol import (
     update_target_output_binding_commitment,
 )
 
+from stove0_core._checkpoint_sha256 import CheckpointSHA256
 from stove0_core.coordinator import (
     ParentOutcomeBinding,
     TargetInvocationAuthority,
 )
-from stove0_core.work_state import ClaimBinding, WorkRecord
+from stove0_core.work_state import (
+    ClaimBinding,
+    ConcurrentWorkUpdate,
+    TargetSettlementSealCheckpoint,
+    TargetSettlementSealRecord,
+    WorkRecord,
+    WorkStore,
+)
 
 WorkspaceAssurance = Literal["encrypted", "ephemeral"]
 
@@ -264,39 +266,6 @@ def _verify_disposition_authority(
         raise RuntimeError("Riverhog generic derivation authority changed")
 
 
-def _portable_payload_files(
-    api: RiverhogApi,
-    output: OutputCollectionRef,
-) -> Iterator[ImmutableFileIdentityDocument]:
-    cursor: str | None = None
-    identity: str | None = None
-    while True:
-        page = api.get_portable_collection_inventory(
-            output.collection_id,
-            cursor=cursor,
-            limit=1000,
-            inventory_identity=identity,
-        )
-        authority = page.authority
-        if identity is None:
-            identity = authority.inventory_identity
-        elif authority.inventory_identity != identity:
-            raise RuntimeError("Riverhog output inventory changed during settlement")
-        if (
-            authority.header.collection != output.collection_id
-            or authority.header.content_identity != output.content_identity
-        ):
-            raise RuntimeError("Riverhog output inventory binds another collection")
-        for file in page.files:
-            if not file.path.startswith("riverhog/"):
-                yield file
-        if page.complete:
-            return
-        if page.next_cursor is None:
-            raise RuntimeError("Riverhog output inventory ended without completion")
-        cursor = page.next_cursor
-
-
 def _collection_tags(api: RiverhogApi, collection_id: int) -> tuple[str, ...]:
     page_token: str | None = None
     authority: tuple[int, str] | None = None
@@ -341,6 +310,8 @@ class Stove0RiverhogClient:
         capability_ttl_seconds: int = 15 * 60,
         workspace_assurance: WorkspaceAssurance = "encrypted",
         claim_purpose: str = "stove0-collection-work/v1",
+        state: WorkStore | None = None,
+        authority_batch_size: int = 100,
     ) -> None:
         if claim_lease_seconds < 30 or capability_ttl_seconds < 30:
             raise ValueError("Riverhog claim and capability lifetimes must be at least 30 seconds")
@@ -349,62 +320,60 @@ class Stove0RiverhogClient:
         purpose = claim_purpose.strip()
         if not purpose:
             raise ValueError("Riverhog claim purpose must be visible")
+        if authority_batch_size < 1 or authority_batch_size > DISPOSITION_BATCH_MAX:
+            raise ValueError(
+                f"Stove0 authority batch size must be between 1 and {DISPOSITION_BATCH_MAX}"
+            )
         self.api = api
         self.claim_lease_seconds = claim_lease_seconds
         self.capability_ttl_seconds = capability_ttl_seconds
         self.workspace_assurance = workspace_assurance
         self.claim_purpose = purpose
+        self.state = state
+        self.authority_batch_size = authority_batch_size
 
-    def project_target_production(
+    def project_target_dispositions(
         self,
         record: WorkRecord,
-        dispositions: Iterable[ArtifactDisposition],
-        edges: Iterable[ArtifactDispositionOutput],
-    ) -> ArtifactDispositionSetIdentity:
+        dispositions: Sequence[ArtifactDisposition],
+    ) -> None:
         if record.claim is None:
             raise ValueError("target production requires an active Riverhog claim")
-        fact_batch: list[Mapping[str, Any]] = []
-        for disposition in dispositions:
-            fact_batch.append(disposition.as_dict())
-            if len(fact_batch) == DISPOSITION_BATCH_MAX:
-                self.api.record_processing_claim_dispositions(
-                    record.claim.claim_id,
-                    fence=record.claim.fence,
-                    dispositions=fact_batch,
-                )
-                fact_batch = []
-        if fact_batch:
-            self.api.record_processing_claim_dispositions(
-                record.claim.claim_id,
-                fence=record.claim.fence,
-                dispositions=fact_batch,
-            )
-        edge_batch: list[Mapping[str, Any]] = []
-        for edge in edges:
-            edge_batch.append(edge.as_dict())
-            if len(edge_batch) == DISPOSITION_BATCH_MAX:
-                self.api.record_processing_claim_disposition_outputs(
-                    record.claim.claim_id,
-                    fence=record.claim.fence,
-                    outputs=edge_batch,
-                )
-                edge_batch = []
-        if edge_batch:
-            self.api.record_processing_claim_disposition_outputs(
-                record.claim.claim_id,
-                fence=record.claim.fence,
-                outputs=edge_batch,
-            )
+        if not dispositions or len(dispositions) > DISPOSITION_BATCH_MAX:
+            raise ValueError("target disposition projection batch is invalid")
+        self.api.record_processing_claim_dispositions(
+            record.claim.claim_id,
+            fence=record.claim.fence,
+            dispositions=[item.as_dict() for item in dispositions],
+        )
+
+    def project_target_source_edges(
+        self,
+        record: WorkRecord,
+        edges: Sequence[ArtifactDispositionOutput],
+    ) -> None:
+        if record.claim is None:
+            raise ValueError("target production requires an active Riverhog claim")
+        if not edges or len(edges) > DISPOSITION_BATCH_MAX:
+            raise ValueError("target source-edge projection batch is invalid")
+        self.api.record_processing_claim_disposition_outputs(
+            record.claim.claim_id,
+            fence=record.claim.fence,
+            outputs=[item.as_dict() for item in edges],
+        )
+
+    def seal_target_projection(
+        self,
+        record: WorkRecord,
+    ) -> ArtifactDispositionSetIdentity | None:
+        if record.claim is None:
+            raise ValueError("target production requires an active Riverhog claim")
         status = self.api.seal_processing_claim_dispositions(
             record.claim.claim_id,
             fence=record.claim.fence,
         )
-        deadline = time.monotonic() + self.claim_lease_seconds
-        while status.state == "sealing":
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Riverhog did not seal target derivation evidence")
-            time.sleep(0.1)
-            status = self.api.get_processing_claim_dispositions(record.claim.claim_id)
+        if status.state == "sealing":
+            return None
         if status.state != "sealed" or status.identity is None:
             raise RuntimeError(status.failure or "Riverhog did not seal derivation evidence")
         return ArtifactDispositionSetIdentity.from_mapping(status.identity.model_dump(mode="json"))
@@ -594,10 +563,8 @@ class Stove0RiverhogClient:
     def verify_and_settle(
         self,
         record: WorkRecord,
-        operation: OperationContract,
-        outputs: Iterable[OutputArtifact],
         parent_outcome: ParentOutcomeBinding | None = None,
-    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]:
+    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority | None]:
         if (
             record.phase != "verifying"
             or record.claim is None
@@ -647,25 +614,68 @@ class Stove0RiverhogClient:
         )
         if output != target_output:
             raise RuntimeError("Riverhog output root differs from the target publication receipt")
-        settlement = self._settlement(record, output, outputs)
+        settlement = self._advance_settlement(record, output)
         return output, settlement
 
-    def _settlement(
+    def _advance_settlement(
         self,
         record: WorkRecord,
         output: OutputCollectionRef,
-        outputs: Iterable[OutputArtifact],
-    ) -> TargetSettlementAuthority:
+    ) -> TargetSettlementAuthority | None:
         assert record.target_status is not None
         assert record.target_status.production is not None
         production = record.target_status.production
-        digest = hashlib.sha256()
-        artifact_count = 0
-        total_bytes = 0
-        files = _portable_payload_files(self.api, output)
-        for declared, file in zip_longest(outputs, files):
-            if declared is None or file is None:
-                raise RuntimeError("Riverhog output collection differs from target production")
+        if self.state is None:
+            raise RuntimeError("Stove0 settlement requires its durable state authority")
+        seal = self.state.ensure_target_settlement_binding(
+            TargetSettlementSealRecord(
+                work_id=record.work_id,
+                job_id=production.job_id,
+                output_collection=output,
+                production_sha256=production.production_sha256,
+                checkpoint=TargetSettlementSealCheckpoint(
+                    binding_hash_state=CheckpointSHA256().export_state()
+                ),
+            )
+        )
+        if seal.state == "failed":
+            raise RuntimeError(seal.failure or "target settlement binding failed")
+        if seal.state == "sealed":
+            return seal.settlement
+        checkpoint = seal.checkpoint
+        assert checkpoint is not None
+        page = self.api.get_portable_collection_inventory(
+            output.collection_id,
+            cursor=checkpoint.inventory_cursor,
+            limit=self.authority_batch_size,
+            inventory_identity=checkpoint.inventory_identity,
+        )
+        authority = page.authority
+        inventory_identity = checkpoint.inventory_identity or authority.inventory_identity
+        if (
+            authority.inventory_identity != inventory_identity
+            or authority.header.collection != output.collection_id
+            or authority.header.content_identity != output.content_identity
+        ):
+            raise RuntimeError("Riverhog output inventory changed during settlement")
+        files = tuple(file for file in page.files if not file.path.startswith("riverhog/"))
+        declarations = (
+            self.state.target_output_path_page(
+                record.work_id,
+                production.job_id,
+                after_path=checkpoint.output_path_cursor,
+                limit=len(files),
+            )
+            if files
+            else ()
+        )
+        if len(declarations) != len(files):
+            raise RuntimeError("Riverhog output collection differs from target production")
+        digest = CheckpointSHA256.from_state(checkpoint.binding_hash_state)
+        artifact_count = checkpoint.artifact_count
+        total_bytes = checkpoint.total_bytes
+        output_path_cursor = checkpoint.output_path_cursor
+        for declared, file in zip(declarations, files, strict=True):
             if (
                 declared.path != file.path
                 or declared.bytes != file.bytes
@@ -688,23 +698,69 @@ class Stove0RiverhogClient:
             )
             artifact_count += 1
             total_bytes += declared.bytes
-        if (
-            artifact_count != production.outputs.artifact_count
-            or total_bytes != production.outputs.total_bytes
-        ):
-            raise RuntimeError("post-root output bindings differ from target production")
-        return TargetSettlementAuthority.seal(
-            TargetSettlementAuthorityPayload(
-                job_id=production.job_id,
-                production_sha256=production.production_sha256,
-                output_collection=output,
-                output_bindings=TargetOutputBindingSetIdentity(
-                    artifact_count=artifact_count,
-                    total_bytes=total_bytes,
-                    sha256=digest.hexdigest(),
-                ),
-            )
+            output_path_cursor = declared.path
+        if not page.complete and page.next_cursor is None:
+            raise RuntimeError("Riverhog output inventory ended without completion")
+        next_checkpoint = TargetSettlementSealCheckpoint(
+            inventory_identity=inventory_identity,
+            inventory_cursor=page.next_cursor,
+            output_path_cursor=output_path_cursor,
+            binding_hash_state=digest.export_state(),
+            artifact_count=artifact_count,
+            total_bytes=total_bytes,
         )
+        settlement: TargetSettlementAuthority | None = None
+        if page.complete:
+            if self.state.target_output_path_page(
+                record.work_id,
+                production.job_id,
+                after_path=output_path_cursor,
+                limit=1,
+            ) or (
+                artifact_count != production.outputs.artifact_count
+                or total_bytes != production.outputs.total_bytes
+            ):
+                raise RuntimeError("post-root output bindings differ from target production")
+            settlement = TargetSettlementAuthority.seal(
+                TargetSettlementAuthorityPayload(
+                    job_id=production.job_id,
+                    production_sha256=production.production_sha256,
+                    output_collection=output,
+                    output_bindings=TargetOutputBindingSetIdentity(
+                        artifact_count=artifact_count,
+                        total_bytes=total_bytes,
+                        sha256=digest.hexdigest(),
+                    ),
+                )
+            )
+        replacement = TargetSettlementSealRecord.model_validate(
+            seal.model_copy(
+                update={
+                    "revision": seal.revision + 1,
+                    "state": "sealed" if settlement is not None else "binding",
+                    "checkpoint": None if settlement is not None else next_checkpoint,
+                    "settlement": settlement,
+                }
+            ).model_dump(mode="python")
+        )
+        try:
+            sealed = self.state.compare_and_swap_target_settlement_seal(
+                record.work_id,
+                production.job_id,
+                expected_revision=seal.revision,
+                replacement=replacement,
+            )
+        except ConcurrentWorkUpdate:
+            concurrent = self.state.load_target_settlement_seal(record.work_id, production.job_id)
+            if concurrent is None:
+                raise RuntimeError("target settlement binding disappeared") from None
+            if (
+                concurrent.output_collection != output
+                or concurrent.production_sha256 != production.production_sha256
+            ):
+                raise RuntimeError("target settlement binding changed") from None
+            sealed = concurrent
+        return sealed.settlement
 
     def settle_outcomes(
         self,

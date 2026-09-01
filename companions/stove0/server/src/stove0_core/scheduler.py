@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Mapping
 from datetime import timedelta
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import CollectionDerivation
@@ -27,6 +27,12 @@ from stove0_core.work_state import ConcurrentWorkUpdate
 _TERMINAL_PHASES = frozenset({"complete", "inapplicable", "failed", "canceled"})
 _PRUNE_INTERVAL_SECONDS = 60 * 60
 SchedulerRole = Literal["controller", "worker", "combined"]
+
+
+class ProductionSealProcessor(Protocol):
+    def process_due_production_seals(self, *, limit: int = 1) -> int: ...
+
+
 _CONTROLLER_PHASES = frozenset(
     {
         "eligible",
@@ -61,6 +67,7 @@ class Stove0Scheduler:
         planner: RecipePlanner,
         coordinator: Stove0Coordinator,
         state: SqlAlchemyStateStore,
+        production_seals: ProductionSealProcessor | None = None,
         operational_state_retention_seconds: int = 30 * 24 * 60 * 60,
     ) -> None:
         if operational_state_retention_seconds < 1:
@@ -70,6 +77,7 @@ class Stove0Scheduler:
         self.planner = planner
         self.coordinator = coordinator
         self.state = state
+        self.production_seals = production_seals
         self.operational_state_retention_seconds = operational_state_retention_seconds
         self._prune_lock = threading.Lock()
         self._next_prune = 0.0
@@ -209,6 +217,8 @@ class Stove0Scheduler:
         work_limit: int = 25,
     ) -> dict[str, object]:
         pruning = self._prune_operational_state() if role in {"controller", "combined"} else None
+        if role in {"worker", "combined"} and self.production_seals is not None:
+            self.production_seals.process_due_production_seals(limit=work_limit)
         events = (
             self.ingest_events(limit=event_limit)
             if role in {"controller", "combined"}

@@ -44,12 +44,14 @@ from stove0_target_protocol import (
     InputDispositionDeclaration,
     OperationContract,
     OutputArtifact,
+    OutputArtifactRoleCount,
     OutputCollectionRef,
     OutputSourceEdge,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
     TargetPlan,
+    TargetProductionAuthority,
     TargetSettlementAuthority,
     validate_status_against_request,
 )
@@ -154,6 +156,127 @@ class PreviewAcceptance(Stove0StateModel):
         )
 
 
+TargetProductionSealState = Literal["receiving", "sealing", "sealed", "failed"]
+TargetProductionSealPhase = Literal[
+    "outputs",
+    "dispositions",
+    "source-edges",
+    "source-inputs",
+    "project-dispositions",
+    "project-source-edges",
+    "riverhog-seal",
+]
+
+
+class TargetProductionSealCheckpoint(Stove0StateModel):
+    """Private bounded progress for one immutable production declaration."""
+
+    phase: TargetProductionSealPhase = "outputs"
+    output_cursor: str | None = None
+    output_hash_state: str
+    output_count: int = Field(default=0, ge=0)
+    output_bytes: int = Field(default=0, ge=0)
+    output_roles: tuple[OutputArtifactRoleCount, ...] = ()
+    disposition_cursor: str | None = None
+    disposition_hash_state: str
+    disposition_count: int = Field(default=0, ge=0)
+    transformed_count: int = Field(default=0, ge=0)
+    source_edge_output_cursor: str | None = None
+    source_edge_input_cursor: str | None = None
+    source_edge_hash_state: str
+    source_edge_count: int = Field(default=0, ge=0)
+    source_output_count: int = Field(default=0, ge=0)
+    last_source_output_id: str | None = None
+    source_input_output_cursor: str | None = None
+    source_input_input_cursor: str | None = None
+    source_input_count: int = Field(default=0, ge=0)
+    last_source_input_id: str | None = None
+    projected_disposition_cursor: str | None = None
+    projected_source_output_cursor: str | None = None
+    projected_source_input_cursor: str | None = None
+
+    @model_validator(mode="after")
+    def canonical_roles(self) -> Self:
+        roles = [item.role for item in self.output_roles]
+        if roles != sorted(roles) or len(roles) != len(set(roles)):
+            raise ValueError("production checkpoint output roles must be unique and ordered")
+        return self
+
+
+class TargetProductionSealRecord(Stove0StateModel):
+    """Durable lifecycle for one target's pre-root production authority."""
+
+    format: Literal["stove0-target-production-seal-state/v1"] = (
+        "stove0-target-production-seal-state/v1"
+    )
+    work_id: Sha256
+    job_id: Sha256
+    revision: int = Field(default=1, ge=1)
+    state: TargetProductionSealState = "receiving"
+    checkpoint: TargetProductionSealCheckpoint | None = None
+    production: TargetProductionAuthority | None = None
+    failure: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "sealing") != (self.checkpoint is not None):
+            raise ValueError("production seal checkpoint is inconsistent with state")
+        if (self.state == "sealed") != (self.production is not None):
+            raise ValueError("production seal authority is inconsistent with state")
+        if (self.state == "failed") != (self.failure is not None):
+            raise ValueError("production seal failure is inconsistent with state")
+        if self.production is not None and self.production.job_id != self.job_id:
+            raise ValueError("production authority differs from its execution generation")
+        return self
+
+
+TargetSettlementSealState = Literal["binding", "sealed", "failed"]
+
+
+class TargetSettlementSealCheckpoint(Stove0StateModel):
+    """Private bounded progress binding declared outputs to one finalized root."""
+
+    inventory_identity: str | None = Field(default=None, min_length=1, max_length=500)
+    inventory_cursor: str | None = Field(default=None, min_length=1, max_length=2000)
+    output_path_cursor: str | None = Field(default=None, min_length=1, max_length=4096)
+    binding_hash_state: str
+    artifact_count: int = Field(default=0, ge=0)
+    total_bytes: int = Field(default=0, ge=0)
+
+
+class TargetSettlementSealRecord(Stove0StateModel):
+    """Durable post-root binding lifecycle for one immutable production authority."""
+
+    format: Literal["stove0-target-settlement-seal-state/v1"] = (
+        "stove0-target-settlement-seal-state/v1"
+    )
+    work_id: Sha256
+    job_id: Sha256
+    revision: int = Field(default=1, ge=1)
+    state: TargetSettlementSealState = "binding"
+    output_collection: OutputCollectionRef
+    production_sha256: Sha256
+    checkpoint: TargetSettlementSealCheckpoint | None = None
+    settlement: TargetSettlementAuthority | None = None
+    failure: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if (self.state == "binding") != (self.checkpoint is not None):
+            raise ValueError("target settlement checkpoint is inconsistent with state")
+        if (self.state == "sealed") != (self.settlement is not None):
+            raise ValueError("target settlement authority is inconsistent with state")
+        if (self.state == "failed") != (self.failure is not None):
+            raise ValueError("target settlement failure is inconsistent with state")
+        if self.settlement is not None and (
+            self.settlement.job_id != self.job_id
+            or self.settlement.output_collection != self.output_collection
+            or self.settlement.production_sha256 != self.production_sha256
+        ):
+            raise ValueError("target settlement authority differs from its binding state")
+        return self
+
+
 class WorkRecord(Stove0StateModel):
     format: Literal["stove0-work-record/v1"] = "stove0-work-record/v1"
     work: WorkIdentity
@@ -254,29 +377,100 @@ class WorkStore(Protocol):
         self, selection_sha256: str, artifact_id: str
     ) -> ArtifactSubject | None: ...
 
-    def record_target_output(self, work_id: str, output: OutputArtifact) -> None: ...
+    def record_target_output(self, work_id: str, job_id: str, output: OutputArtifact) -> None: ...
 
     def record_target_disposition(
-        self, work_id: str, disposition: InputDispositionDeclaration
+        self, work_id: str, job_id: str, disposition: InputDispositionDeclaration
     ) -> None: ...
 
-    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None: ...
+    def record_target_source_edge(
+        self, work_id: str, job_id: str, edge: OutputSourceEdge
+    ) -> None: ...
 
-    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None: ...
+    def ensure_target_production_receiving(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord: ...
+
+    def load_target_production_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord | None: ...
+
+    def compare_and_swap_target_production_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetProductionSealRecord,
+    ) -> TargetProductionSealRecord: ...
+
+    def scan_target_production_seals(
+        self, *, state: TargetProductionSealState, limit: int
+    ) -> tuple[TargetProductionSealRecord, ...]: ...
+
+    def ensure_target_settlement_binding(
+        self, record: TargetSettlementSealRecord
+    ) -> TargetSettlementSealRecord: ...
+
+    def load_target_settlement_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetSettlementSealRecord | None: ...
+
+    def compare_and_swap_target_settlement_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetSettlementSealRecord,
+    ) -> TargetSettlementSealRecord: ...
+
+    def load_target_output(
+        self, work_id: str, job_id: str, output_id: str
+    ) -> OutputArtifact | None: ...
 
     def load_target_disposition(
-        self, work_id: str, input_id: str
+        self, work_id: str, job_id: str, input_id: str
     ) -> InputDispositionDeclaration | None: ...
 
-    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]: ...
+    def iter_target_outputs(self, work_id: str, job_id: str) -> Iterator[OutputArtifact]: ...
 
-    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]: ...
+    def iter_target_outputs_by_path(
+        self, work_id: str, job_id: str
+    ) -> Iterator[OutputArtifact]: ...
 
-    def iter_target_dispositions(self, work_id: str) -> Iterator[InputDispositionDeclaration]: ...
+    def iter_target_dispositions(
+        self, work_id: str, job_id: str
+    ) -> Iterator[InputDispositionDeclaration]: ...
 
-    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]: ...
+    def iter_target_source_edges(self, work_id: str, job_id: str) -> Iterator[OutputSourceEdge]: ...
 
-    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]: ...
+    def iter_target_source_edges_by_input(
+        self, work_id: str, job_id: str
+    ) -> Iterator[OutputSourceEdge]: ...
+
+    def target_output_page(
+        self, work_id: str, job_id: str, *, after_id: str | None, limit: int
+    ) -> tuple[OutputArtifact, ...]: ...
+
+    def target_output_path_page(
+        self, work_id: str, job_id: str, *, after_path: str | None, limit: int
+    ) -> tuple[OutputArtifact, ...]: ...
+
+    def target_disposition_page(
+        self, work_id: str, job_id: str, *, after_id: str | None, limit: int
+    ) -> tuple[InputDispositionDeclaration, ...]: ...
+
+    def target_source_edge_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        order: Literal["output", "input"],
+        after_output_id: str | None,
+        after_input_id: str | None,
+        limit: int,
+    ) -> tuple[OutputSourceEdge, ...]: ...
 
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None: ...
 
@@ -341,9 +535,11 @@ class InMemoryWorkStore:
         self._selections: dict[str, ArtifactSelection] = {}
         self._branch_sets: dict[str, BranchSetPlan] = {}
         self._join_plans: dict[str, JoinPlan] = {}
-        self._target_outputs: dict[tuple[str, str], OutputArtifact] = {}
-        self._target_dispositions: dict[tuple[str, str], InputDispositionDeclaration] = {}
-        self._target_source_edges: dict[tuple[str, str, str], OutputSourceEdge] = {}
+        self._target_outputs: dict[tuple[str, str, str], OutputArtifact] = {}
+        self._target_dispositions: dict[tuple[str, str, str], InputDispositionDeclaration] = {}
+        self._target_source_edges: dict[tuple[str, str, str, str], OutputSourceEdge] = {}
+        self._target_production_seals: dict[tuple[str, str], TargetProductionSealRecord] = {}
+        self._target_settlement_seals: dict[tuple[str, str], TargetSettlementSealRecord] = {}
 
     def load(self, work_id: str) -> WorkRecord | None:
         with self._lock:
@@ -525,9 +721,10 @@ class InMemoryWorkStore:
                 return None
             return next((item for item in selection.artifacts if item.id == artifact_id), None)
 
-    def record_target_output(self, work_id: str, output: OutputArtifact) -> None:
+    def record_target_output(self, work_id: str, job_id: str, output: OutputArtifact) -> None:
         with self._lock:
-            key = (work_id, output.id)
+            self._require_target_production_receiving(work_id, job_id)
+            key = (work_id, job_id, output.id)
             existing = self._target_outputs.setdefault(key, output)
             if existing != output:
                 raise ConcurrentWorkUpdate("target output declaration changed")
@@ -535,47 +732,177 @@ class InMemoryWorkStore:
     def record_target_disposition(
         self,
         work_id: str,
+        job_id: str,
         disposition: InputDispositionDeclaration,
     ) -> None:
         with self._lock:
-            key = (work_id, disposition.input_id)
+            self._require_target_production_receiving(work_id, job_id)
+            key = (work_id, job_id, disposition.input_id)
             existing = self._target_dispositions.setdefault(key, disposition)
             if existing != disposition:
                 raise ConcurrentWorkUpdate("target input disposition changed")
 
-    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None:
+    def record_target_source_edge(self, work_id: str, job_id: str, edge: OutputSourceEdge) -> None:
         with self._lock:
-            self._target_source_edges.setdefault((work_id, edge.output_id, edge.input_id), edge)
+            self._require_target_production_receiving(work_id, job_id)
+            self._target_source_edges.setdefault(
+                (work_id, job_id, edge.output_id, edge.input_id), edge
+            )
 
-    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None:
+    def ensure_target_production_receiving(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord:
         with self._lock:
-            return self._target_outputs.get((work_id, output_id))
+            self._require_target_generation(work_id, job_id)
+            return self._target_production_seals.setdefault(
+                (work_id, job_id),
+                TargetProductionSealRecord(work_id=work_id, job_id=job_id),
+            )
+
+    def load_target_production_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord | None:
+        with self._lock:
+            return self._target_production_seals.get((work_id, job_id))
+
+    def compare_and_swap_target_production_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetProductionSealRecord,
+    ) -> TargetProductionSealRecord:
+        with self._lock:
+            current = self._target_production_seals.get((work_id, job_id))
+            if current is None:
+                raise KeyError(work_id)
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    "stale target production seal revision: "
+                    f"{expected_revision} != {current.revision}"
+                )
+            if (
+                replacement.work_id != work_id
+                or replacement.job_id != job_id
+                or replacement.revision != expected_revision + 1
+            ):
+                raise ValueError("replacement target production seal has an invalid revision")
+            self._target_production_seals[(work_id, job_id)] = replacement
+            return replacement
+
+    def scan_target_production_seals(
+        self,
+        *,
+        state: TargetProductionSealState,
+        limit: int,
+    ) -> tuple[TargetProductionSealRecord, ...]:
+        if limit < 1:
+            return ()
+        with self._lock:
+            return tuple(
+                item
+                for _, item in sorted(self._target_production_seals.items())
+                if item.state == state
+            )[:limit]
+
+    def ensure_target_settlement_binding(
+        self, record: TargetSettlementSealRecord
+    ) -> TargetSettlementSealRecord:
+        with self._lock:
+            self._require_target_generation(record.work_id, record.job_id)
+            key = (record.work_id, record.job_id)
+            existing = self._target_settlement_seals.setdefault(key, record)
+            if (
+                existing.output_collection != record.output_collection
+                or existing.production_sha256 != record.production_sha256
+            ):
+                raise ConcurrentWorkUpdate("target settlement binding changed")
+            return existing
+
+    def load_target_settlement_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetSettlementSealRecord | None:
+        with self._lock:
+            return self._target_settlement_seals.get((work_id, job_id))
+
+    def compare_and_swap_target_settlement_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetSettlementSealRecord,
+    ) -> TargetSettlementSealRecord:
+        with self._lock:
+            self._require_target_generation(work_id, job_id)
+            current = self._target_settlement_seals.get((work_id, job_id))
+            if current is None:
+                raise KeyError(work_id)
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale target settlement seal revision: {expected_revision} != "
+                    f"{current.revision}"
+                )
+            if (
+                replacement.work_id != work_id
+                or replacement.job_id != job_id
+                or replacement.revision != expected_revision + 1
+            ):
+                raise ValueError("replacement target settlement seal has an invalid revision")
+            self._target_settlement_seals[(work_id, job_id)] = replacement
+            return replacement
+
+    def _require_target_generation(self, work_id: str, job_id: str) -> None:
+        record = self._records.get(work_id)
+        if record is None:
+            raise KeyError(work_id)
+        current_job = (
+            record.controller_evidence.execution_envelope.execution_envelope_sha256
+            if record.controller_evidence is not None
+            else None
+        )
+        if current_job != job_id:
+            raise Stove0StateError("target execution generation is stale")
+
+    def _require_target_production_receiving(self, work_id: str, job_id: str) -> None:
+        self._require_target_generation(work_id, job_id)
+        seal = self._target_production_seals.get((work_id, job_id))
+        if seal is not None and seal.state != "receiving":
+            raise Stove0StateError("target production declarations are closed")
+
+    def load_target_output(
+        self, work_id: str, job_id: str, output_id: str
+    ) -> OutputArtifact | None:
+        with self._lock:
+            return self._target_outputs.get((work_id, job_id, output_id))
 
     def load_target_disposition(
         self,
         work_id: str,
+        job_id: str,
         input_id: str,
     ) -> InputDispositionDeclaration | None:
         with self._lock:
-            return self._target_dispositions.get((work_id, input_id))
+            return self._target_dispositions.get((work_id, job_id, input_id))
 
-    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]:
+    def iter_target_outputs(self, work_id: str, job_id: str) -> Iterator[OutputArtifact]:
         with self._lock:
             values = tuple(
                 value
-                for (owner, _), value in sorted(self._target_outputs.items())
-                if owner == work_id
+                for (owner, generation, _), value in sorted(self._target_outputs.items())
+                if (owner, generation) == (work_id, job_id)
             )
         return iter(values)
 
-    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]:
+    def iter_target_outputs_by_path(self, work_id: str, job_id: str) -> Iterator[OutputArtifact]:
         with self._lock:
             values = tuple(
                 sorted(
                     (
                         value
-                        for (owner, _), value in self._target_outputs.items()
-                        if owner == work_id
+                        for (owner, generation, _), value in self._target_outputs.items()
+                        if (owner, generation) == (work_id, job_id)
                     ),
                     key=lambda item: item.path,
                 )
@@ -585,35 +912,120 @@ class InMemoryWorkStore:
     def iter_target_dispositions(
         self,
         work_id: str,
+        job_id: str,
     ) -> Iterator[InputDispositionDeclaration]:
         with self._lock:
             values = tuple(
                 value
-                for (owner, _), value in sorted(self._target_dispositions.items())
-                if owner == work_id
+                for (owner, generation, _), value in sorted(self._target_dispositions.items())
+                if (owner, generation) == (work_id, job_id)
             )
         return iter(values)
 
-    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]:
+    def iter_target_source_edges(self, work_id: str, job_id: str) -> Iterator[OutputSourceEdge]:
         with self._lock:
             values = tuple(
                 value
-                for (owner, _, _), value in sorted(self._target_source_edges.items())
-                if owner == work_id
+                for (owner, generation, _, _), value in sorted(self._target_source_edges.items())
+                if (owner, generation) == (work_id, job_id)
             )
         return iter(values)
 
-    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]:
+    def iter_target_source_edges_by_input(
+        self, work_id: str, job_id: str
+    ) -> Iterator[OutputSourceEdge]:
         with self._lock:
             values = tuple(
                 value
-                for (owner, _, _), value in sorted(
+                for (owner, generation, _, _), value in sorted(
                     self._target_source_edges.items(),
-                    key=lambda item: (item[0][0], item[0][2], item[0][1]),
+                    key=lambda item: (item[0][0], item[0][1], item[0][3], item[0][2]),
                 )
-                if owner == work_id
+                if (owner, generation) == (work_id, job_id)
             )
         return iter(values)
+
+    def target_output_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_id: str | None,
+        limit: int,
+    ) -> tuple[OutputArtifact, ...]:
+        if limit < 1:
+            return ()
+        return tuple(
+            item
+            for item in self.iter_target_outputs(work_id, job_id)
+            if after_id is None or item.id > after_id
+        )[:limit]
+
+    def target_output_path_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_path: str | None,
+        limit: int,
+    ) -> tuple[OutputArtifact, ...]:
+        if limit < 1:
+            return ()
+        return tuple(
+            item
+            for item in self.iter_target_outputs_by_path(work_id, job_id)
+            if after_path is None or item.path > after_path
+        )[:limit]
+
+    def target_disposition_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_id: str | None,
+        limit: int,
+    ) -> tuple[InputDispositionDeclaration, ...]:
+        if limit < 1:
+            return ()
+        return tuple(
+            item
+            for item in self.iter_target_dispositions(work_id, job_id)
+            if after_id is None or item.input_id > after_id
+        )[:limit]
+
+    def target_source_edge_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        order: Literal["output", "input"],
+        after_output_id: str | None,
+        after_input_id: str | None,
+        limit: int,
+    ) -> tuple[OutputSourceEdge, ...]:
+        if limit < 1:
+            return ()
+        values = (
+            self.iter_target_source_edges(work_id, job_id)
+            if order == "output"
+            else self.iter_target_source_edges_by_input(work_id, job_id)
+        )
+        cursor = (
+            (after_output_id, after_input_id)
+            if order == "output"
+            else (after_input_id, after_output_id)
+        )
+        return tuple(
+            item
+            for item in values
+            if after_output_id is None
+            or (
+                (item.output_id, item.input_id)
+                if order == "output"
+                else (item.input_id, item.output_id)
+            )
+            > cursor
+        )[:limit]
 
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
         with self._lock:
@@ -1389,6 +1801,13 @@ __all__ = [
     "PreviewTargetExpectation",
     "Stove0StateError",
     "Stove0WorkService",
+    "TargetProductionSealCheckpoint",
+    "TargetProductionSealPhase",
+    "TargetProductionSealRecord",
+    "TargetProductionSealState",
+    "TargetSettlementSealCheckpoint",
+    "TargetSettlementSealRecord",
+    "TargetSettlementSealState",
     "TerminalPhase",
     "WorkFailure",
     "WorkInapplicable",

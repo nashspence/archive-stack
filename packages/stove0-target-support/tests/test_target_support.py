@@ -664,7 +664,7 @@ def test_target_runtime_builds_complete_success_status() -> None:
     class Callback:
         def seal_target_execution_production(self, job_id: str) -> TargetProductionSealResponse:
             assert job_id == request.declaration.job_id
-            return TargetProductionSealResponse(production=expected.production)
+            return TargetProductionSealResponse(state="sealed", production=expected.production)
 
     class Writer:
         custody_receipts: dict[str, ProducerArtifactCustody] = {}
