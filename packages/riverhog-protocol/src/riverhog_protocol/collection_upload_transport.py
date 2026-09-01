@@ -55,15 +55,17 @@ CollectionUploadProvenanceJournalState = Literal["accepting", "validating", "sea
 
 
 def collection_upload_path_order_key(path: str) -> tuple[int, bytes]:
-    """Order v1 upload members while keeping terminal derivation evidence last.
+    """Order v1 payload, Riverhog control evidence, and terminal derivation.
 
-    A collection derivation binds the complete output set and therefore cannot
-    exist while a transform is still producing artifacts. All other member
-    paths retain their ordinary UTF-8 lexical order.
+    Transform artifacts may finalize incrementally in arbitrary path ranges.
+    Riverhog-owned control evidence follows all payload artifacts, while the
+    collection derivation remains the unique terminal member because it binds
+    the complete output and generic evidence authorities.
     """
 
     normalized = normalize_relpath(path)
-    return (1 if normalized == DERIVATION_EVIDENCE_PATH else 0, normalized.encode("utf-8"))
+    rank = 2 if normalized == DERIVATION_EVIDENCE_PATH else int(normalized.startswith("riverhog/"))
+    return (rank, normalized.encode("utf-8"))
 
 
 class CollectionUploadDocument(BaseModel):

@@ -28,6 +28,13 @@ from stove0_core import (
     WorkRecord,
     stove0_state_schema,
 )
+from stove0_core._checkpoint_sha256 import CheckpointSHA256
+from stove0_core.work_state import (
+    TargetProductionSealCheckpoint,
+    TargetProductionSealRecord,
+    TargetSettlementSealCheckpoint,
+    TargetSettlementSealRecord,
+)
 from stove0_operator_contracts import WorkCreatedEvent
 from stove0_protocol import (
     ArtifactSelection,
@@ -55,8 +62,11 @@ from stove0_target_protocol import (
     OutputArtifactSetIdentity,
     TargetCallbackAccess,
     TargetInputAuthority,
+    TargetOutputBindingSetIdentity,
     TargetProductionAuthority,
     TargetProductionAuthorityPayload,
+    TargetSettlementAuthority,
+    TargetSettlementAuthorityPayload,
 )
 from stove0_target_support import (
     EFFECT_TARGET_PROTOCOL,
@@ -1026,6 +1036,197 @@ def test_postgres_cancel_completion_race_converges_to_immutable_published_succes
             operation=operation,
             expected_revision=current.revision,
         )
+
+
+def test_postgres_declaration_and_production_seal_race_has_one_atomic_boundary(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    record, _operation, _canceling, _succeeded = _active_target_work(Stove0WorkService(first))
+    assert record.controller_evidence is not None
+    job_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    receiving = first.ensure_target_production_receiving(record.work_id, job_id)
+    sealing = TargetProductionSealRecord.model_validate(
+        receiving.model_copy(
+            update={
+                "revision": receiving.revision + 1,
+                "state": "sealing",
+                "checkpoint": TargetProductionSealCheckpoint(
+                    output_hash_state=CheckpointSHA256().export_state(),
+                    disposition_hash_state=CheckpointSHA256().export_state(),
+                    source_edge_hash_state=CheckpointSHA256().export_state(),
+                ),
+            }
+        ).model_dump(mode="python")
+    )
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256="5" * 64,
+    )
+    barrier = threading.Barrier(2)
+    declared: list[bool] = []
+    failures: list[BaseException] = []
+
+    def begin_seal() -> None:
+        try:
+            barrier.wait(timeout=5)
+            first.compare_and_swap_target_production_seal(
+                record.work_id,
+                job_id,
+                expected_revision=receiving.revision,
+                replacement=sealing,
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    def declare() -> None:
+        try:
+            barrier.wait(timeout=5)
+            second.record_target_output(record.work_id, job_id, output)
+            declared.append(True)
+        except Stove0StateError:
+            declared.append(False)
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=begin_seal), threading.Thread(target=declare)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert failures == []
+    assert declared in ([True], [False])
+    assert second.load_target_production_seal(record.work_id, job_id) == sealing
+    assert second.load_target_output(record.work_id, job_id, output.id) == (
+        output if declared == [True] else None
+    )
+
+
+def test_postgres_target_declarations_are_isolated_by_fenced_execution_generation(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    service = Stove0WorkService(first)
+    record, _operation, _canceling, _succeeded = _active_target_work(service)
+    assert record.controller_evidence is not None
+    assert record.workflow_plan is not None
+    stale_job = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    old_output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256="5" * 64,
+    )
+    first.ensure_target_production_receiving(record.work_id, stale_job)
+    first.record_target_output(record.work_id, stale_job, old_output)
+
+    rebound = service.rebind_claim(
+        record.work_id,
+        claim_id=record.claim.claim_id,
+        fence=record.claim.fence + 1,
+        expected_revision=record.revision,
+    )
+    rebound = service.begin_planning(record.work_id, expected_revision=rebound.revision)
+    rebound = service.seal_workflow_plan(
+        record.work_id,
+        record.workflow_plan,
+        expected_revision=rebound.revision,
+    )
+    operation, target, plan = _target_contracts()
+    rebound = service.seal_target_plan(
+        record.work_id,
+        target=target,
+        plan=plan,
+        expected_revision=rebound.revision,
+    )
+    assert rebound.controller_evidence is not None
+    current_job = rebound.controller_evidence.execution_envelope.execution_envelope_sha256
+    assert current_job != stale_job
+
+    with pytest.raises(Stove0StateError, match="generation is stale"):
+        second.record_target_output(record.work_id, stale_job, old_output)
+    new_output = old_output.model_copy(update={"bytes": 13, "sha256": "6" * 64})
+    second.ensure_target_production_receiving(record.work_id, current_job)
+    second.record_target_output(record.work_id, current_job, new_output)
+
+    assert first.load_target_output(record.work_id, stale_job, old_output.id) == old_output
+    assert first.load_target_output(record.work_id, current_job, new_output.id) == new_output
+
+
+def test_postgres_post_root_settlement_checkpoint_is_fenced_and_restartable(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    record, _operation, _canceling, succeeded = _active_target_work(Stove0WorkService(first))
+    assert succeeded.production is not None
+    assert succeeded.output_collection is not None
+    binding = first.ensure_target_settlement_binding(
+        TargetSettlementSealRecord(
+            work_id=record.work_id,
+            job_id=succeeded.production.job_id,
+            output_collection=succeeded.output_collection,
+            production_sha256=succeeded.production.production_sha256,
+            checkpoint=TargetSettlementSealCheckpoint(
+                binding_hash_state=CheckpointSHA256().export_state()
+            ),
+        )
+    )
+    settlement = TargetSettlementAuthority.seal(
+        TargetSettlementAuthorityPayload(
+            job_id=succeeded.production.job_id,
+            production_sha256=succeeded.production.production_sha256,
+            output_collection=succeeded.output_collection,
+            output_bindings=TargetOutputBindingSetIdentity(
+                artifact_count=1,
+                total_bytes=12,
+                sha256="7" * 64,
+            ),
+        )
+    )
+    sealed = TargetSettlementSealRecord.model_validate(
+        binding.model_copy(
+            update={
+                "revision": binding.revision + 1,
+                "state": "sealed",
+                "checkpoint": None,
+                "settlement": settlement,
+            }
+        ).model_dump(mode="python")
+    )
+    barrier = threading.Barrier(2)
+    winners: list[TargetSettlementSealRecord] = []
+    stale: list[ConcurrentWorkUpdate] = []
+
+    def finish(store: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            winners.append(
+                store.compare_and_swap_target_settlement_seal(
+                    record.work_id,
+                    succeeded.production.job_id,
+                    expected_revision=binding.revision,
+                    replacement=sealed,
+                )
+            )
+        except ConcurrentWorkUpdate as exc:
+            stale.append(exc)
+
+    threads = [threading.Thread(target=finish, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert winners == [sealed]
+    assert len(stale) == 1
+    assert second.load_target_settlement_seal(record.work_id, succeeded.production.job_id) == sealed
 
 
 def test_postgres_effect_completion_is_one_fenced_immutable_receipt(

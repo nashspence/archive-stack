@@ -27,7 +27,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
 from riverhog_protocol.paths import tag_set_identity
-from stove0_core import ClaimBinding, Stove0RiverhogClient, WorkRecord
+from stove0_core import ClaimBinding, InMemoryWorkStore, Stove0RiverhogClient, WorkRecord
 from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
@@ -405,7 +405,7 @@ class FixtureApi:
         inventory_identity: str | None,
     ) -> PortableCollectionInventoryPage:
         assert cursor is None
-        assert limit == 1000
+        assert limit == 100
         assert inventory_identity is None
         return PortableCollectionInventoryPage(
             authority=PortableCollectionInventoryAuthority(
@@ -476,6 +476,57 @@ class FixtureApi:
     def release_processing_claim(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("release", {"claim_id": claim_id, **kwargs}))
         return {"id": claim_id, "fence": kwargs["fence"], "state": "released"}
+
+
+class PagedInventoryFixtureApi(FixtureApi):
+    def get_portable_collection_inventory(
+        self,
+        collection_id: int,
+        *,
+        cursor: str | None,
+        limit: int,
+        inventory_identity: str | None,
+    ) -> PortableCollectionInventoryPage:
+        assert limit == 1
+        authority = PortableCollectionInventoryAuthority(
+            header=PortableCollectionHeader(
+                collection=collection_id,
+                content_identity=_sha("8"),
+                encryption_format="age/v1",
+                passphrase_id="fixture-passphrase",
+                provenance_mode="omitted",
+            ),
+            inventory_identity=_sha("5"),
+            file_count=2,
+            file_bytes=13,
+        )
+        if cursor is None:
+            assert inventory_identity is None
+            return PortableCollectionInventoryPage(
+                authority=authority,
+                files=[
+                    ImmutableFileIdentityDocument(
+                        path="riverhog/derivation.json",
+                        bytes=1,
+                        sha256=_sha("1"),
+                    )
+                ],
+                next_cursor="second-page",
+                complete=False,
+            )
+        assert cursor == "second-page"
+        assert inventory_identity == authority.inventory_identity
+        return PortableCollectionInventoryPage(
+            authority=authority,
+            files=[
+                ImmutableFileIdentityDocument(
+                    path="output/result.bin",
+                    bytes=12,
+                    sha256=_sha("9"),
+                )
+            ],
+            complete=True,
+        )
 
 
 def _verifying_record(
@@ -551,7 +602,8 @@ def _verifying_record(
 def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> None:
     work, workflow, target_plan, evidence = _authorities()
     api = FixtureApi()
-    client = Stove0RiverhogClient(api, workspace_assurance="ephemeral")
+    state = InMemoryWorkStore()
+    client = Stove0RiverhogClient(api, workspace_assurance="ephemeral", state=state)
 
     claim = client.acquire_claim(work)
     assert claim == ClaimBinding(claim_id=_claim_id(), fence=1)
@@ -563,10 +615,66 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
     assert authority.runtime.capability_token.startswith("secret-")
 
     record = _verifying_record(work, workflow, evidence)
-    output, settlement = client.verify_and_settle(record, _operation(), (_output_artifact(),))
+    state.create(record)
+    assert record.target_status is not None and record.target_status.production is not None
+    job_id = record.target_status.production.job_id
+    state.record_target_output(record.work_id, job_id, _output_artifact())
+    output, settlement = client.verify_and_settle(record)
     assert output == record.output
+    assert settlement is not None
     assert settlement.production_sha256 == record.target_status.production.production_sha256
     assert any(name == "settle" for name, _payload in api.calls)
+
+
+def test_post_root_settlement_restarts_from_bounded_portable_inventory_progress() -> None:
+    work, workflow, _target_plan, evidence = _authorities()
+    api = PagedInventoryFixtureApi()
+    api.output_tags = workflow.output_tags
+    state = InMemoryWorkStore()
+    record = _verifying_record(work, workflow, evidence)
+    state.create(record)
+    assert record.target_status is not None and record.target_status.production is not None
+    job_id = record.target_status.production.job_id
+    state.record_target_output(record.work_id, job_id, _output_artifact())
+
+    first = Stove0RiverhogClient(api, state=state, authority_batch_size=1)
+    output, settlement = first.verify_and_settle(record)
+
+    assert output == record.output
+    assert settlement is None
+    checkpoint = state.load_target_settlement_seal(record.work_id, job_id)
+    assert checkpoint is not None and checkpoint.checkpoint is not None
+    assert checkpoint.checkpoint.inventory_cursor == "second-page"
+    assert checkpoint.checkpoint.artifact_count == 0
+
+    restarted = Stove0RiverhogClient(api, state=state, authority_batch_size=1)
+    replayed_output, replayed_settlement = restarted.verify_and_settle(record)
+
+    assert replayed_output == output
+    assert replayed_settlement is not None
+    assert replayed_settlement.output_collection == output
+    sealed = state.load_target_settlement_seal(record.work_id, job_id)
+    assert sealed is not None and sealed.state == "sealed"
+    assert sealed.settlement == replayed_settlement
+
+
+def test_post_root_settlement_fails_closed_on_non_bijective_output() -> None:
+    work, workflow, _target_plan, evidence = _authorities()
+    api = FixtureApi()
+    api.output_tags = workflow.output_tags
+    state = InMemoryWorkStore()
+    record = _verifying_record(work, workflow, evidence)
+    state.create(record)
+    assert record.target_status is not None and record.target_status.production is not None
+    state.record_target_output(
+        record.work_id,
+        record.target_status.production.job_id,
+        _output_artifact().model_copy(update={"sha256": _sha("a")}),
+    )
+    client = Stove0RiverhogClient(api, state=state)
+
+    with pytest.raises(RuntimeError, match="artifact differs"):
+        client.verify_and_settle(record)
 
 
 def test_effect_target_uses_only_generic_read_custody_and_releases_without_settlement() -> None:

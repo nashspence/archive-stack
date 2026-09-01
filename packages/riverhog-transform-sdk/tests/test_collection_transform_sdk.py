@@ -28,6 +28,10 @@ from riverhog_protocol import (
     PortableCollectionInventoryAuthority,
     PortableCollectionInventoryPage,
 )
+from riverhog_protocol.collection_workflow_transport import (
+    ArtifactDispositionOutputPageDocument,
+    ArtifactDispositionPageDocument,
+)
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     PRODUCER_EVIDENCE_PATH,
@@ -336,10 +340,67 @@ class UploadApi:
         self.discovery_closed = False
         self.work_calls = 0
         self.session_calls = 0
+        self.derivation_identity = _disposition_set()
 
     def get_processing_claim(self, claim_id: str) -> SimpleNamespace:
         assert claim_id == "claim-1"
         return _processing_claim()
+
+    def list_processing_claim_dispositions(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int = 0,
+    ) -> ArtifactDispositionPageDocument:
+        assert claim_id == "claim-1"
+        identity = self.derivation_identity
+        assert authority_sha256 == identity.sha256 and start_ordinal == 0
+        return ArtifactDispositionPageDocument.model_validate(
+            {
+                "authority": identity.as_dict(),
+                "start_ordinal": 0,
+                "dispositions": [
+                    {
+                        "input": {
+                            "collection_id": 1,
+                            "archive_root_sha256": "1" * 64,
+                            "path": f"camera/input-{index:04d}.mov",
+                        },
+                        "status": "transformed",
+                    }
+                    for index in range(identity.disposition_count)
+                ],
+            }
+        )
+
+    def list_processing_claim_disposition_outputs(
+        self,
+        claim_id: str,
+        *,
+        authority_sha256: str,
+        start_ordinal: int = 0,
+    ) -> ArtifactDispositionOutputPageDocument:
+        assert claim_id == "claim-1"
+        identity = self.derivation_identity
+        assert authority_sha256 == identity.sha256 and start_ordinal == 0
+        return ArtifactDispositionOutputPageDocument.model_validate(
+            {
+                "authority": identity.as_dict(),
+                "start_ordinal": 0,
+                "outputs": [
+                    {
+                        "input": {
+                            "collection_id": 1,
+                            "archive_root_sha256": "1" * 64,
+                            "path": f"camera/input-{index:04d}.mov",
+                        },
+                        "output_path": f"derived/output-{index:04d}.bin",
+                    }
+                    for index in range(identity.output_edge_count)
+                ],
+            }
+        )
 
     def create_or_resume_collection_upload_session(
         self,
@@ -913,6 +974,7 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
         output_edge_count=4,
         output_artifact_count=3,
     )
+    api.derivation_identity = disposition_set
 
     def runtime() -> CollectionTransformRuntime:
         return CollectionTransformRuntime(
@@ -1098,14 +1160,19 @@ def test_derived_writer_binds_outputs_to_dispositions(
         def __init__(self, _api: object, **kwargs: Any) -> None:
             captured["init"] = kwargs
 
-        def publish_inputs(self, files: object, **kwargs: Any) -> ProducedCollection:
+        def append_inputs(self, files: object) -> None:
             captured["files"] = files
-            captured["publish"] = kwargs
+
+        def append_derivation_evidence(self, path: str, content: bytes) -> None:
+            captured.setdefault("derivation_pages", {})[path] = content
+
+        def finish(self, **kwargs: Any) -> ProducedCollection:
+            captured["finish"] = kwargs
             return ProducedCollection(44, "e" * 64, "f" * 64, {"state": "finalized"})
 
     import riverhog_transform_sdk.writer as module
 
-    monkeypatch.setattr(module, "CollectionProducer", StubProducer)
+    monkeypatch.setattr(module, "IncrementalCollectionProducer", StubProducer)
     writer = DerivedCollectionWriter(
         UploadApi(),
         spec=spec,
@@ -1127,7 +1194,7 @@ def test_derived_writer_binds_outputs_to_dispositions(
 
     assert receipt.collection_id == 44
     assert receipt.derivation.execution_id == EXECUTION_ID
-    assert captured["publish"]["source_context"] == {
+    assert captured["init"]["source_context"] == {
         "claim_id": "claim-1",
         "fence": 1,
         "work_id": WORK_ID,
@@ -1136,7 +1203,8 @@ def test_derived_writer_binds_outputs_to_dispositions(
         "execution_sha256": "d" * 64,
         "target": "fixture",
     }
-    evidence = captured["publish"]["inline_evidence"]
+    assert len(captured["derivation_pages"]) == 2
+    evidence = captured["finish"]["terminal_evidence"]
     assert evidence[DERIVATION_EVIDENCE_PATH] == receipt.derivation.to_json_bytes()
 
     with pytest.raises(ValueError, match="differs from derived outputs"):

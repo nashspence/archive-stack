@@ -40,6 +40,7 @@ class Stove0RuntimeConfig:
     target_callback_base_url: str
     target_callback_allow_insecure_http: bool
     target_callback_signing_key: str
+    target_authority_batch_size: int
     workspace_assurance: Literal["encrypted", "ephemeral"]
     claim_lease_seconds: int
     capability_ttl_seconds: int
@@ -115,6 +116,13 @@ class Stove0RuntimeConfig:
                 callback_signing_key
                 if callback_signing_key is not None
                 else "unused-target-callback-signing-key"
+            ),
+            target_authority_batch_size=_integer(
+                values,
+                "STOVE0_TARGET_AUTHORITY_BATCH_SIZE",
+                100,
+                minimum=1,
+                maximum=128,
             ),
             browse_token_signing_key=(
                 browse_token_signing_key
@@ -211,6 +219,7 @@ def _integer(
     default: int,
     *,
     minimum: int,
+    maximum: int | None = None,
 ) -> int:
     try:
         value = int(values.get(name, str(default)))
@@ -218,6 +227,8 @@ def _integer(
         raise ValueError(f"{name} must be an integer") from exc
     if value < minimum:
         raise ValueError(f"{name} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
     return value
 
 

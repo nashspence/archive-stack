@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Self, cast
@@ -114,7 +115,15 @@ class TargetCollectionPublication:
         sealed = self.execution._input_client.seal_target_execution_production(
             self.execution.job_id
         )
-        disposition_set = sealed.production.riverhog_disposition_set
+        while sealed.state == "sealing":
+            time.sleep(0.1)
+            sealed = self.execution._input_client.seal_target_execution_production(
+                self.execution.job_id
+            )
+        production = sealed.production
+        if production is None:
+            raise RuntimeError("Stove0 sealed no target production authority")
+        disposition_set = production.riverhog_disposition_set
         runtime = cast(CollectionTransformRuntime, self.execution.runtime)
         receipt = runtime.finish_incremental_publication(
             self.writer,
@@ -139,11 +148,11 @@ class TargetCollectionPublication:
             plan_sha256=plan.plan_sha256,
             progress=TargetProgress(
                 phase="done",
-                completed=sealed.production.outputs.artifact_count,
-                total=sealed.production.outputs.artifact_count,
+                completed=production.outputs.artifact_count,
+                total=production.outputs.artifact_count,
                 unit="artifacts",
             ),
-            production=sealed.production,
+            production=production,
             output_collection=output_collection,
             execution_evidence=TargetExecutionEvidence(
                 target_contract_sha256=plan.target_contract_sha256,

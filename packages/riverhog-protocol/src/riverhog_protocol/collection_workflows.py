@@ -32,6 +32,9 @@ DERIVATION_FORMAT: Literal["riverhog-collection-derivation/v1"] = (
 )
 PRODUCER_EVIDENCE_PATH = "riverhog/producer-evidence.json"
 DERIVATION_EVIDENCE_PATH = "riverhog/collection-derivation.json"
+DERIVATION_DISPOSITION_EVIDENCE_PREFIX = "riverhog/derivation/dispositions"
+DERIVATION_OUTPUT_EVIDENCE_PREFIX = "riverhog/derivation/output-edges"
+DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH = 64
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SEMANTIC_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$", re.ASCII)
@@ -41,6 +44,22 @@ _DISPOSITION_STATES = {"transformed", "preserved", "omitted", "rejected"}
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 RetirementPolicy = Literal["retain", "retire-after-verified-output"]
 DispositionState = Literal["transformed", "preserved", "omitted", "rejected"]
+
+
+def derivation_evidence_page_path(
+    kind: Literal["dispositions", "output-edges"],
+    start_ordinal: int,
+) -> str:
+    """Return one deterministic bounded-page path in a derivation recovery closure."""
+
+    if isinstance(start_ordinal, bool) or not 0 <= start_ordinal < 1 << 256:
+        raise ValueError("derivation evidence ordinal is outside the v1 sequence domain")
+    prefix = (
+        DERIVATION_DISPOSITION_EVIDENCE_PREFIX
+        if kind == "dispositions"
+        else DERIVATION_OUTPUT_EVIDENCE_PREFIX
+    )
+    return f"{prefix}/{start_ordinal:0{DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH}x}.json"
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -869,6 +888,9 @@ __all__ = [
     "CollectionProcessingOutcomeIdentity",
     "CollectionRootIdentity",
     "DERIVATION_EVIDENCE_PATH",
+    "DERIVATION_DISPOSITION_EVIDENCE_PREFIX",
+    "DERIVATION_OUTPUT_EVIDENCE_PREFIX",
+    "DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH",
     "DERIVATION_FORMAT",
     "DispositionState",
     "OperationIdentity",
@@ -881,4 +903,5 @@ __all__ = [
     "TransformIntent",
     "canonical_json_bytes",
     "canonical_json_sha256",
+    "derivation_evidence_page_path",
 ]

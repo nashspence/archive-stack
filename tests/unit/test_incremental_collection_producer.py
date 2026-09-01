@@ -199,8 +199,8 @@ def test_incremental_producer_resumes_without_rereading_custodied_local_bytes(
     assert api.completed is not None
     registered = tuple(api.rows)
     assert registered == (
-        "riverhog/producer-evidence.json",
         "z/artifact.bin",
+        "riverhog/producer-evidence.json",
         DERIVATION_EVIDENCE_PATH,
     )
     expected = api.rows["z/artifact.bin"]
@@ -275,8 +275,8 @@ def test_incremental_producer_inserts_evidence_when_one_append_crosses_its_path(
 
     assert tuple(api.rows) == (
         "a.txt",
-        "riverhog/producer-evidence.json",
         "z.txt",
+        "riverhog/producer-evidence.json",
         DERIVATION_EVIDENCE_PATH,
     )
 

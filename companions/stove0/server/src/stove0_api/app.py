@@ -185,6 +185,8 @@ class Stove0Composition:
             claim_lease_seconds=config.claim_lease_seconds,
             capability_ttl_seconds=config.capability_ttl_seconds,
             workspace_assurance=config.workspace_assurance,
+            state=state,
+            authority_batch_size=config.target_authority_batch_size,
         )
         target_callbacks = TargetCallbackAuthority(
             state,
@@ -194,6 +196,7 @@ class Stove0Composition:
             ttl_seconds=config.capability_ttl_seconds,
             operations=planner,
             projector=authority,
+            seal_batch_size=config.target_authority_batch_size,
         )
         coordinator = Stove0Coordinator(
             work,
@@ -223,6 +226,7 @@ class Stove0Composition:
                 planner=planner,
                 coordinator=coordinator,
                 state=state,
+                production_seals=target_callbacks,
                 operational_state_retention_seconds=(config.operational_state_retention_seconds),
             ),
             target_callbacks=target_callbacks,

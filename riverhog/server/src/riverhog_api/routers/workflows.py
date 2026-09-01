@@ -571,7 +571,7 @@ def record_processing_claim_dispositions(
 def list_processing_claim_dispositions(
     claim_id: ProcessingClaimId,
     container: ContainerDep,
-    principal: CollectionTransformController,
+    principal: CollectionTransformLeaseManager,
     authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
     start_ordinal: Annotated[int, Query(ge=0)] = 0,
 ) -> ArtifactDispositionPageOut:
@@ -625,7 +625,7 @@ def record_processing_claim_disposition_outputs(
 def list_processing_claim_disposition_outputs(
     claim_id: ProcessingClaimId,
     container: ContainerDep,
-    principal: CollectionTransformController,
+    principal: CollectionTransformLeaseManager,
     authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
     start_ordinal: Annotated[int, Query(ge=0)] = 0,
 ) -> ArtifactDispositionOutputPageOut:

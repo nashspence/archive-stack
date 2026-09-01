@@ -39,6 +39,7 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     RecipeIdentity,
     canonical_json_bytes,
+    derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Conflict
 from riverhog_protocol.paths import tag_set_identity
@@ -523,12 +524,24 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
                     bytes=1,
                     sha256="5" * 64,
                 ),
+                CollectionFileRecord(
+                    collection_id=2,
+                    path=derivation_evidence_page_path("dispositions", 0),
+                    bytes=1,
+                    sha256="3" * 64,
+                ),
+                CollectionFileRecord(
+                    collection_id=2,
+                    path=derivation_evidence_page_path("output-edges", 0),
+                    bytes=1,
+                    sha256="4" * 64,
+                ),
             ]
         )
         output_record = session.get(CollectionRecord, 2)
         assert output_record is not None
-        output_record.file_count = 3
-        output_record.file_bytes = 4 + len(derivation.to_json_bytes()) + 1
+        output_record.file_count = 5
+        output_record.file_bytes = 4 + len(derivation.to_json_bytes()) + 3
 
     with factory() as session, session.begin():
         stored = session.get(CollectionProcessingClaimRecord, claim_id)
@@ -1098,12 +1111,24 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
                         bytes=1,
                         sha256="5" * 64,
                     ),
+                    CollectionFileRecord(
+                        collection_id=output_collection_id,
+                        path=derivation_evidence_page_path("dispositions", 0),
+                        bytes=1,
+                        sha256="3" * 64,
+                    ),
+                    CollectionFileRecord(
+                        collection_id=output_collection_id,
+                        path=derivation_evidence_page_path("output-edges", 0),
+                        bytes=1,
+                        sha256="4" * 64,
+                    ),
                 ]
             )
             output_record = session.get(CollectionRecord, output_collection_id)
             assert output_record is not None
-            output_record.file_count = 3
-            output_record.file_bytes = source_bytes + len(derivation.to_json_bytes()) + 1
+            output_record.file_count = 5
+            output_record.file_bytes = source_bytes + len(derivation.to_json_bytes()) + 3
         service.settle_claim(
             claim_id,
             fence=1,
