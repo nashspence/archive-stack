@@ -53,6 +53,7 @@ def begin_catalog_event(
     collection_id: int,
     occurred_at: str,
     inventory_identity: str,
+    published: bool = True,
 ) -> CatalogEventRecord:
     """Create an event whose tag visibility snapshots will be populated relationally."""
 
@@ -61,6 +62,7 @@ def begin_catalog_event(
         collection_id=collection_id,
         occurred_at=occurred_at,
         inventory_identity=inventory_identity,
+        published=published,
     )
     session.add(event)
     session.flush()

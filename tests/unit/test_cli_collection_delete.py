@@ -56,7 +56,7 @@ def test_collection_delete_interactive_requires_exact_id_after_warning(monkeypat
         def delete_collection(self, collection_id: int, *, challenge: str) -> dict[str, object]:
             calls.append((collection_id, challenge))
             return {
-                "status": "deleted",
+                "status": "deleting",
                 "collection_id": collection_id,
                 "files": 1,
                 "bytes": 12,
@@ -76,7 +76,7 @@ def test_collection_delete_interactive_requires_exact_id_after_warning(monkeypat
         "Type the complete collection id"
     )
     assert calls == [(COLLECTION_ID, "delete-1-" + "a" * 64)]
-    assert "collection deletion: deleted" in result.stdout
+    assert "collection deletion: deleting" in result.stdout
 
 
 def test_collection_delete_interactive_mismatch_stops_before_execution(monkeypatch) -> None:
@@ -105,7 +105,7 @@ def test_collection_delete_noninteractive_uses_prior_challenge(monkeypatch) -> N
         def delete_collection(self, collection_id: int, *, challenge: str) -> dict[str, object]:
             assert challenge == "delete-1-" + "b" * 64
             return {
-                "status": "deleted",
+                "status": "deleting",
                 "collection_id": collection_id,
                 "files": 1,
                 "bytes": 12,
@@ -120,4 +120,4 @@ def test_collection_delete_noninteractive_uses_prior_challenge(monkeypatch) -> N
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["status"] == "deleted"
+    assert json.loads(result.stdout)["status"] == "deleting"

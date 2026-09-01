@@ -69,12 +69,16 @@ CREATE TABLE catalog_events (
 	collection_id INTEGER NOT NULL,
 	occurred_at VARCHAR NOT NULL,
 	inventory_identity VARCHAR(64) NOT NULL,
+	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
 	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence)
+    """.strip(),
+    """
+CREATE INDEX ix_catalog_events_published ON catalog_events (published, sequence)
     """.strip(),
     """
 CREATE TABLE collection_deletions (
@@ -302,10 +306,28 @@ CREATE TABLE retrieval_cache_store_accounting (
 	cache_store VARCHAR NOT NULL,
 	reserved_bytes BIGINT DEFAULT 0 NOT NULL,
 	committed_bytes BIGINT DEFAULT 0 NOT NULL,
+	generation BIGINT DEFAULT 0 NOT NULL,
 	updated_at VARCHAR NOT NULL,
 	PRIMARY KEY (cache_store),
 	CONSTRAINT ck_retrieval_cache_store_accounting_reserved CHECK (reserved_bytes >= 0),
-	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0)
+	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0),
+	CONSTRAINT ck_retrieval_cache_store_accounting_generation CHECK (generation >= 0)
+)
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_accounting_reconciliations (
+	cache_store VARCHAR NOT NULL,
+	generation BIGINT NOT NULL,
+	after_source_store VARCHAR,
+	after_collection_id INTEGER,
+	after_object_id VARCHAR,
+	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
+	started_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
+	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
+	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
 )
     """.strip(),
     """
@@ -1622,12 +1644,16 @@ CREATE TABLE catalog_events (
 	collection_id BIGINT NOT NULL,
 	occurred_at VARCHAR NOT NULL,
 	inventory_identity VARCHAR(64) NOT NULL,
+	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
 	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence)
+    """.strip(),
+    """
+CREATE INDEX ix_catalog_events_published ON catalog_events (published, sequence)
     """.strip(),
     """
 CREATE TABLE collection_deletions (
@@ -1856,10 +1882,28 @@ CREATE TABLE retrieval_cache_store_accounting (
 	cache_store VARCHAR NOT NULL,
 	reserved_bytes BIGINT DEFAULT 0 NOT NULL,
 	committed_bytes BIGINT DEFAULT 0 NOT NULL,
+	generation BIGINT DEFAULT 0 NOT NULL,
 	updated_at VARCHAR NOT NULL,
 	PRIMARY KEY (cache_store),
 	CONSTRAINT ck_retrieval_cache_store_accounting_reserved CHECK (reserved_bytes >= 0),
-	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0)
+	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0),
+	CONSTRAINT ck_retrieval_cache_store_accounting_generation CHECK (generation >= 0)
+)
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_accounting_reconciliations (
+	cache_store VARCHAR NOT NULL,
+	generation BIGINT NOT NULL,
+	after_source_store VARCHAR,
+	after_collection_id BIGINT,
+	after_object_id VARCHAR,
+	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
+	started_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
+	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
+	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
 )
     """.strip(),
     """

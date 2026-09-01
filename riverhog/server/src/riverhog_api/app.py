@@ -152,12 +152,23 @@ def _process_archive_maintenance(
                 "startup resumed interrupted disposition sealing: count=%s",
                 requeued_dispositions,
             )
+        requested_cache_reconciliations = (
+            container.retrieval.request_cache_accounting_reconciliation_for_startup()
+        )
+        progressed += requested_cache_reconciliations
+        if requested_cache_reconciliations:
+            _LOG.info(
+                "startup requested retrieval-cache accounting reconciliation: count=%s",
+                requested_cache_reconciliations,
+            )
     progressed += container.collection_uploads.process_due_provenance_journal_validations(limit=1)
     progressed += container.collection_uploads.process_due_finalizations(limit=1)
     progressed += container.collection_uploads.reap_expired_custody_transfers(limit=100)
     progressed += container.collection_workflows.reap_expired_claims(limit=100)
     progressed += container.collection_workflows.process_due_disposition_sets(limit=1)
     progressed += container.collection_workflows.process_due_outcome_sets(limit=1)
+    progressed += container.collection_deletions.process_due(limit=1)
+    progressed += container.retrieval.process_cache_accounting_reconciliation(limit=100)
     progressed += container.archive_copies.process_due(limit=1)
     progressed += container.archive_maintenance.process_due_metadata_publications(limit=10)
     progressed += container.provenance.process_due_verifications(limit=1)

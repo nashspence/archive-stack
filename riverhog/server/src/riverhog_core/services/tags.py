@@ -636,6 +636,7 @@ def _tag_deletion_plan(
             func.max(CatalogEventRecord.occurred_at).label("removed_at"),
         )
         .where(
+            CatalogEventRecord.published.is_(True),
             exists(
                 select(1).where(
                     before_tag.c.sequence == CatalogEventRecord.sequence,

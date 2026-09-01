@@ -8,6 +8,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionRecord,
+    RetrievalCacheAccountingReconciliationRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCachePopulationRecord,
@@ -192,6 +193,7 @@ def _seed_ready_object(
         accounting = session.get(RetrievalCacheStoreAccountingRecord, cache_store)
         assert accounting is not None
         accounting.committed_bytes += stored_bytes
+        accounting.generation += 1
         if leased:
             session.add(
                 RetrievalCacheLeaseRecord(
@@ -414,3 +416,52 @@ def test_population_survives_one_shared_owner_and_is_reclaimed_after_the_last(
         assert session.get(RetrievalCachePopulationRecord, ("deep", 1, "volume-0")) is None
         accounting = session.get(RetrievalCacheStoreAccountingRecord, "local")
         assert accounting is not None and accounting.reserved_bytes == 0
+
+
+def test_accounting_reconciliation_is_bounded_restartable_and_generation_exact(
+    tmp_path: Path,
+) -> None:
+    local = _Candidate("local")
+    cache, factory = _coordinator(
+        tmp_path,
+        (local,),
+        (_registration("local"),),
+    )
+    _seed_ready_object(factory, cache_store="local", object_id="volume-0", stored_bytes=11)
+    _seed_ready_object(factory, cache_store="local", object_id="volume-1", stored_bytes=13)
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        accounting = session.get(RetrievalCacheStoreAccountingRecord, "local")
+        assert accounting is not None
+        accounting.committed_bytes = 999
+
+    assert cache.request_accounting_reconciliation_for_startup() == 1
+    assert cache.request_accounting_reconciliation_for_startup() == 0
+    assert cache.process_accounting_reconciliation(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        progress = session.get(RetrievalCacheAccountingReconciliationRecord, "local")
+        assert progress is not None and progress.accumulated_bytes == 11
+
+    _seed_ready_object(factory, cache_store="local", object_id="volume-2", stored_bytes=17)
+    restarted = SqlAlchemyRetrievalCache(
+        {"local": local},  # type: ignore[arg-type]
+        {"local": _registration("local")},
+        session_factory=factory,  # type: ignore[arg-type]
+    )
+    assert restarted.process_accounting_reconciliation(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        progress = session.get(RetrievalCacheAccountingReconciliationRecord, "local")
+        assert progress is not None
+        assert progress.after_source_store is None
+        assert progress.accumulated_bytes == 0
+
+    assert [restarted.process_accounting_reconciliation(limit=1) for _ in range(4)] == [
+        1,
+        1,
+        1,
+        1,
+    ]
+    assert restarted.process_accounting_reconciliation(limit=1) == 0
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        accounting = session.get(RetrievalCacheStoreAccountingRecord, "local")
+        assert accounting is not None and accounting.committed_bytes == 41
+        assert session.get(RetrievalCacheAccountingReconciliationRecord, "local") is None
