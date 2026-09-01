@@ -267,9 +267,13 @@ class CollectionDeletionService(Protocol):
         event_context: dict[str, object] | None = None,
         retirement_claim_id: str | None = None,
     ) -> JsonObject: ...
+    def process_due(self, *, limit: int = 10) -> int: ...
 
 
 class RetrievalService(Protocol):
+    def request_cache_accounting_reconciliation_for_startup(self) -> int: ...
+    def process_cache_accounting_reconciliation(self, *, limit: int = 100) -> int: ...
+
     def abort_incomplete_cache_writes(
         self,
         *,

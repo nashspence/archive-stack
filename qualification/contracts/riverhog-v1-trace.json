@@ -1,6 +1,6 @@
 {
-  "contract_canonical_sha256": "598da643f9f561f61aa3a1eda21864fc5b0a29043cbb776d9323c7779814f227",
-  "contract_projection_sha256": "8d1ca50e5b55cc899d2c36b28525daa09abb0162633c104a130074cb772a5fa3",
+  "contract_canonical_sha256": "25ada4f47918407f981bb130c900233082652415fe0d5cfb59d651a48ee13dbb",
+  "contract_projection_sha256": "4472abaecf9785bd3c096be72bd6f0d9ecf07238cbb5303cd282129e43828eb0",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
     "extent_decisions": 1843,
@@ -12819,7 +12819,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "490ba5da36b7920fe9d1e28b29cfb11b92f5cccfaf1e190a7f3fc5526b7abcd1"
+          "sha256": "a9e6b104f8384a45eff3e0a5f2c14a21fb07c5573e2f2ac1f4e1445d57444c21"
         }
       ],
       "id": "state:riverhog-catalog"

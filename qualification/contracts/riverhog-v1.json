@@ -11190,7 +11190,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "490ba5da36b7920fe9d1e28b29cfb11b92f5cccfaf1e190a7f3fc5526b7abcd1"
+            "a9e6b104f8384a45eff3e0a5f2c14a21fb07c5573e2f2ac1f4e1445d57444c21"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -41685,6 +41685,7 @@
                 },
                 "status": {
                   "enum": [
+                    "deleting",
                     "deleted",
                     "already_absent"
                   ],

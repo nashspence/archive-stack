@@ -64,7 +64,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
     derivation_evidence_page_path,
 )
-from riverhog_protocol.errors import Conflict
+from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import select, text
 
@@ -998,6 +998,13 @@ def _create_retrieval(service: SqlAlchemyRetrievalService) -> dict[str, object]:
     return service.create(app="local", files=files, plan_etag=str(plan["etag"]))
 
 
+def _drain_deletions(service: SqlAlchemyCollectionDeletionService) -> int:
+    progressed = 0
+    while current := service.process_due(limit=1):
+        progressed += current
+    return progressed
+
+
 def test_active_retrieval_blocks_collection_deletion(database_url: str) -> None:
     _seed(database_url)
     deletion, retrieval, _store = _services(database_url)
@@ -1024,6 +1031,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
     def delete_collection() -> None:
         try:
             deletion.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
+            deletion.process_due(limit=1)
         except BaseException as exc:  # pragma: no cover - asserted by the parent thread
             failures.append(exc)
 
@@ -1031,7 +1039,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
     thread.start()
     assert store.delete_started.wait(10)
     try:
-        with pytest.raises(Conflict, match="collection deletion is active"):
+        with pytest.raises(NotFound, match="collection not found"):
             _create_retrieval(retrieval)
     finally:
         store.allow_delete.set()
@@ -1039,7 +1047,12 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
 
     assert not thread.is_alive()
     assert failures == []
-    assert store.deleted == [("segment-000000000000", "manifest", "recovery-descriptor")]
+    assert _drain_deletions(deletion) == 6
+    assert store.deleted == [
+        ("segment-000000000000",),
+        ("manifest",),
+        ("recovery-descriptor",),
+    ]
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None
@@ -1062,6 +1075,7 @@ def test_deletion_marker_rejects_processing_claim_started_during_remote_delete(
     def delete_collection() -> None:
         try:
             deletion.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
+            deletion.process_due(limit=1)
         except BaseException as exc:  # pragma: no cover - asserted by parent thread
             failures.append(exc)
 
@@ -1069,7 +1083,7 @@ def test_deletion_marker_rejects_processing_claim_started_during_remote_delete(
     thread.start()
     assert store.delete_started.wait(10)
     try:
-        with pytest.raises(Conflict, match="collection deletion is active"):
+        with pytest.raises(NotFound, match="finalized collection not found"):
             claim = claim_service.create_or_resume_claim(
                 work_id=work_id,
                 work_document=work,
@@ -1593,8 +1607,9 @@ def test_postgres_multi_input_retirement_resumes_after_first_source_deletion(
             initiator=WORKFLOW_PRINCIPAL,
             retirement_claim_id=claim_id,
         )["status"]
-        == "deleted"
+        == "deleting"
     )
+    assert _drain_deletions(deletions) > int(first_plan["archive_object_count"])
 
     # Reconstruct both authorities at the exact crash boundary where the first
     # immutable input is gone but the second remains under the same claim.
@@ -1623,15 +1638,19 @@ def test_postgres_multi_input_retirement_resumes_after_first_source_deletion(
             initiator=WORKFLOW_PRINCIPAL,
             retirement_claim_id=claim_id,
         )["status"]
-        == "deleted"
+        == "deleting"
     )
+    assert _drain_deletions(restarted_deletions) > int(second_plan["archive_object_count"])
     released = restarted_workflows.release_claim(
         claim_id,
         fence=1,
         principal=WORKFLOW_PRINCIPAL,
     )
     assert released["state"] == "released"
-    assert store.deleted_collections == [COLLECTION_ID, SECOND_COLLECTION_ID]
+    assert store.deleted_collections == [
+        *([COLLECTION_ID] * int(first_plan["archive_object_count"])),
+        *([SECOND_COLLECTION_ID] * int(second_plan["archive_object_count"])),
+    ]
     with session_scope(make_session_factory(database_url)) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         assert session.get(CollectionRecord, SECOND_COLLECTION_ID) is None
@@ -1714,6 +1733,7 @@ def test_deletion_marker_prevents_a_due_metadata_publication_claim(
     def delete_collection() -> None:
         try:
             deletion.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
+            deletion.process_due(limit=1)
         except BaseException as exc:  # pragma: no cover - asserted by the parent thread
             failures.append(exc)
 

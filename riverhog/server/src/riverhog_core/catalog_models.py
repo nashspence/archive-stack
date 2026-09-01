@@ -947,8 +947,16 @@ class CatalogEventRecord(Base):
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
     occurred_at: Mapped[str] = mapped_column(String)
     inventory_identity: Mapped[str] = mapped_column(String(64))
+    published: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=text("true"),
+    )
 
-    __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
+    __table_args__ = (
+        Index("ix_catalog_events_collection", "collection_id", "sequence"),
+        Index("ix_catalog_events_published", "published", "sequence"),
+    )
 
 
 class CatalogEventTagRecord(Base):
@@ -1388,6 +1396,7 @@ class RetrievalCacheStoreAccountingRecord(Base):
     cache_store: Mapped[str] = mapped_column(String, primary_key=True)
     reserved_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     committed_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    generation: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     updated_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
@@ -1398,6 +1407,42 @@ class RetrievalCacheStoreAccountingRecord(Base):
         CheckConstraint(
             "committed_bytes >= 0",
             name="ck_retrieval_cache_store_accounting_committed",
+        ),
+        CheckConstraint(
+            "generation >= 0",
+            name="ck_retrieval_cache_store_accounting_generation",
+        ),
+    )
+
+
+class RetrievalCacheAccountingReconciliationRecord(Base):
+    __tablename__ = "retrieval_cache_accounting_reconciliations"
+
+    cache_store: Mapped[str] = mapped_column(String, primary_key=True)
+    generation: Mapped[int] = mapped_column(BigInteger)
+    after_source_store: Mapped[str | None] = mapped_column(String, nullable=True)
+    after_collection_id: Mapped[int | None] = mapped_column(
+        COLLECTION_ID_TYPE,
+        nullable=True,
+    )
+    after_object_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    accumulated_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    started_at: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["cache_store"],
+            ["retrieval_cache_store_accounting.cache_store"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "generation >= 0",
+            name="ck_cache_accounting_reconciliations_generation",
+        ),
+        CheckConstraint(
+            "accumulated_bytes >= 0",
+            name="ck_cache_accounting_reconciliations_bytes",
         ),
     )
 

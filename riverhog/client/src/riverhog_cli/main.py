@@ -2320,7 +2320,7 @@ def collection_delete_cmd(
     ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Permanently delete one accepted collection and its remote archive."""
+    """Begin permanent deletion of one accepted collection and its archive."""
 
     if dry_run and confirm is not None:
         raise typer.BadParameter("--dry-run and --confirm cannot be used together")

@@ -4,23 +4,28 @@ import json
 import secrets
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from functools import cache
 from typing import cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX
-from sqlalchemy import delete, func, select
+from sqlalchemy import Table, and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.catalog_base import Base
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_events import record_catalog_event
+from riverhog_core.catalog_events import begin_catalog_event
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
+    CatalogEventRecord,
+    CatalogEventTagRecord,
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
@@ -28,17 +33,21 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
+    RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
+    RetrievalCacheStoreAccountingRecord,
     RetrievalJobFileRecord,
+    RetrievalJobObjectRecord,
     RetrievalJobRecord,
 )
+from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
+from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_BLOCKING_STATES
 from riverhog_core.services.archive_records import (
     archive_copy_aggregates,
     archive_copy_is_complete,
-    archive_copy_owned_identity,
 )
 from riverhog_core.services.collection_workflows import (
     processing_claim_blockers,
@@ -55,11 +64,14 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
+from riverhog_core.services.retrieval_cache_accounting import adjust_cache_committed_bytes
 from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 
 _CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
 _EXECUTION_KEY = "_execution"
+_CATALOG_EVENT_SEQUENCE_KEY = "_catalog_event_sequence"
+_CATALOG_DELETE_BATCH = 100
 
 
 class SqlAlchemyCollectionDeletionService:
@@ -204,45 +216,365 @@ class SqlAlchemyCollectionDeletionService:
                         started_at=format_utc_timestamp(utc_now()),
                     )
                 )
+                collection.is_published = False
 
-        self._delete_cached_objects(normalized_id)
-        self._delete_archive_objects(plan)
-        return self._finish(normalized_id, supplied_challenge, plan)
+        return _deletion_result(plan, status="deleting")
 
-    def _delete_cached_objects(self, collection_id: int) -> None:
+    def process_due(self, *, limit: int = 10) -> int:
+        """Advance at most ``limit`` physical-object or catalog deletion steps."""
+
+        if limit < 1:
+            return 0
+        progressed = 0
+        for _ in range(limit):
+            collection_id = self._next_processable_collection()
+            if collection_id is None:
+                break
+            if not self._process_one(collection_id):
+                break
+            progressed += 1
+        return progressed
+
+    def _next_processable_collection(self) -> int | None:
+        active_lease = (
+            select(RetrievalCacheLeaseRecord.owner)
+            .where(
+                RetrievalCacheLeaseRecord.source_store == RetrievalCacheObjectRecord.source_store,
+                RetrievalCacheLeaseRecord.collection_id == RetrievalCacheObjectRecord.collection_id,
+                RetrievalCacheLeaseRecord.object_id == RetrievalCacheObjectRecord.object_id,
+            )
+            .exists()
+        )
+        any_cache = (
+            select(RetrievalCacheObjectRecord.collection_id)
+            .where(
+                RetrievalCacheObjectRecord.collection_id == CollectionDeletionRecord.collection_id
+            )
+            .exists()
+        )
+        eligible_cache = (
+            select(RetrievalCacheObjectRecord.collection_id)
+            .where(
+                RetrievalCacheObjectRecord.collection_id == CollectionDeletionRecord.collection_id,
+                ~active_lease,
+            )
+            .exists()
+        )
         with session_scope(self._session_factory) as session:
-            cached = list(
-                session.scalars(
-                    select(RetrievalCacheObjectRecord).where(
-                        RetrievalCacheObjectRecord.collection_id == collection_id
+            return session.scalar(
+                select(CollectionDeletionRecord.collection_id)
+                .where(eligible_cache | ~any_cache)
+                .order_by(
+                    CollectionDeletionRecord.started_at,
+                    CollectionDeletionRecord.collection_id,
+                )
+                .limit(1)
+            )
+
+    def _process_one(self, collection_id: int) -> bool:
+        if self._delete_retrieval_references(collection_id):
+            return True
+        cached = self._claim_cached_object(collection_id)
+        if cached is not None:
+            self._delete_cached_object(cached)
+            return True
+        with session_scope(self._session_factory) as session:
+            if (
+                session.scalar(
+                    select(RetrievalCacheObjectRecord.object_id)
+                    .where(RetrievalCacheObjectRecord.collection_id == collection_id)
+                    .limit(1)
+                )
+                is not None
+            ):
+                return False
+            publication = session.scalar(
+                select(CollectionMetadataPublicationRecord)
+                .where(
+                    CollectionMetadataPublicationRecord.collection_id == collection_id,
+                    CollectionMetadataPublicationRecord.object_path.is_not(None),
+                )
+                .order_by(CollectionMetadataPublicationRecord.store)
+                .limit(1)
+            )
+            if publication is not None:
+                identity = _metadata_identity(publication)
+                store_name = publication.store
+            else:
+                archive = session.scalar(
+                    select(CollectionArchiveObjectRecord)
+                    .where(CollectionArchiveObjectRecord.collection_id == collection_id)
+                    .order_by(
+                        CollectionArchiveObjectRecord.store,
+                        CollectionArchiveObjectRecord.object_order,
                     )
+                    .limit(1)
+                )
+                if archive is None:
+                    active = session.get(CollectionDeletionRecord, collection_id)
+                    if active is None:
+                        return False
+                    plan = cast(dict[str, object], json.loads(active.plan_json))
+                    challenge = active.challenge
+                else:
+                    identity = _archive_object_identity(archive)
+                    store_name = archive.store
+        if publication is not None:
+            self._delete_archive_identity(collection_id, store_name, identity)
+            with session_scope(self._session_factory) as session:
+                current_publication = session.get(
+                    CollectionMetadataPublicationRecord,
+                    (collection_id, store_name),
+                )
+                if (
+                    current_publication is not None
+                    and current_publication.object_path == identity.object_path
+                ):
+                    session.delete(current_publication)
+            return True
+        if archive is not None:
+            self._delete_archive_identity(collection_id, store_name, identity)
+            with session_scope(self._session_factory) as session:
+                current_archive = session.get(
+                    CollectionArchiveObjectRecord,
+                    (collection_id, store_name, identity.object_id),
+                )
+                if (
+                    current_archive is not None
+                    and current_archive.object_path == identity.object_path
+                ):
+                    session.delete(current_archive)
+            return True
+        if self._delete_catalog_batch(collection_id, plan):
+            return True
+        self._finish(collection_id, challenge, plan)
+        return True
+
+    def _delete_catalog_batch(
+        self,
+        collection_id: int,
+        plan: dict[str, object],
+    ) -> bool:
+        """Delete one bounded batch of collection-owned catalog state."""
+
+        with session_scope(self._session_factory) as session:
+            claim_ids = tuple(
+                session.scalars(
+                    select(CollectionProcessingClaimRecord.id)
+                    .where(CollectionProcessingClaimRecord.output_collection_id == collection_id)
+                    .order_by(CollectionProcessingClaimRecord.id)
+                    .limit(_CATALOG_DELETE_BATCH)
                 )
             )
-        if cached and self._retrieval_cache is None:
-            raise Conflict("collection retrieval-cache objects cannot be removed")
-        for current in cached:
-            assert self._retrieval_cache is not None
-            self._retrieval_cache.delete(
-                cache_store=current.cache_store,
-                object_path=current.object_path,
-                revision=current.revision,
+            if claim_ids:
+                session.execute(
+                    update(CollectionProcessingClaimRecord)
+                    .where(CollectionProcessingClaimRecord.id.in_(claim_ids))
+                    .values(output_collection_id=None)
+                )
+                return True
+
+            for table in _collection_cascade_tables():
+                primary_key = tuple(table.primary_key.columns)
+                rows = list(
+                    session.execute(
+                        select(*primary_key)
+                        .where(table.c.collection_id == collection_id)
+                        .order_by(*primary_key)
+                        .limit(_CATALOG_DELETE_BATCH)
+                    )
+                )
+                if not rows:
+                    continue
+                predicates = [
+                    and_(*(column == value for column, value in zip(primary_key, row, strict=True)))
+                    for row in rows
+                ]
+                session.execute(delete(table).where(or_(*predicates)))
+                return True
+
+            event_sequence = plan.get(_CATALOG_EVENT_SEQUENCE_KEY)
+            event_created = False
+            if event_sequence is None:
+                active = session.get(CollectionDeletionRecord, collection_id)
+                if active is None:
+                    return False
+                created_event = begin_catalog_event(
+                    session,
+                    change="deleted",
+                    collection_id=collection_id,
+                    occurred_at=active.started_at,
+                    inventory_identity=str(plan["inventory_identity"]),
+                    published=False,
+                )
+                event_sequence = created_event.sequence
+                plan[_CATALOG_EVENT_SEQUENCE_KEY] = event_sequence
+                active.plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+                event_created = True
+            if not isinstance(event_sequence, int):
+                raise RuntimeError("collection deletion catalog event identity is invalid")
+            current_event = session.get(CatalogEventRecord, event_sequence)
+            if current_event is None or current_event.published:
+                raise RuntimeError("collection deletion catalog event is unavailable")
+            tags = list(
+                session.scalars(
+                    select(CollectionTagRecord)
+                    .where(CollectionTagRecord.collection_id == collection_id)
+                    .order_by(CollectionTagRecord.tag_id)
+                    .limit(_CATALOG_DELETE_BATCH)
+                )
+            )
+            if tags:
+                tag_ids = tuple(current.tag_id for current in tags)
+                for tag_id in tag_ids:
+                    session.add(
+                        CatalogEventTagRecord(
+                            sequence=event_sequence,
+                            phase="before",
+                            tag_id=tag_id,
+                        )
+                    )
+                adjust_tag_collection_counts(session, removed=tag_ids)
+                for current in tags:
+                    session.delete(current)
+                return True
+            if event_created:
+                return True
+        return False
+
+    def _delete_retrieval_references(self, collection_id: int) -> bool:
+        with session_scope(self._session_factory) as session:
+            object_rows = list(
+                session.scalars(
+                    select(RetrievalJobObjectRecord)
+                    .where(RetrievalJobObjectRecord.collection_id == collection_id)
+                    .order_by(
+                        RetrievalJobObjectRecord.job_id,
+                        RetrievalJobObjectRecord.source_store,
+                        RetrievalJobObjectRecord.object_order,
+                    )
+                    .limit(_CATALOG_DELETE_BATCH)
+                )
+            )
+            if object_rows:
+                job_ids = {object_row.job_id for object_row in object_rows}
+                for object_row in object_rows:
+                    session.delete(object_row)
+                session.flush()
+                _delete_empty_retrieval_jobs(session, job_ids)
+                return True
+            file_rows = list(
+                session.scalars(
+                    select(RetrievalJobFileRecord)
+                    .where(RetrievalJobFileRecord.collection_id == collection_id)
+                    .order_by(
+                        RetrievalJobFileRecord.job_id,
+                        RetrievalJobFileRecord.file_order,
+                    )
+                    .limit(_CATALOG_DELETE_BATCH)
+                )
+            )
+            if file_rows:
+                job_ids = {file_row.job_id for file_row in file_rows}
+                for file_row in file_rows:
+                    session.delete(file_row)
+                session.flush()
+                _delete_empty_retrieval_jobs(session, job_ids)
+                return True
+        return False
+
+    def _claim_cached_object(
+        self,
+        collection_id: int,
+    ) -> tuple[str, int, str, str, str, str | None, int] | None:
+        active_lease = (
+            select(RetrievalCacheLeaseRecord.owner)
+            .where(
+                RetrievalCacheLeaseRecord.source_store == RetrievalCacheObjectRecord.source_store,
+                RetrievalCacheLeaseRecord.collection_id == RetrievalCacheObjectRecord.collection_id,
+                RetrievalCacheLeaseRecord.object_id == RetrievalCacheObjectRecord.object_id,
+            )
+            .exists()
+        )
+        with session_scope(self._session_factory) as session:
+            cached = session.scalar(
+                select(RetrievalCacheObjectRecord)
+                .where(
+                    RetrievalCacheObjectRecord.collection_id == collection_id,
+                    ~active_lease,
+                )
+                .order_by(
+                    RetrievalCacheObjectRecord.source_store,
+                    RetrievalCacheObjectRecord.object_id,
+                )
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            if cached is None:
+                return None
+            cached.state = "deleting"
+            return (
+                cached.source_store,
+                cached.collection_id,
+                cached.object_id,
+                cached.cache_store,
+                cached.object_path,
+                cached.revision,
+                cached.stored_bytes,
             )
 
-    def _delete_archive_objects(self, plan: dict[str, object]) -> None:
-        collection_id = cast(int, plan["collection_id"])
-        stores = {
-            str(item["store"]) for item in cast(list[dict[str, object]], plan["archive_copies"])
-        }
-        for store_name in sorted(stores):
-            with session_scope(self._session_factory) as session:
-                copy = session.get(CollectionArchiveCopyRecord, (collection_id, store_name))
-                if copy is None or not archive_copy_is_complete(copy):
-                    raise Conflict("collection archive changed during deletion")
-                objects = archive_copy_owned_identity(copy).objects
-            self._archive_stores.require(store_name).store.delete_collection_archive(
-                collection_id=collection_id,
-                objects=objects,
+    def _delete_cached_object(
+        self,
+        identity: tuple[str, int, str, str, str, str | None, int],
+    ) -> None:
+        if self._retrieval_cache is None:
+            raise Conflict("collection retrieval-cache objects cannot be removed")
+        try:
+            self._retrieval_cache.delete(
+                cache_store=identity[3],
+                object_path=identity[4],
+                revision=identity[5],
             )
+        except Exception:
+            with session_scope(self._session_factory) as session:
+                current = session.get(RetrievalCacheObjectRecord, identity[:3])
+                if current is not None and current.object_path == identity[4]:
+                    current.state = "delete_pending"
+            raise
+        with session_scope(self._session_factory) as session:
+            current = session.scalar(
+                select(RetrievalCacheObjectRecord)
+                .where(
+                    RetrievalCacheObjectRecord.source_store == identity[0],
+                    RetrievalCacheObjectRecord.collection_id == identity[1],
+                    RetrievalCacheObjectRecord.object_id == identity[2],
+                )
+                .with_for_update()
+            )
+            if current is None:
+                return
+            if current.object_path != identity[4] or current.stored_bytes != identity[6]:
+                raise RuntimeError("retrieval cache deletion ownership changed")
+            accounting = session.scalar(
+                select(RetrievalCacheStoreAccountingRecord)
+                .where(RetrievalCacheStoreAccountingRecord.cache_store == identity[3])
+                .with_for_update()
+            )
+            if accounting is None:
+                raise RuntimeError("retrieval cache committed accounting is inconsistent")
+            adjust_cache_committed_bytes(accounting, delta=-identity[6])
+            session.delete(current)
+
+    def _delete_archive_identity(
+        self,
+        collection_id: int,
+        store_name: str,
+        identity: ArchiveObjectIdentity,
+    ) -> None:
+        self._archive_stores.require(store_name).store.delete_collection_archive(
+            collection_id=collection_id,
+            objects=(identity,),
+        )
 
     def _finish(
         self,
@@ -263,24 +595,8 @@ class SqlAlchemyCollectionDeletionService:
             )
             if blockers:
                 raise Conflict("collection activity began during deletion: " + "; ".join(blockers))
-            retrieval_job_ids = select(RetrievalJobFileRecord.job_id).where(
-                RetrievalJobFileRecord.collection_id == collection_id
-            )
-            session.execute(
-                delete(RetrievalJobRecord).where(RetrievalJobRecord.id.in_(retrieval_job_ids))
-            )
-            upload = session.get(CollectionUploadRecord, collection_id)
-            if upload is not None:
-                session.delete(upload)
             collection = session.get(CollectionRecord, collection_id)
             if collection is not None:
-                before_tags = tuple(
-                    session.scalars(
-                        select(CollectionTagRecord.tag_id)
-                        .where(CollectionTagRecord.collection_id == collection_id)
-                        .order_by(CollectionTagRecord.tag_id)
-                    ).all()
-                )
                 execution = _execution(plan)
                 self._lifecycle_events.emit_collection(
                     type="collection.deleted",
@@ -289,6 +605,10 @@ class SqlAlchemyCollectionDeletionService:
                         "files": cast(int, plan["file_count"]),
                         "bytes": cast(int, plan["bytes"]),
                         "remote_storage_bytes": cast(int, plan["remote_storage_bytes"]),
+                        "collection_tag_count": cast(
+                            int,
+                            cast(dict[str, object], plan["metadata_rows"])["collection_tags"],
+                        ),
                     },
                     terminal=True,
                     initiator=ApplicationPrincipal(
@@ -307,16 +627,10 @@ class SqlAlchemyCollectionDeletionService:
                     ),
                     session=session,
                 )
-                record_catalog_event(
-                    session,
-                    change="deleted",
-                    collection_id=collection_id,
-                    occurred_at=format_utc_timestamp(utc_now()),
-                    inventory_identity=str(plan["inventory_identity"]),
-                    before_tags=before_tags,
-                    after_tags=(),
-                )
-                adjust_tag_collection_counts(session, removed=before_tags)
+                event = session.get(CatalogEventRecord, _catalog_event_sequence(plan))
+                if event is None or event.published:
+                    raise RuntimeError("collection deletion catalog event is unavailable")
+                event.published = True
                 session.delete(collection)
             session.delete(active)
         return _deletion_result(plan, status="deleted")
@@ -399,7 +713,14 @@ def _build_plan(
             "collections": 1,
             "collection_files": int(file_count),
             "collection_archive_copies": len(archives),
-            "collection_tags": len(collection.tags),
+            "collection_tags": int(
+                session.scalar(
+                    select(func.count(CollectionTagRecord.tag_id)).where(
+                        CollectionTagRecord.collection_id == collection_id
+                    )
+                )
+                or 0
+            ),
             "collection_metadata_publications": metadata_publication_count,
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
@@ -413,7 +734,11 @@ def _build_plan(
 
 
 def _public_plan(plan: dict[str, object]) -> dict[str, object]:
-    return {key: value for key, value in plan.items() if key != _EXECUTION_KEY}
+    return {
+        key: value
+        for key, value in plan.items()
+        if key not in {_EXECUTION_KEY, _CATALOG_EVENT_SEQUENCE_KEY}
+    }
 
 
 def _execution(plan: dict[str, object]) -> dict[str, object]:
@@ -534,6 +859,100 @@ def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, objec
         "bytes": plan["bytes"],
         "remote_storage_bytes": plan["remote_storage_bytes"],
     }
+
+
+def _archive_object_identity(record: CollectionArchiveObjectRecord) -> ArchiveObjectIdentity:
+    return ArchiveObjectIdentity(
+        object_id=record.object_id,
+        kind=record.kind,
+        object_path=record.object_path,
+        plaintext_bytes=record.plaintext_bytes,
+        stored_bytes=record.stored_bytes,
+        sha256=record.sha256,
+        stored_sha256=record.stored_sha256,
+        revision=record.revision,
+    )
+
+
+def _metadata_identity(record: CollectionMetadataPublicationRecord) -> ArchiveObjectIdentity:
+    assert record.object_path is not None
+    digest = record.stored_sha256 or "0" * 64
+    return ArchiveObjectIdentity(
+        object_id="metadata",
+        kind="metadata",
+        object_path=record.object_path,
+        plaintext_bytes=0,
+        stored_bytes=record.stored_bytes or 0,
+        sha256=digest,
+        stored_sha256=digest,
+        revision=record.revision,
+    )
+
+
+def _delete_empty_retrieval_jobs(session: Session, job_ids: set[str]) -> None:
+    for job_id in sorted(job_ids):
+        has_files = session.scalar(
+            select(RetrievalJobFileRecord.job_id)
+            .where(RetrievalJobFileRecord.job_id == job_id)
+            .limit(1)
+        )
+        has_objects = session.scalar(
+            select(RetrievalJobObjectRecord.job_id)
+            .where(RetrievalJobObjectRecord.job_id == job_id)
+            .limit(1)
+        )
+        if has_files is None and has_objects is None:
+            job = session.get(RetrievalJobRecord, job_id)
+            if job is not None:
+                session.delete(job)
+
+
+@cache
+def _collection_cascade_tables() -> tuple[Table, ...]:
+    """Return collection-owned cascade tables in bounded deletion order."""
+
+    reachable = {CollectionRecord.__tablename__}
+    changed = True
+    while changed:
+        changed = False
+        for table in Base.metadata.sorted_tables:
+            if table.name in reachable:
+                continue
+            for constraint in table.foreign_key_constraints:
+                if (
+                    str(constraint.ondelete or "").upper() == "CASCADE"
+                    and constraint.referred_table.name in reachable
+                ):
+                    reachable.add(table.name)
+                    changed = True
+                    break
+    excluded = {
+        CollectionRecord.__tablename__,
+        CollectionTagRecord.__tablename__,
+        CollectionMetadataPublicationRecord.__tablename__,
+        CollectionArchiveObjectRecord.__tablename__,
+        RetrievalCacheObjectRecord.__tablename__,
+        RetrievalCacheLeaseRecord.__tablename__,
+    }
+    result = tuple(
+        table
+        for table in reversed(Base.metadata.sorted_tables)
+        if table.name in reachable and table.name not in excluded
+    )
+    missing_key = [table.name for table in result if "collection_id" not in table.c]
+    if missing_key:
+        raise RuntimeError(
+            "collection cascade tables need an explicit bounded deletion key: "
+            + ", ".join(sorted(missing_key))
+        )
+    return result
+
+
+def _catalog_event_sequence(plan: dict[str, object]) -> int:
+    value = plan.get(_CATALOG_EVENT_SEQUENCE_KEY)
+    if not isinstance(value, int) or value < 1:
+        raise Conflict("collection deletion has no catalog event authority")
+    return value
 
 
 def _retirement_claim_id(plan: dict[str, object]) -> str | None:
