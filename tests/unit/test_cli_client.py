@@ -37,6 +37,8 @@ class RecordingClient(ApiClient):
         payload: dict[str, Any] = {"ok": True}
         if method == "POST" and path == "/v1/collection-upload-sessions":
             payload = {"collection_id": 1, "state": "finalized"}
+        if method == "POST" and path == "/v1/retrieval-plans":
+            payload = {"id": "plan-1", "state": "ready", "etag": "a" * 64}
         if method == "PUT" and "/volumes/" in path and "/units/" in path:
             content = bytes(kwargs["content"])
             payload = {
@@ -92,6 +94,22 @@ class ImpossibleRegistrationStateClient(RecordingClient):
         payload = response.json()
         payload["state"] = "uploading"
         return httpx.Response(200, json=payload, request=httpx.Request(method, path))
+
+
+class FailedRetrievalPlanClient(RecordingClient):
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = super()._request(method, path, **kwargs)
+        if method == "POST" and path == "/v1/retrieval-plans":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "plan-1",
+                    "state": "failed",
+                    "failure": "archive topology is unavailable",
+                },
+                request=httpx.Request(method, path),
+            )
+        return response
 
 
 def test_client_host_header_environment_reaches_requests(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -418,8 +436,12 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
     client = RecordingClient()
     files = [(42, "invoice.pdf")]
 
-    client.plan_retrieval(files, lease_seconds=3600)
-    client.create_retrieval_job(files, plan_etag="a" * 64, lease_seconds=3600)
+    client.plan_retrieval(
+        files,
+        idempotency_key="retrieval-one",
+        lease_seconds=3600,
+    )
+    client.create_retrieval_job("plan-1", plan_etag="a" * 64)
 
     payload = {
         "files": [
@@ -428,6 +450,7 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
                 "path": "invoice.pdf",
             }
         ],
+        "idempotency_key": "retrieval-one",
         "lease_seconds": 3600,
         "restore_policy": "allow",
     }
@@ -436,9 +459,19 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
         (
             "POST",
             "/v1/retrieval-jobs",
-            {"json": payload, "headers": {"If-Match": '"' + "a" * 64 + '"'}},
+            {
+                "json": {"plan_id": "plan-1"},
+                "headers": {"If-Match": '"' + "a" * 64 + '"'},
+            },
         ),
     ]
+
+
+def test_retrieval_plan_fails_closed_before_callers_use_an_unsealed_plan() -> None:
+    client = FailedRetrievalPlanClient()
+
+    with pytest.raises(InvalidState, match="archive topology is unavailable"):
+        client.plan_retrieval([(42, "invoice.pdf")])
 
 
 def test_client_rejects_unknown_restore_policy_before_transport() -> None:
@@ -446,12 +479,14 @@ def test_client_rejects_unknown_restore_policy_before_transport() -> None:
 
     with pytest.raises(BadRequest, match="restore_policy"):
         client.plan_retrieval([], restore_policy="sometimes")  # type: ignore[arg-type]
-    with pytest.raises(BadRequest, match="restore_policy"):
-        client.create_retrieval_job(
-            [],
-            plan_etag="a" * 64,
-            restore_policy="sometimes",  # type: ignore[arg-type]
-        )
+    assert client.calls == []
+
+
+def test_client_rejects_an_empty_retrieval_plan_idempotency_key() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest):
+        client.plan_retrieval([(42, "invoice.pdf")], idempotency_key="")
 
     assert client.calls == []
 
@@ -460,7 +495,7 @@ def test_client_rejects_noncanonical_upload_and_retrieval_http_identities() -> N
     client = RecordingClient()
 
     with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
-        client.create_retrieval_job([(42, "document.txt")], plan_etag="A" * 64)
+        client.create_retrieval_job("plan-1", plan_etag="A" * 64)
     with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
         client.put_collection_upload_session_unit(
             42,
@@ -608,6 +643,7 @@ def test_retrieval_file_download_streams_and_verifies_catalog_identity(
 
     def handle(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/retrieval-jobs/job-id/content"
+        assert request.headers["If-Match"] == f'"{sha256}"'
         assert dict(request.url.params) == {
             "collection_id": "42",
             "path": "docs/document.txt",

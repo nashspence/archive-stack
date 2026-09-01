@@ -26,8 +26,9 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionTagRecord,
     KeyDownloadReservationRecord,
-    RetrievalJobFileRecord,
     RetrievalJobRecord,
+    RetrievalPlanFileRecord,
+    RetrievalPlanRecord,
     TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
@@ -355,27 +356,51 @@ def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
             CollectionFileRecord(collection_id=1, path="video.mp4", bytes=100, sha256="2" * 64)
         )
         session.add(
+            RetrievalPlanRecord(
+                id="plan-one",
+                app="review",
+                initiated_by_key_id=str(created["id"]),
+                idempotency_key="plan-one",
+                creation_identity_sha256="d" * 64,
+                state="consumed",
+                request_json='[{"collection_id":1,"path":"video.mp4"}]',
+                lease_seconds=3600,
+                restore_policy="allow",
+                created_at=str(created["created_at"]),
+                ready_at=None,
+                expires_at="2026-08-01T00:00:00.000000Z",
+                file_commitment_sha256="b" * 64,
+                segment_commitment_sha256="c" * 64,
+                etag="a" * 64,
+            )
+        )
+        session.add(
+            RetrievalPlanFileRecord(
+                plan_id="plan-one",
+                file_order=0,
+                collection_id=1,
+                path="video.mp4",
+                bytes=100,
+                sha256="2" * 64,
+                source_store="fixture",
+                requires_restore=False,
+            )
+        )
+        session.add(
             RetrievalJobRecord(
                 id="job-one",
+                plan_id="plan-one",
                 app="review",
                 initiated_by_key_id=str(created["id"]),
                 event_context_json=None,
                 state="requested",
                 plan_etag="a" * 64,
-                constraints_json="{}",
+                lease_seconds=3600,
                 created_at=str(created["created_at"]),
                 requested_at=str(created["created_at"]),
                 ready_at=None,
                 expires_at=None,
                 next_poll_at=str(created["created_at"]),
-            )
-        )
-        session.add(
-            RetrievalJobFileRecord(
-                job_id="job-one",
-                collection_id=1,
-                path="video.mp4",
-                file_order=0,
             )
         )
         session.add(

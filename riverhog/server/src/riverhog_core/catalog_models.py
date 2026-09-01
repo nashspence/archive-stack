@@ -1137,16 +1137,174 @@ class KeyDownloadReservationRecord(Base):
     )
 
 
+class RetrievalPlanRecord(Base):
+    __tablename__ = "retrieval_plans"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    app: Mapped[str] = mapped_column(String)
+    initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String)
+    creation_identity_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String)
+    request_json: Mapped[str] = mapped_column(Text)
+    lease_seconds: Mapped[int] = mapped_column(BigInteger)
+    restore_policy: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String)
+    ready_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[str] = mapped_column(String)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_file_order: Mapped[int] = mapped_column(Integer, default=0)
+    next_placement_sequence: Mapped[int] = mapped_column(authority_ordinal_type(), default=0)
+    object_count: Mapped[int] = mapped_column(authority_ordinal_type(), default=0)
+    retrieval_bytes: Mapped[int] = mapped_column(authority_ordinal_type(), default=0)
+    requires_restore: Mapped[bool] = mapped_column(Boolean, default=False)
+    file_commitment_sha256: Mapped[str] = mapped_column(String(64))
+    segment_commitment_sha256: Mapped[str] = mapped_column(String(64))
+    etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("ix_retrieval_plans_owner", "app", "initiated_by_key_id", "id"),
+        UniqueConstraint(
+            "app",
+            "initiated_by_key_id",
+            "idempotency_key",
+            name="uq_retrieval_plans_key_idempotency",
+        ),
+        CheckConstraint(
+            "state IN ('planning','ready','consumed','expired','failed')",
+            name="ck_retrieval_plans_state",
+        ),
+        CheckConstraint("lease_seconds > 0", name="ck_retrieval_plans_lease"),
+        CheckConstraint(
+            "restore_policy IN ('allow','never')",
+            name="ck_retrieval_plans_restore_policy",
+        ),
+        CheckConstraint("next_file_order >= 0", name="ck_retrieval_plans_file_order"),
+    )
+
+    files: Mapped[list[RetrievalPlanFileRecord]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+    )
+    objects: Mapped[list[RetrievalPlanObjectRecord]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+    )
+    jobs: Mapped[list[RetrievalJobRecord]] = relationship(back_populates="plan")
+
+
+class RetrievalPlanFileRecord(Base):
+    __tablename__ = "retrieval_plan_files"
+
+    plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    file_order: Mapped[int] = mapped_column(Integer, primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
+    path: Mapped[str] = mapped_column(String)
+    bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    source_store: Mapped[str] = mapped_column(String)
+    requires_restore: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["plan_id"], ["retrieval_plans.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["collection_id", "path"],
+            ["collection_files.collection_id", "collection_files.path"],
+        ),
+        UniqueConstraint("plan_id", "collection_id", "path"),
+        Index("ix_retrieval_plan_files_collection", "collection_id", "plan_id"),
+        CheckConstraint("file_order >= 0", name="ck_retrieval_plan_files_order"),
+        CheckConstraint("bytes >= 0", name="ck_retrieval_plan_files_bytes"),
+    )
+
+    plan: Mapped[RetrievalPlanRecord] = relationship(back_populates="files")
+
+
+class RetrievalPlanObjectRecord(Base):
+    __tablename__ = "retrieval_plan_objects"
+
+    plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_order: Mapped[int] = mapped_column(authority_ordinal_type(), primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
+    source_store: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    plaintext_bytes: Mapped[int] = mapped_column(BigInteger)
+    stored_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    read_mode: Mapped[str] = mapped_column(String)
+    cache_store: Mapped[str | None] = mapped_column(String, nullable=True)
+    retrieval_bytes: Mapped[int] = mapped_column(authority_ordinal_type(), default=0)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["plan_id"], ["retrieval_plans.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["collection_id", "source_store", "object_id"],
+            [
+                "collection_archive_objects.collection_id",
+                "collection_archive_objects.store",
+                "collection_archive_objects.object_id",
+            ],
+        ),
+        UniqueConstraint("plan_id", "collection_id", "source_store", "object_id"),
+        Index(
+            "ix_retrieval_plan_objects_copy",
+            "collection_id",
+            "source_store",
+            "plan_id",
+        ),
+        CheckConstraint("kind IN ('pack','segment')", name="ck_retrieval_plan_objects_kind"),
+        CheckConstraint(
+            "read_mode IN ('immediate','restore_required','cache')",
+            name="ck_retrieval_plan_objects_read_mode",
+        ),
+        CheckConstraint("plaintext_bytes >= 0", name="ck_retrieval_plan_objects_plaintext"),
+        CheckConstraint("stored_bytes > 0", name="ck_retrieval_plan_objects_stored"),
+    )
+
+    plan: Mapped[RetrievalPlanRecord] = relationship(back_populates="objects")
+
+
+class RetrievalPlanPlacementRecord(Base):
+    __tablename__ = "retrieval_plan_placements"
+
+    plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    file_order: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sequence: Mapped[int] = mapped_column(authority_ordinal_type(), primary_key=True)
+    object_order: Mapped[int] = mapped_column(authority_ordinal_type())
+    file_offset: Mapped[int] = mapped_column(BigInteger)
+    object_offset: Mapped[int] = mapped_column(BigInteger)
+    bytes: Mapped[int] = mapped_column(BigInteger)
+    member: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["plan_id", "file_order"],
+            ["retrieval_plan_files.plan_id", "retrieval_plan_files.file_order"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["plan_id", "object_order"],
+            ["retrieval_plan_objects.plan_id", "retrieval_plan_objects.object_order"],
+        ),
+        Index("ix_retrieval_plan_placements_object", "plan_id", "object_order"),
+        CheckConstraint("file_offset >= 0", name="ck_retrieval_plan_placements_file_offset"),
+        CheckConstraint("object_offset >= 0", name="ck_retrieval_plan_placements_object_offset"),
+        CheckConstraint("bytes >= 0", name="ck_retrieval_plan_placements_bytes"),
+    )
+
+
 class RetrievalJobRecord(Base):
     __tablename__ = "retrieval_jobs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String, unique=True)
     app: Mapped[str] = mapped_column(String)
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String)
     plan_etag: Mapped[str] = mapped_column(String(64))
-    constraints_json: Mapped[str] = mapped_column(Text)
+    lease_seconds: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[str] = mapped_column(String)
     requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
     restore_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1158,75 +1316,53 @@ class RetrievalJobRecord(Base):
     failure: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
+        ForeignKeyConstraint(["plan_id"], ["retrieval_plans.id"]),
+        UniqueConstraint("id", "plan_id"),
         Index("ix_retrieval_jobs_due", "state", "next_poll_at", "id"),
         CheckConstraint(
             "state IN ('requested','ready','completed','canceled','expired','failed')",
             name="ck_retrieval_jobs_state",
         ),
         CheckConstraint("length(plan_etag) = 64", name="ck_retrieval_jobs_plan_etag"),
+        CheckConstraint("lease_seconds > 0", name="ck_retrieval_jobs_lease"),
     )
 
-    files: Mapped[list[RetrievalJobFileRecord]] = relationship(
+    plan: Mapped[RetrievalPlanRecord] = relationship(back_populates="jobs")
+    progress: Mapped[list[RetrievalJobObjectProgressRecord]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
     )
-    objects: Mapped[list[RetrievalJobObjectRecord]] = relationship(
-        back_populates="job",
-        cascade="all, delete-orphan",
-    )
 
 
-class RetrievalJobFileRecord(Base):
-    __tablename__ = "retrieval_job_files"
+class RetrievalJobObjectProgressRecord(Base):
+    __tablename__ = "retrieval_job_object_progress"
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    path: Mapped[str] = mapped_column(String, primary_key=True)
-    file_order: Mapped[int] = mapped_column(Integer)
-
-    __table_args__ = (
-        ForeignKeyConstraint(["job_id"], ["retrieval_jobs.id"], ondelete="CASCADE"),
-        ForeignKeyConstraint(
-            ["collection_id", "path"],
-            ["collection_files.collection_id", "collection_files.path"],
-        ),
-        Index("ix_retrieval_job_files_order", "job_id", "file_order"),
-        CheckConstraint("file_order >= 0", name="ck_retrieval_job_files_order"),
-    )
-
-    job: Mapped[RetrievalJobRecord] = relationship(back_populates="files")
-
-
-class RetrievalJobObjectRecord(Base):
-    __tablename__ = "retrieval_job_objects"
-
-    job_id: Mapped[str] = mapped_column(String, primary_key=True)
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    source_store: Mapped[str] = mapped_column(String, primary_key=True)
-    object_id: Mapped[str] = mapped_column(String, primary_key=True)
-    object_order: Mapped[int] = mapped_column(Integer)
-    read_mode: Mapped[str] = mapped_column(String)
+    object_order: Mapped[int] = mapped_column(authority_ordinal_type(), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String)
+    prepare_requested_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_poll_at: Mapped[str] = mapped_column(String)
     cache_store: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
-        ForeignKeyConstraint(["job_id"], ["retrieval_jobs.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
-            ["collection_id", "source_store", "object_id"],
-            [
-                "collection_archive_objects.collection_id",
-                "collection_archive_objects.store",
-                "collection_archive_objects.object_id",
-            ],
+            ["job_id", "plan_id"],
+            ["retrieval_jobs.id", "retrieval_jobs.plan_id"],
+            ondelete="CASCADE",
         ),
-        Index("ix_retrieval_job_objects_order", "job_id", "object_order"),
-        CheckConstraint("object_order >= 0", name="ck_retrieval_job_objects_order"),
+        ForeignKeyConstraint(
+            ["plan_id", "object_order"],
+            ["retrieval_plan_objects.plan_id", "retrieval_plan_objects.object_order"],
+        ),
         CheckConstraint(
-            "read_mode IN ('immediate','restore_required','cache')",
-            name="ck_retrieval_job_objects_read_mode",
+            "state IN ('preparing','requested','ready')",
+            name="ck_retrieval_job_object_progress_state",
         ),
+        Index("ix_retrieval_job_object_progress_due", "state", "next_poll_at", "job_id"),
     )
 
-    job: Mapped[RetrievalJobRecord] = relationship(back_populates="objects")
+    job: Mapped[RetrievalJobRecord] = relationship(back_populates="progress")
 
 
 class RetrievalCacheObjectRecord(Base):

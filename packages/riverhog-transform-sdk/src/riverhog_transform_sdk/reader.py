@@ -46,12 +46,19 @@ class ClaimedCollectionApi(Protocol):
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[CollectionId, str]],
+        plan_id: str,
         *,
         plan_etag: str,
-        lease_seconds: int | None = None,
-        restore_policy: RetrievalPolicy = "available-only",
         event_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def list_retrieval_plan_files(
+        self,
+        plan_id: str,
+        *,
+        plan_etag: str,
+        start_ordinal: int = 0,
+        page_size: int = 100,
     ) -> dict[str, Any]: ...
 
     def get_retrieval_job(self, job_id: str) -> dict[str, Any]: ...
@@ -189,15 +196,16 @@ class ClaimedCollectionReader:
             lease_seconds=lease_seconds,
             restore_policy=restore_policy,
         )
-        _verify_plan(plan, selected)
         plan_etag = str(plan.get("etag") or "")
         if len(plan_etag) != 64:
             raise RuntimeError("Riverhog retrieval plan has no stable identity")
+        _verify_plan_files(
+            _retrieval_plan_files(self.api, plan),
+            selected,
+        )
         job = self.api.create_retrieval_job(
-            refs,
+            str(plan["id"]),
             plan_etag=plan_etag,
-            lease_seconds=lease_seconds,
-            restore_policy=restore_policy,
             event_context={
                 "initiator": {
                     "app": "collection-work",
@@ -220,7 +228,7 @@ class ClaimedCollectionReader:
         if state != "ready":
             failure = str(job.get("failure") or state or "unknown retrieval failure")
             raise RuntimeError(f"claimed collection retrieval is not ready: {failure}")
-        _verify_job(job, selected, plan_etag=plan_etag)
+        _verify_job(job, plan_id=str(plan["id"]), plan_etag=plan_etag)
         return ClaimedRetrieval(
             self.api,
             job=job,
@@ -365,10 +373,52 @@ class ClaimedRetrieval:
         return current
 
 
-def _verify_plan(plan: Mapping[str, Any], selected: Sequence[ClaimedArtifact]) -> None:
-    rows = plan.get("files")
-    if not isinstance(rows, list):
-        raise RuntimeError("Riverhog retrieval plan has no file identities")
+def _retrieval_plan_files(
+    api: ClaimedCollectionApi,
+    plan: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    plan_id = str(plan.get("id") or "")
+    plan_etag = str(plan.get("etag") or "")
+    file_count = _positive_int(plan.get("file_count"), "plan file count")
+    rows: list[Mapping[str, Any]] = []
+    start_ordinal = 0
+    while True:
+        page = api.list_retrieval_plan_files(
+            plan_id,
+            plan_etag=plan_etag,
+            start_ordinal=start_ordinal,
+            page_size=100,
+        )
+        current = page.get("files")
+        if (
+            page.get("plan_id") != plan_id
+            or page.get("etag") != plan_etag
+            or page.get("start_ordinal") != start_ordinal
+            or not isinstance(current, list)
+            or any(not isinstance(item, Mapping) for item in current)
+        ):
+            raise RuntimeError("Riverhog retrieval plan file page changed its authority")
+        rows.extend(current)
+        if len(rows) > file_count:
+            raise RuntimeError("Riverhog retrieval plan exceeded its declared file count")
+        complete = page.get("complete")
+        if not isinstance(complete, bool):
+            raise RuntimeError("Riverhog retrieval plan page omitted completion state")
+        if complete:
+            if page.get("next_ordinal") is not None or len(rows) != file_count:
+                raise RuntimeError("Riverhog retrieval plan traversal ended inconsistently")
+            return tuple(rows)
+        next_ordinal = page.get("next_ordinal")
+        expected_next = start_ordinal + len(current)
+        if not current or isinstance(next_ordinal, bool) or next_ordinal != expected_next:
+            raise RuntimeError("Riverhog retrieval plan did not advance exactly")
+        start_ordinal = expected_next
+
+
+def _verify_plan_files(
+    rows: Sequence[Mapping[str, Any]],
+    selected: Sequence[ClaimedArtifact],
+) -> None:
     expected = {current.key: (current.bytes, current.sha256) for current in selected}
     actual: dict[tuple[int, str], tuple[int, str]] = {}
     for row in rows:
@@ -390,13 +440,14 @@ def _verify_plan(plan: Mapping[str, Any], selected: Sequence[ClaimedArtifact]) -
 
 def _verify_job(
     job: Mapping[str, Any],
-    selected: Sequence[ClaimedArtifact],
     *,
+    plan_id: str,
     plan_etag: str,
 ) -> None:
+    if str(job.get("plan_id") or "") != plan_id:
+        raise RuntimeError("Riverhog retrieval job changed its plan authority")
     if str(job.get("plan_etag") or "") != plan_etag:
         raise RuntimeError("Riverhog retrieval job changed its plan identity")
-    _verify_plan(job, selected)
 
 
 def _best_effort_cancel(api: ClaimedCollectionApi, job_id: str) -> None:

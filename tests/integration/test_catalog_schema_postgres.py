@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from riverhog_age import CHUNK_SIZE
 from riverhog_core.app_permissions import (
     COLLECTIONS_CREATE,
     ApplicationAccess,
@@ -25,10 +26,13 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectUploadRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanPlacementRecord,
     TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
@@ -38,6 +42,7 @@ from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     archive_store_binding,
 )
+from tests.unit.test_retrieval_service import _seed_collection
 
 pytestmark = pytest.mark.integration
 V1_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/state/v1_0001/riverhog.postgresql.sql"
@@ -102,6 +107,42 @@ def test_postgres_current_v1_fixture_validates_and_restarts(
     assert status.condition == "current"
     assert status.current_revision == "v1_0001"
     assert validate_db(isolated_database_url).condition == "current"
+
+
+def test_postgres_retrieval_plan_advances_in_bounded_restartable_steps(
+    isolated_database_url: str,
+    tmp_path: Path,
+) -> None:
+    segment_count = 65
+    content = bytes(index % 251 for index in range(segment_count * CHUNK_SIZE))
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"many-segments.bin": content},
+        database_url=isolated_database_url,
+        raw=True,
+        raw_volume_plaintext_bytes=CHUNK_SIZE,
+        raw_part_plaintext_bytes=CHUNK_SIZE,
+    )
+
+    plan = service.plan(((collection_id, "many-segments.bin"),))
+    assert plan["state"] == "planning"
+    with session_scope(service._session_factory) as session:
+        assert len(session.scalars(select(RetrievalPlanObjectRecord)).all()) == 32
+        assert len(session.scalars(select(RetrievalPlanPlacementRecord)).all()) == 32
+
+    restarted = SqlAlchemyRetrievalService(
+        service._config,
+        service._archive_stores,
+        service._cache,
+        session_factory=make_session_factory(isolated_database_url),
+    )
+    plan = restarted.advance_plan(app="", plan_id=str(plan["id"]))
+    assert plan["state"] == "planning"
+    plan = restarted.advance_plan(app="", plan_id=str(plan["id"]))
+    assert plan["state"] == "ready"
+    with session_scope(make_session_factory(isolated_database_url)) as session:
+        assert len(session.scalars(select(RetrievalPlanObjectRecord)).all()) == segment_count
+        assert len(session.scalars(select(RetrievalPlanPlacementRecord)).all()) == segment_count
 
 
 def test_postgres_upload_idempotency_is_independent_per_application(

@@ -366,19 +366,42 @@ class RetrievalService(Protocol):
         self,
         files: Sequence[tuple[int, str]],
         *,
+        idempotency_key: str | None = None,
         lease: timedelta | None = None,
         restore_policy: str = "allow",
         principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
+    def get_plan(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        key_id: str | None = None,
+    ) -> JsonObject: ...
+    def advance_plan(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        key_id: str | None = None,
+    ) -> JsonObject: ...
+    def list_plan_files(
+        self,
+        *,
+        app: str,
+        plan_id: str,
+        etag: str,
+        start_ordinal: int,
+        page_size: int,
+        key_id: str | None = None,
     ) -> JsonObject: ...
     def create(
         self,
         *,
         app: str,
         key_id: str | None = None,
-        files: Sequence[tuple[int, str]],
+        plan_id: str,
         plan_etag: str,
-        lease: timedelta | None = None,
-        restore_policy: str = "allow",
         event_context: dict[str, object] | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
@@ -421,6 +444,8 @@ class RetrievalService(Protocol):
         job_id: str,
         collection_id: int,
         path: str,
+        offset: int = 0,
+        size: int | None = None,
         key_id: str | None = None,
     ) -> tuple[Iterator[bytes], int, str]: ...
     def process_due(self, *, limit: int = 10) -> int: ...

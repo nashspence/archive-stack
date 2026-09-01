@@ -122,7 +122,7 @@ _REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
             "new-archive-cache-expired",
             "cache-sweep-cadence-observed",
             "opportunistic-plan-cost-boundary",
-            "retrieval-plan-source-exact",
+            "retrieval-plan-authority-exact",
         }
     ),
     "restored": frozenset({"deep-archive-restore-ready"}),
@@ -2835,19 +2835,60 @@ def _retrieval_files(collection_id: int, corpus: CorpusManifest) -> tuple[tuple[
     return tuple((collection_id, item.path) for item in corpus.files)
 
 
-def _plan_sources(plan: Mapping[str, object]) -> set[str]:
-    return {str(item.get("source_store", "")) for item in _page_items(plan, "objects")}
+def _assert_retrieval_plan_files(
+    api: Any,
+    plan: Mapping[str, object],
+    expected: Sequence[tuple[int, str]],
+) -> None:
+    plan_id = str(plan["id"])
+    plan_etag = str(plan["etag"])
+    file_count = int(str(plan["file_count"]))
+    files: list[tuple[int, str]] = []
+    start_ordinal = 0
+    while True:
+        page = api.list_retrieval_plan_files(
+            plan_id,
+            plan_etag=plan_etag,
+            start_ordinal=start_ordinal,
+            page_size=100,
+        )
+        page_files = _page_items(page, "files")
+        if (
+            page.get("plan_id") != plan_id
+            or page.get("etag") != plan_etag
+            or page.get("start_ordinal") != start_ordinal
+        ):
+            raise QualificationError("retrieval plan page changed its exact authority")
+        files.extend(
+            (int(current["collection_id"]), str(current["path"])) for current in page_files
+        )
+        if len(files) > file_count:
+            raise QualificationError("retrieval plan exceeded its declared file count")
+        complete = page.get("complete")
+        if not isinstance(complete, bool):
+            raise QualificationError("retrieval plan page omitted completion state")
+        if complete:
+            if page.get("next_ordinal") is not None or len(files) != file_count:
+                raise QualificationError("retrieval plan traversal ended inconsistently")
+            break
+        next_ordinal = page.get("next_ordinal")
+        expected_next = start_ordinal + len(page_files)
+        if not page_files or isinstance(next_ordinal, bool) or next_ordinal != expected_next:
+            raise QualificationError("retrieval plan traversal did not advance exactly")
+        start_ordinal = expected_next
+    if tuple(files) != tuple(expected):
+        raise QualificationError("retrieval plan changed its exact file authority")
 
 
 def _download_retrieval(
     api: Any,
     *,
     job: Mapping[str, object],
+    collection_id: int,
     corpus: CorpusManifest,
     output: Path,
 ) -> None:
     job_id = str(job["id"])
-    collection_id = int(cast(list[dict[str, Any]], job["files"])[0]["collection_id"])
     output.mkdir(parents=True)
     for item in corpus.files:
         destination = output / item.path
@@ -2868,8 +2909,6 @@ def _ready_retrieval(
     *,
     collection_id: int,
     corpus: CorpusManifest,
-    expected_source: str,
-    expected_read_mode: str,
     lease_seconds: int,
     restore_policy: str,
     output: Path,
@@ -2880,23 +2919,14 @@ def _ready_retrieval(
         lease_seconds=lease_seconds,
         restore_policy=restore_policy,
     )
-    if _plan_sources(plan) != {expected_source}:
-        raise QualificationError(f"retrieval did not select {expected_source}")
-    if {str(item.get("read_mode", "")) for item in _page_items(plan, "objects")} != {
-        expected_read_mode
-    }:
-        raise QualificationError(
-            f"retrieval did not use the expected {expected_read_mode} read mode"
-        )
+    _assert_retrieval_plan_files(api, plan, files)
     if plan.get("requires_restore"):
         raise QualificationError("ready retrieval unexpectedly required archival restoration")
     if int(plan.get("lease_seconds", -1)) != lease_seconds:
         raise QualificationError("retrieval plan did not preserve its bounded lease")
     job = api.create_retrieval_job(
-        files,
+        str(plan["id"]),
         plan_etag=str(plan["etag"]),
-        lease_seconds=lease_seconds,
-        restore_policy=restore_policy,
         event_context={"qualification": "provider-v1"},
     )
     deadline = time.monotonic() + 30 * 60
@@ -2911,7 +2941,13 @@ def _ready_retrieval(
     job = api.renew_retrieval_job(str(job["id"]), lease_seconds=lease_seconds)
     if job.get("state") != "ready" or int(job.get("lease_seconds", -1)) != lease_seconds:
         raise QualificationError("retrieval renewal did not preserve its ready lease")
-    _download_retrieval(api, job=job, corpus=corpus, output=output)
+    _download_retrieval(
+        api,
+        job=job,
+        collection_id=collection_id,
+        corpus=corpus,
+        output=output,
+    )
     acknowledged = api.acknowledge_retrieval_job(str(job["id"]))
     if acknowledged.get("state") != "completed":
         raise QualificationError("retrieval acknowledgement did not complete")
@@ -3004,9 +3040,8 @@ def _cancel_retrieval(
     files = _retrieval_files(collection_id, corpus)
     plan = api.plan_retrieval(files, lease_seconds=lease_seconds)
     job = api.create_retrieval_job(
-        files,
+        str(plan["id"]),
         plan_etag=str(plan["etag"]),
-        lease_seconds=lease_seconds,
     )
     canceled = api.cancel_retrieval_job(str(job["id"]))
     if canceled.get("state") != "canceled":
@@ -3553,8 +3588,6 @@ def operate_qualification(
                     api,
                     collection_id=collection_id,
                     corpus=corpus,
-                    expected_source="b2-archive",
-                    expected_read_mode="immediate",
                     lease_seconds=lease_seconds,
                     restore_policy="never",
                     output=scratch / "client-retrieval",
@@ -3656,8 +3689,6 @@ def operate_qualification(
                     api,
                     collection_id=checkpoint.collection_id,
                     corpus=corpus,
-                    expected_source="aws-deep-archive",
-                    expected_read_mode="cache",
                     lease_seconds=QUALIFICATION_OPPORTUNISTIC_LEASE_SECONDS,
                     restore_policy="never",
                     output=Path(raw) / "client-retrieval",
@@ -3684,16 +3715,9 @@ def operate_qualification(
                 lease_seconds=lease_seconds,
                 restore_policy="never",
             )
-            if _plan_sources(opportunistic_plan) != {"aws-deep-archive"}:
-                raise QualificationError("Deep Archive retrieval did not select AWS")
-            read_modes = {
-                str(item.get("read_mode", ""))
-                for item in _page_items(opportunistic_plan, "objects")
-            }
-            if read_modes == {"cache"}:
+            _assert_retrieval_plan_files(api, opportunistic_plan, files)
+            if opportunistic_plan.get("requires_restore") is False:
                 return checkpoint
-            if read_modes != {"restore_required"}:
-                raise QualificationError("Deep Archive retrieval did not require restore")
             if opportunistic_plan.get("requires_restore") is not True:
                 raise QualificationError(
                     "opportunistic Deep Archive plan omitted its restore requirement"
@@ -3703,13 +3727,12 @@ def operate_qualification(
                 lease_seconds=lease_seconds,
                 restore_policy="allow",
             )
+            _assert_retrieval_plan_files(api, plan, files)
             if int(plan.get("lease_seconds", -1)) != lease_seconds:
                 raise QualificationError("Deep Archive plan did not preserve its bounded lease")
             job = api.create_retrieval_job(
-                files,
+                str(plan["id"]),
                 plan_etag=str(plan["etag"]),
-                lease_seconds=lease_seconds,
-                restore_policy="allow",
                 event_context={"qualification": "deep-archive-v1"},
             )
             job_id = str(job.get("id", ""))
@@ -3723,7 +3746,7 @@ def operate_qualification(
                     "new-archive-cache-expired",
                     "cache-sweep-cadence-observed",
                     "opportunistic-plan-cost-boundary",
-                    "retrieval-plan-source-exact",
+                    "retrieval-plan-authority-exact",
                 ),
                 retrieval_job_id=job_id,
             )
@@ -3822,6 +3845,7 @@ def operate_qualification(
                 _download_retrieval(
                     api,
                     job=job,
+                    collection_id=collection_id,
                     corpus=corpus,
                     output=scratch / "client-retrieval",
                 )

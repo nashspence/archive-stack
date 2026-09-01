@@ -199,6 +199,7 @@ def test_riverhog_client_exports_the_complete_public_error_hierarchy() -> None:
         "Forbidden",
         "HashMismatch",
         "InvalidPath",
+        "InvalidRange",
         "InvalidState",
         "NotFound",
         "RiverhogError",
@@ -405,6 +406,7 @@ READ_COLLECTION_OPERATIONS = {
         "cursor-feed": {"list_lifecycle_events", "resourcesync_change_list"},
         "exact-set-page": {"get_portable_collection_inventory"},
         "exact-authority-page": {
+            "list_retrieval_plan_files",
             "list_processing_claim_artifacts",
             "list_processing_claim_disposition_outputs",
             "list_processing_claim_dispositions",
@@ -526,6 +528,7 @@ PUBLIC_QUERY_SELECTORS = {
             "state",
             "tag",
         },
+        "list_retrieval_plan_files": {"page_size", "start_ordinal"},
         "list_tags": {"order", "page_size", "page_token", "q", "sort"},
         "plan_collection_deletion": {"retirement_claim_id"},
         "resourcesync_change_list": {"after"},

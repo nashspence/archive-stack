@@ -9,12 +9,16 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
     CollectionMetadataPublicationRecord,
+    RetrievalPlanObjectRecord,
+    RetrievalPlanRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
+from sqlalchemy import select
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -122,3 +126,84 @@ def test_retirement_verifies_a_retained_copy_then_deletes_every_target_object(
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep")) is None
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is not None
+
+
+def test_retirement_blocks_an_active_plan_and_reclaims_its_expired_authority(
+    tmp_path: Path,
+) -> None:
+    config, _deep_store, _b2_store, service = _service(tmp_path / "catalog.sqlite3")
+    plan_id = "retrieval-plan"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        archive_object = session.scalar(
+            select(CollectionArchiveObjectRecord)
+            .where(
+                CollectionArchiveObjectRecord.collection_id == COLLECTION_ID,
+                CollectionArchiveObjectRecord.store == "deep",
+                CollectionArchiveObjectRecord.kind.in_({"pack", "segment"}),
+            )
+            .order_by(CollectionArchiveObjectRecord.object_id)
+            .limit(1)
+        )
+        assert archive_object is not None
+        session.add(
+            RetrievalPlanRecord(
+                id=plan_id,
+                app="reader",
+                initiated_by_key_id="key",
+                idempotency_key=plan_id,
+                creation_identity_sha256="d" * 64,
+                state="ready",
+                request_json='[{"collection_id":1,"path":"document.txt"}]',
+                lease_seconds=3600,
+                restore_policy="allow",
+                created_at="2026-08-08T00:00:00.000000Z",
+                ready_at="2026-08-08T00:00:00.000000Z",
+                expires_at="2099-08-08T00:00:00.000000Z",
+                failure=None,
+                next_file_order=1,
+                next_placement_sequence=0,
+                object_count=1,
+                retrieval_bytes=archive_object.stored_bytes,
+                requires_restore=False,
+                file_commitment_sha256="a" * 64,
+                segment_commitment_sha256="b" * 64,
+                etag="c" * 64,
+            )
+        )
+        session.add(
+            RetrievalPlanObjectRecord(
+                plan_id=plan_id,
+                object_order=0,
+                collection_id=COLLECTION_ID,
+                source_store="deep",
+                object_id=archive_object.object_id,
+                kind=archive_object.kind,
+                plaintext_bytes=archive_object.plaintext_bytes,
+                stored_bytes=archive_object.stored_bytes,
+                sha256=archive_object.sha256,
+                read_mode="immediate",
+                cache_store=None,
+                retrieval_bytes=archive_object.stored_bytes,
+            )
+        )
+
+    blocked = service.plan(COLLECTION_ID, store="deep")
+    assert blocked["status"] == "blocked"
+    assert blocked["blockers"] == [f"retrieval plan is active: {plan_id}"]
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        plan = session.get(RetrievalPlanRecord, plan_id)
+        assert plan is not None
+        plan.expires_at = "2020-08-08T00:00:00.000000Z"
+
+    ready = service.plan(COLLECTION_ID, store="deep")
+    assert ready["status"] == "ready"
+    result = service.retire(
+        COLLECTION_ID,
+        store="deep",
+        challenge=str(ready["challenge"]),
+    )
+
+    assert result["status"] == "retired"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        assert session.get(RetrievalPlanRecord, plan_id) is None

@@ -33,7 +33,10 @@ RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
     ),
     "get_archive_store": frozenset({"not_found"}),
     "get_retrieval_cache_object": frozenset({"not_found"}),
-    "plan_retrieval": frozenset({"invalid_state", "not_found"}),
+    "plan_retrieval": frozenset({"conflict", "not_found"}),
+    "get_retrieval_plan": frozenset({"not_found"}),
+    "advance_retrieval_plan": frozenset({"not_found"}),
+    "list_retrieval_plan_files": frozenset({"invalid_state", "not_found", "precondition_failed"}),
     "create_retrieval_job": frozenset(
         {"conflict", "download_allowance_exceeded", "invalid_state", "not_found"}
     ),
@@ -42,7 +45,13 @@ RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
     "cancel_retrieval_job": frozenset({"invalid_state", "not_found"}),
     "acknowledge_retrieval_job": frozenset({"invalid_state", "not_found"}),
     "download_retrieval_file": frozenset(
-        {"download_allowance_exceeded", "invalid_state", "not_found"}
+        {
+            "download_allowance_exceeded",
+            "invalid_range",
+            "invalid_state",
+            "not_found",
+            "precondition_failed",
+        }
     ),
     "get_download_quota": frozenset({"download_allowance_exceeded", "not_found"}),
     "set_app_key_download_quota": frozenset({"download_allowance_exceeded", "not_found"}),

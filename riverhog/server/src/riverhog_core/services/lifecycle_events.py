@@ -26,6 +26,7 @@ from riverhog_core.catalog_models import (
     CollectionUploadTagRecord,
     LifecycleEventRecord,
     RetrievalJobRecord,
+    RetrievalPlanFileRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 
@@ -263,7 +264,14 @@ class SqlAlchemyLifecycleEventService:
                 expires_at=expires_at,
                 session=session,
             )
-        collection_ids = sorted({current.collection_id for current in job.files})
+        collection_ids = list(
+            session.scalars(
+                select(RetrievalPlanFileRecord.collection_id)
+                .where(RetrievalPlanFileRecord.plan_id == job.plan_id)
+                .distinct()
+                .order_by(RetrievalPlanFileRecord.collection_id)
+            )
+        )
         data: dict[str, Any] = {
             "retrieval_id": job.id,
             "collection_ids": collection_ids,
