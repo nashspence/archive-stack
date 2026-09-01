@@ -28,6 +28,10 @@ class RetrievalCacheAdmission:
 
 
 class RetrievalCache(Protocol):
+    def request_accounting_reconciliation_for_startup(self) -> int: ...
+
+    def process_accounting_reconciliation(self, *, limit: int = 100) -> int: ...
+
     def abort_incomplete_writes(
         self,
         *,

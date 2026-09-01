@@ -89,6 +89,7 @@ from riverhog_core.services.lifecycle_events import (
     event_context_json,
 )
 from riverhog_core.services.retrieval_cache import register_cache_ready
+from riverhog_core.services.retrieval_cache_accounting import adjust_cache_committed_bytes
 from riverhog_core.streaming_age import ResumableAgeSessionCache
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
@@ -190,6 +191,16 @@ class SqlAlchemyRetrievalService:
         if self._cache is None:
             return 0
         return self._cache.abort_incomplete_writes(initiated_before=initiated_before)
+
+    def request_cache_accounting_reconciliation_for_startup(self) -> int:
+        if self._cache is None:
+            return 0
+        return self._cache.request_accounting_reconciliation_for_startup()
+
+    def process_cache_accounting_reconciliation(self, *, limit: int = 100) -> int:
+        if self._cache is None:
+            return 0
+        return self._cache.process_accounting_reconciliation(limit=limit)
 
     def collection_inventory(
         self,
@@ -406,23 +417,32 @@ class SqlAlchemyRetrievalService:
         if limit < 1 or limit > 10_000:
             raise BadRequest("catalog change limit must be between 1 and 10000")
         with read_snapshot(self._session_factory) as session:
-            scanned_sequences = list(
-                session.scalars(
-                    select(CatalogEventRecord.sequence)
+            scanned = list(
+                session.execute(
+                    select(CatalogEventRecord.sequence, CatalogEventRecord.published)
                     .where(CatalogEventRecord.sequence > after)
                     .order_by(CatalogEventRecord.sequence)
                     .limit(limit + 1)
-                ).all()
+                )
             )
-            has_more = len(scanned_sequences) > limit
-            page_sequences = scanned_sequences[:limit]
+            published_prefix: list[int] = []
+            for sequence, published in scanned:
+                if not published:
+                    break
+                published_prefix.append(int(sequence))
+            page_sequences = published_prefix[:limit]
+            has_more = len(scanned) > len(page_sequences)
             cursor = int(page_sequences[-1]) if page_sequences else after
             if not page_sequences:
-                return {"cursor": cursor, "has_more": False, "changes": []}
+                return {"cursor": cursor, "has_more": has_more, "changes": []}
             visibility, projected_change = catalog_event_projection(principal, CATALOG_READ)
             rows = session.execute(
                 select(CatalogEventRecord, projected_change.label("projected_change"))
-                .where(CatalogEventRecord.sequence.in_(page_sequences), visibility)
+                .where(
+                    CatalogEventRecord.sequence.in_(page_sequences),
+                    CatalogEventRecord.published.is_(True),
+                    visibility,
+                )
                 .order_by(CatalogEventRecord.sequence)
             ).all()
             return {
@@ -1361,10 +1381,12 @@ class SqlAlchemyRetrievalService:
                         RetrievalCacheStoreAccountingRecord,
                         cache_record.cache_store,
                     )
-                    if accounting is None or accounting.committed_bytes < cache_record.stored_bytes:
+                    if accounting is None:
                         raise RuntimeError("retrieval cache accounting is inconsistent")
-                    accounting.committed_bytes -= cache_record.stored_bytes
-                    accounting.updated_at = format_utc_timestamp(utc_now())
+                    adjust_cache_committed_bytes(
+                        accounting,
+                        delta=-cache_record.stored_bytes,
+                    )
                     session.delete(cache_record)
                     removed += 1
         return removed

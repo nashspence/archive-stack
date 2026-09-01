@@ -4,13 +4,14 @@ from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime
 
 from riverhog_storage_adapter_protocol import StorageAdapterRejection
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.catalog_db import SessionFactory, session_scope
 from riverhog_core.catalog_models import (
+    RetrievalCacheAccountingReconciliationRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCachePopulationClaimRecord,
@@ -21,6 +22,10 @@ from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.ports.archive_objects import ArchiveResumableObjectStore, WriteSession
 from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RetrievalCacheStoreRegistration
+from riverhog_core.services.retrieval_cache_accounting import (
+    adjust_cache_committed_bytes,
+    locked_cache_accounting,
+)
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 
 
@@ -50,6 +55,99 @@ class SqlAlchemyRetrievalCache:
             store.abort_incomplete_writes(initiated_before=initiated_before)
             for store in self._stores.values()
         )
+
+    def request_accounting_reconciliation_for_startup(self) -> int:
+        requested = 0
+        now = format_utc_timestamp(utc_now())
+        with session_scope(self._session_factory) as session:
+            for cache_store in self._stores:
+                if (
+                    session.get(RetrievalCacheAccountingReconciliationRecord, cache_store)
+                    is not None
+                ):
+                    continue
+                accounting = locked_cache_accounting(session, cache_store)
+                session.add(
+                    RetrievalCacheAccountingReconciliationRecord(
+                        cache_store=cache_store,
+                        generation=accounting.generation,
+                        after_source_store=None,
+                        after_collection_id=None,
+                        after_object_id=None,
+                        accumulated_bytes=0,
+                        started_at=now,
+                        updated_at=now,
+                    )
+                )
+                requested += 1
+        return requested
+
+    def process_accounting_reconciliation(self, *, limit: int = 100) -> int:
+        if limit < 1:
+            return 0
+        with session_scope(self._session_factory) as session:
+            reconciliation = session.scalar(
+                select(RetrievalCacheAccountingReconciliationRecord)
+                .order_by(RetrievalCacheAccountingReconciliationRecord.cache_store)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            if reconciliation is None:
+                return 0
+            accounting = locked_cache_accounting(session, reconciliation.cache_store)
+            now = format_utc_timestamp(utc_now())
+            if reconciliation.generation != accounting.generation:
+                reconciliation.generation = accounting.generation
+                reconciliation.after_source_store = None
+                reconciliation.after_collection_id = None
+                reconciliation.after_object_id = None
+                reconciliation.accumulated_bytes = 0
+                reconciliation.started_at = now
+                reconciliation.updated_at = now
+                return 1
+            statement = (
+                select(
+                    RetrievalCacheObjectRecord.source_store,
+                    RetrievalCacheObjectRecord.collection_id,
+                    RetrievalCacheObjectRecord.object_id,
+                    RetrievalCacheObjectRecord.stored_bytes,
+                )
+                .where(RetrievalCacheObjectRecord.cache_store == reconciliation.cache_store)
+                .order_by(
+                    RetrievalCacheObjectRecord.source_store,
+                    RetrievalCacheObjectRecord.collection_id,
+                    RetrievalCacheObjectRecord.object_id,
+                )
+                .limit(limit)
+            )
+            if reconciliation.after_source_store is not None:
+                assert reconciliation.after_collection_id is not None
+                assert reconciliation.after_object_id is not None
+                statement = statement.where(
+                    tuple_(
+                        RetrievalCacheObjectRecord.source_store,
+                        RetrievalCacheObjectRecord.collection_id,
+                        RetrievalCacheObjectRecord.object_id,
+                    )
+                    > (
+                        reconciliation.after_source_store,
+                        reconciliation.after_collection_id,
+                        reconciliation.after_object_id,
+                    )
+                )
+            rows = list(session.execute(statement))
+            if not rows:
+                accounting.committed_bytes = reconciliation.accumulated_bytes
+                accounting.updated_at = now
+                session.delete(reconciliation)
+                return 1
+            reconciliation.accumulated_bytes += sum(int(row.stored_bytes) for row in rows)
+            last = rows[-1]
+            reconciliation.after_source_store = str(last.source_store)
+            reconciliation.after_collection_id = int(last.collection_id)
+            reconciliation.after_object_id = str(last.object_id)
+            reconciliation.updated_at = now
+            return len(rows)
 
     def admit(
         self,
@@ -667,10 +765,7 @@ class SqlAlchemyRetrievalCache:
             if current.state != "deleting" or current.object_path != identity[3]:
                 raise RuntimeError("retrieval cache eviction ownership changed")
             accounting = self._accounting(session, cache_store)
-            if accounting.committed_bytes < identity[5]:
-                raise RuntimeError("retrieval cache committed accounting is inconsistent")
-            accounting.committed_bytes -= identity[5]
-            accounting.updated_at = format_utc_timestamp(utc_now())
+            adjust_cache_committed_bytes(accounting, delta=-identity[5])
             session.delete(current)
         return True
 
@@ -797,7 +892,7 @@ def register_cache_ready(
         )
         session.add(accounting)
         session.flush()
-    accounting.committed_bytes += receipt.stored_bytes
+    adjust_cache_committed_bytes(accounting, delta=receipt.stored_bytes)
     if population is not None:
         if population.cache_store != receipt.cache_store:
             raise RuntimeError("retrieval cache store changed after admission")
