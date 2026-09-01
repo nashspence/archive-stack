@@ -180,6 +180,16 @@ def test_search_uses_current_collection_filters() -> None:
     ]
 
 
+def test_client_preserves_supplied_empty_query_for_server_validation() -> None:
+    client = RecordingClient()
+
+    client.search("")
+    client.list_apps(q="")
+
+    assert client.calls[0][2]["params"]["q"] == ""
+    assert client.calls[1][2]["params"]["q"] == ""
+
+
 def test_collection_upload_custody_transfer_and_operator_controls_use_exact_routes() -> None:
     client = RecordingClient()
 

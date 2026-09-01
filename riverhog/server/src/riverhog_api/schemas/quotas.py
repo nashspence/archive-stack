@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from http_api_contracts import BrowsePageToken
 from pydantic import Field
 from riverhog_application_access import ApplicationKeyId, ApplicationName, MonthlyDownloadQuotaBytes
 from riverhog_protocol import DownloadQuotaSort, SortOrder
@@ -24,7 +25,7 @@ class KeyDownloadQuotaOut(RiverhogModel):
 
 class KeyDownloadQuotaListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: DownloadQuotaSort
     order: SortOrder
     query: str | None

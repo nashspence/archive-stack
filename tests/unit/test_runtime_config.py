@@ -37,6 +37,7 @@ def test_runtime_configuration_fields_have_explicit_production_consumers() -> No
     validation_only = {
         "archive_active_passphrase_id",
         "archive_require_explicit_passphrases",
+        "browse_require_explicit_signing_key",
     }
     configuration_fields = {
         field.name
@@ -100,6 +101,18 @@ def test_retrieval_max_lease_covers_the_default_lease(tmp_path: Path) -> None:
         )
 
 
+def test_release_operation_rejects_the_development_browse_signing_key(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="rejects the development key"):
+        _config(tmp_path, browse_require_explicit_signing_key=True)
+
+    configured = _config(
+        tmp_path,
+        browse_require_explicit_signing_key=True,
+        browse_token_signing_key="riverhog-release-test-browse-signing-key-v1",
+    )
+    assert configured.browse_require_explicit_signing_key is True
+
+
 def test_storage_adapter_registration_is_provider_neutral() -> None:
     assert {field.name for field in fields(StorageAdapterRegistration)} == {
         "name",
@@ -147,6 +160,7 @@ def test_load_runtime_config_parses_archive_security_settings(
         "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY",
         "riverhog-test-browse-token-signing-key-v1",
     )
+    monkeypatch.setenv("RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY", "true")
     monkeypatch.setenv("RIVERHOG_BROWSE_TOKEN_LIFETIME", "2h")
 
     config = load_runtime_config()
@@ -154,6 +168,7 @@ def test_load_runtime_config_parses_archive_security_settings(
     assert config.archive_require_explicit_passphrases is True
     assert config.archive_active_passphrase_id == "runtime-test-key-v1"
     assert config.browse_token_signing_key == "riverhog-test-browse-token-signing-key-v1"
+    assert config.browse_require_explicit_signing_key is True
     assert config.browse_token_lifetime == timedelta(hours=2)
     assert config.archive_passphrase_for("runtime-test-key-v1") == "archive-secret"
     assert config.archive_scrypt_work_factor == 12

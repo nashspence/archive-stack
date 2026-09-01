@@ -16,7 +16,13 @@ from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.responses import StreamingResponse
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    BrowseQueryParameter,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.provenance import (
     CollectionFileProvenanceDetailOut,
@@ -79,8 +85,8 @@ def list_collection_provenance(
     principal: ProvenanceReader,
     container: ContainerDep,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
-    page_token: str | None = None,
-    q: str | None = None,
+    page_token: BrowsePageTokenQuery = None,
+    q: BrowseQueryParameter = None,
     status: ProvenanceStatus | None = None,
     sort: ProvenanceSort = "path",
     order: SortOrder = "asc",
@@ -139,7 +145,7 @@ def trace_collection_file_provenance(
     principal: ProvenanceReader,
     container: ContainerDep,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
-    page_token: str | None = None,
+    page_token: BrowsePageTokenQuery = None,
 ) -> dict[str, Any]:
     selectors = canonical_selectors(collection_id=collection_id, path=path)
     position = page_position(
@@ -272,7 +278,7 @@ def list_collection_provenance_journal_agents(
     principal: ProvenanceReader,
     container: ContainerDep,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
-    page_token: str | None = None,
+    page_token: BrowsePageTokenQuery = None,
 ) -> dict[str, Any]:
     selectors = canonical_selectors(collection_id=collection_id, journal_id=journal_id)
     position = page_position(

@@ -28,6 +28,7 @@ from riverhog_protocol.lifecycle_events import (
     ARCHIVE_COPY_COMPLETED,
     ARCHIVE_COPY_ISSUE,
     ARCHIVE_COPY_REQUESTED,
+    MAX_LIFECYCLE_EVENT_SEQUENCE,
     RIVERHOG_EVENT_TYPES,
     validate_riverhog_event,
 )
@@ -200,5 +201,21 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
                 "1",
                 "2",
             ]
+            assert operator.json()["next_cursor"] == "2"
+            assert operator.json()["has_more"] is False
+
+            for invalid in (
+                "",
+                " 0",
+                "00",
+                "+1",
+                str(MAX_LIFECYCLE_EVENT_SEQUENCE + 1),
+            ):
+                rejected = await client.get(
+                    "/v1/events",
+                    params={"after": invalid},
+                    headers={"Authorization": f"Bearer {operator_token}"},
+                )
+                assert rejected.status_code == 422
 
     anyio.run(exercise)

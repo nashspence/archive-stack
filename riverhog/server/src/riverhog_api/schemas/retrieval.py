@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from http_api_contracts import Sha256Identity
+from http_api_contracts import BrowsePageToken, Sha256Identity
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
@@ -190,7 +190,7 @@ class RetrievalCacheObjectListFiltersOut(RiverhogModel):
 
 class RetrievalCacheObjectListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: RetrievalCacheSort
     order: SortOrder
     query: str | None

@@ -8,14 +8,42 @@ import hashlib
 import hmac
 import json
 import time
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
+from typing import Annotated
+
+from pydantic import AfterValidator, StringConstraints
 
 type BrowseScalar = str | int | bool | bytes | None
 
 _DOMAIN = b"riverhog-mutable-browse-token/v1\x00"
-_MAX_TOKEN_BYTES = 8192
+MAX_BROWSE_QUERY_CHARACTERS = 4096
+MAX_BROWSE_TOKEN_BYTES = 8192
 _MAX_POSITION_ITEMS = 8
 _MAX_POSITION_STRING_BYTES = 4096
+
+
+def validate_browse_query(value: str) -> str:
+    """Accept one bounded canonical visible query without changing its meaning."""
+
+    if value != unicodedata.normalize("NFC", value):
+        raise ValueError("browse query must use NFC normalization")
+    return value
+
+
+type BrowseQuery = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=MAX_BROWSE_QUERY_CHARACTERS,
+        pattern=r"^\S(?:[\s\S]*\S)?$",
+    ),
+    AfterValidator(validate_browse_query),
+]
+type BrowsePageToken = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_BROWSE_TOKEN_BYTES),
+]
 
 
 class BrowseTokenError(ValueError):
@@ -120,7 +148,7 @@ class BrowseTokenCodec:
         encoded = _b64encode(body)
         signature = _b64encode(hmac.digest(self._key, _DOMAIN + encoded.encode("ascii"), "sha256"))
         token = f"{encoded}.{signature}"
-        if len(token.encode("ascii")) > _MAX_TOKEN_BYTES:
+        if len(token.encode("ascii")) > MAX_BROWSE_TOKEN_BYTES:
             raise ValueError("browse token exceeds its bounded representation")
         return token
 
@@ -134,7 +162,7 @@ class BrowseTokenCodec:
     ) -> tuple[BrowseScalar, ...] | None:
         if token is None:
             return None
-        if not token or len(token.encode("utf-8")) > _MAX_TOKEN_BYTES:
+        if not token or len(token.encode("utf-8")) > MAX_BROWSE_TOKEN_BYTES:
             raise BrowseTokenError("page token is invalid")
         encoded, separator, supplied_signature = token.partition(".")
         if separator != "." or not encoded or not supplied_signature:
@@ -173,4 +201,13 @@ class BrowseTokenCodec:
         return _position(payload["position"])
 
 
-__all__ = ["BrowseScalar", "BrowseTokenCodec", "BrowseTokenError"]
+__all__ = [
+    "MAX_BROWSE_QUERY_CHARACTERS",
+    "MAX_BROWSE_TOKEN_BYTES",
+    "BrowsePageToken",
+    "BrowseQuery",
+    "BrowseScalar",
+    "BrowseTokenCodec",
+    "BrowseTokenError",
+    "validate_browse_query",
+]

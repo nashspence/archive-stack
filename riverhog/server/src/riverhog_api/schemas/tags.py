@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from http_api_contracts import BrowsePageToken
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import CollectionId, SortOrder, TagSort
@@ -25,7 +26,7 @@ class TagOut(RiverhogModel):
 
 class TagListOut(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     sort: TagSort
     order: SortOrder
     query: str | None
@@ -48,7 +49,7 @@ class CollectionTagsOut(RiverhogModel):
     metadata_revision: int = Field(ge=1, strict=True)
     inventory_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     page_size: int = Field(ge=1, le=100, strict=True)
-    next_page_token: str | None
+    next_page_token: BrowsePageToken | None
     tags: list[CanonicalTag]
 
 

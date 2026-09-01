@@ -27,7 +27,12 @@ from riverhog_api.auth import (
     CollectionTransformExecutor,
     CollectionTransformLeaseManager,
 )
-from riverhog_api.browse import canonical_selectors, page_payload, page_position
+from riverhog_api.browse import (
+    BrowsePageTokenQuery,
+    canonical_selectors,
+    page_payload,
+    page_position,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.workflows import (
     ArtifactDispositionBatchIn,
@@ -318,7 +323,7 @@ def list_processing_claims(
     container: ContainerDep,
     principal: CollectionTransformController,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
-    page_token: str | None = None,
+    page_token: BrowsePageTokenQuery = None,
     state: ClaimState | None = None,
     sort: ProcessingClaimSort = "updated_at",
     order: SortOrder = "desc",

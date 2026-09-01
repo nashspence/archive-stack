@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, Self
 
+from http_api_contracts import BrowsePageToken
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from riverhog_protocol.collection_workflows import (
@@ -850,7 +851,7 @@ class ProcessingClaimFiltersDocument(RiverhogWorkflowDocument):
 
 class ProcessingClaimPageDocument(RiverhogWorkflowDocument):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None = None
+    next_page_token: BrowsePageToken | None
     sort: ProcessingClaimSort
     order: SortOrder
     filters: ProcessingClaimFiltersDocument

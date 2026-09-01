@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self
 
-from http_api_contracts import CanonicalVisibleText
+from http_api_contracts import BrowsePageToken, CanonicalVisibleText
 from lifecycle_events import CloudEvent, cloud_event
 from pydantic import (
     BaseModel,
@@ -534,7 +534,7 @@ class WorkView(OperatorModel):
 
 class WorkPage(OperatorModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None = None
+    next_page_token: BrowsePageToken | None
     sort: WorkSort
     order: SortOrder
     filters: dict[str, JsonValue]
@@ -603,7 +603,7 @@ class EvaluationView(OperatorModel):
 
 class EvaluationPage(OperatorModel):
     page_size: int = Field(ge=1, le=100)
-    next_page_token: str | None = None
+    next_page_token: BrowsePageToken | None
     sort: EvaluationSort
     order: SortOrder
     filters: dict[str, JsonValue]
