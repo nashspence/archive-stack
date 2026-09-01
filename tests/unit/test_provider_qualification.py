@@ -83,13 +83,23 @@ def test_provider_lifecycle_contracts_bound_run_state() -> None:
 
     assert aws["Filter"] == {"Prefix": "qualification/"}
     assert aws["Expiration"]["Days"] == 185
-    assert aws["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] == 4
+    assert "AbortIncompleteMultipartUpload" not in aws
     assert b2 == {
         "fileNamePrefix": "",
         "daysFromUploadingToHiding": None,
         "daysFromHidingToDeleting": 1,
         "daysFromStartingToCancelingUnfinishedLargeFiles": None,
     }
+
+
+def test_provider_plan_removes_time_based_multipart_reclamation() -> None:
+    module = load_script()
+    config = module.load_config(CONFIG)
+    expected = module._aws_lifecycle(config)
+    stale = json.loads(json.dumps(expected))
+    stale["Rules"][0]["AbortIncompleteMultipartUpload"] = {"DaysAfterInitiation": 4}
+
+    assert module._normalize_aws_lifecycle(stale) != module._normalize_aws_lifecycle(expected)
 
 
 def test_provider_cache_proof_binds_named_placement_and_exact_accounting() -> None:
@@ -154,21 +164,6 @@ def test_provider_cache_proof_binds_named_placement_and_exact_accounting() -> No
         expected_lease_category="retrieval_job",
         expected_retrieval_lease_seconds=3 * 24 * 60 * 60,
     ) == ("volume-0",)
-
-
-def test_provider_multipart_cleanup_outlasts_the_continuation_window(tmp_path: Path) -> None:
-    module = load_script()
-    invalid = tmp_path / "provider.toml"
-    invalid.write_text(
-        CONFIG.read_text(encoding="utf-8").replace(
-            "multipart_abort_days = 4",
-            "multipart_abort_days = 3",
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(module.QualificationError, match="continuation window"):
-        module.load_config(invalid)
 
 
 def test_provider_bucket_ownership_refuses_versioned_or_shared_state() -> None:

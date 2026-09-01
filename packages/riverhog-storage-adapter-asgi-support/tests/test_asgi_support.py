@@ -75,9 +75,6 @@ class _Adapter:
             completed_at="2026-08-25T00:00:00.000000Z",
         )
 
-    def abort_incomplete_writes(self, _request: object) -> int:
-        raise AssertionError("malformed maintenance request reached the adapter")
-
 
 def test_asgi_shell_authenticates_before_dispatch() -> None:
     adapter = _Adapter()
@@ -167,24 +164,6 @@ def test_asgi_readiness_uses_the_validated_adapter_descriptor() -> None:
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "provider_unavailable"
-
-
-def test_asgi_shell_rejects_malformed_maintenance_cutoff_before_dispatch() -> None:
-    adapter = _Adapter()
-    app = create_storage_adapter_app(
-        service="fixture-storage-adapter",
-        token="secret-token",
-        adapter=cast(StorageAdapterPort, adapter),
-    )
-
-    response = TestClient(app).post(
-        "/v1/maintenance/abort-incomplete-writes",
-        headers={"Authorization": "Bearer secret-token"},
-        json={"object_prefix": "objects/", "initiated_before": "not-a-timestamp"},
-    )
-
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_request"
 
 
 def test_asgi_shell_streams_framed_uploads_without_materializing_request_body(

@@ -36,8 +36,6 @@ ADAPTER_STORED_SHA256_ASSERTION = "riverhog-adapter-stored-sha256"
 AWS_DEEP_ARCHIVE_MINIMUM_DAYS = 180
 DEFAULT_AWS_EXPIRATION_DAYS = 185
 DEFAULT_B2_DELETE_DAYS = 1
-MIN_MULTIPART_ABORT_DAYS = 4
-DEFAULT_MULTIPART_ABORT_DAYS = MIN_MULTIPART_ABORT_DAYS
 DEFAULT_RESTORE_COPY_DAYS = 3
 DEFAULT_RESTORE_DEADLINE_HOURS = 96
 MIB = 1024 * 1024
@@ -178,7 +176,6 @@ class QualificationConfig:
     namespace_prefix: str
     aws_expiration_days: int
     b2_delete_days: int
-    multipart_abort_days: int
     restore_copy_days: int
     restore_deadline_hours: int
     restore_tier: str
@@ -431,13 +428,6 @@ def load_config(path: Path) -> QualificationConfig:
             "aws_deep_archive_expiration_days must honor the 180-day provider minimum"
         )
     b2_delete_days = _expect_int(retention, "b2_delete_days", DEFAULT_B2_DELETE_DAYS)
-    multipart_abort_days = _expect_int(
-        retention, "multipart_abort_days", DEFAULT_MULTIPART_ABORT_DAYS
-    )
-    if multipart_abort_days < MIN_MULTIPART_ABORT_DAYS:
-        raise QualificationError(
-            "multipart_abort_days must outlast Riverhog's incomplete-write continuation window"
-        )
     restore = _expect_mapping(raw.get("restore"), label="restore")
     restore_copy_days = _expect_int(restore, "copy_days", DEFAULT_RESTORE_COPY_DAYS)
     restore_deadline_hours = _expect_int(restore, "deadline_hours", DEFAULT_RESTORE_DEADLINE_HOURS)
@@ -489,7 +479,6 @@ def load_config(path: Path) -> QualificationConfig:
         "retention": {
             "aws_deep_archive_expiration_days": aws_expiration_days,
             "b2_delete_days": b2_delete_days,
-            "multipart_abort_days": multipart_abort_days,
         },
         "restore": {
             "copy_days": restore_copy_days,
@@ -505,7 +494,6 @@ def load_config(path: Path) -> QualificationConfig:
         namespace_prefix=namespace_prefix,
         aws_expiration_days=aws_expiration_days,
         b2_delete_days=b2_delete_days,
-        multipart_abort_days=multipart_abort_days,
         restore_copy_days=restore_copy_days,
         restore_deadline_hours=restore_deadline_hours,
         restore_tier=restore_tier,
@@ -593,9 +581,6 @@ def _aws_lifecycle(config: QualificationConfig) -> dict[str, object]:
                 "Status": "Enabled",
                 "Filter": {"Prefix": f"{config.namespace_prefix}/"},
                 "Expiration": {"Days": config.aws_expiration_days},
-                "AbortIncompleteMultipartUpload": {
-                    "DaysAfterInitiation": config.multipart_abort_days
-                },
             }
         ]
     }
@@ -619,11 +604,11 @@ def _normalize_aws_lifecycle(payload: Mapping[str, object]) -> dict[str, object]
                 "Expiration": {
                     "Days": expiration.get("Days") if isinstance(expiration, dict) else None
                 },
-                "AbortIncompleteMultipartUpload": {
-                    "DaysAfterInitiation": (
-                        abort.get("DaysAfterInitiation") if isinstance(abort, dict) else None
-                    )
-                },
+                "AbortIncompleteMultipartUpload": (
+                    {"DaysAfterInitiation": abort.get("DaysAfterInitiation")}
+                    if isinstance(abort, dict)
+                    else None
+                ),
             }
         )
     return {"Rules": sorted(normalized, key=lambda item: str(item.get("ID")))}

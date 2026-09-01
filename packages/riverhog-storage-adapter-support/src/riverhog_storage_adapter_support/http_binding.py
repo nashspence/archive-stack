@@ -15,7 +15,6 @@ from http_api_contracts import (
 )
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
@@ -227,11 +226,6 @@ class StorageAdapterHttpBinding:
             if normalized_method == "POST" and path == "/v1/reads/cleanup":
                 self.adapter.cleanup_read(self._parse(body, ReadPreparationRequest))
                 return _empty_response()
-            if normalized_method == "POST" and path == "/v1/maintenance/abort-incomplete-writes":
-                affected = self.adapter.abort_incomplete_writes(
-                    self._parse(body, AbortIncompleteWritesRequest)
-                )
-                return _model_response(MaintenanceResult(affected=affected))
             if path in STORAGE_ADAPTER_HTTP_PATHS:
                 return _error(405, "method_not_allowed", "adapter method is not allowed")
             return _error(404, "not_found", "adapter endpoint was not found")
@@ -619,14 +613,6 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "read_not_ready",
             "read_expired",
         ),
-    ),
-    _storage_operation(
-        "POST",
-        "/v1/maintenance/abort-incomplete-writes",
-        AbortIncompleteWritesRequest,
-        MaintenanceResult,
-        "json",
-        errors=_adapter_errors("request_too_large", "invalid_path"),
     ),
 )
 STORAGE_ADAPTER_HTTP_PATHS = frozenset(

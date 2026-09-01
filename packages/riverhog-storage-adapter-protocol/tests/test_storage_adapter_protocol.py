@@ -11,7 +11,6 @@ import pytest
 from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
     ADAPTER_PRIVATE_ASSERTION_PREFIX,
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
@@ -54,7 +53,6 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
         for name, value in StorageAdapterPort.__dict__.items()
         if not name.startswith("_") and inspect.isfunction(value)
     } == {
-        "abort_incomplete_writes",
         "abort_write",
         "cleanup_read",
         "complete_write",
@@ -386,6 +384,25 @@ def test_write_session_is_a_persistable_restart_stable_continuation() -> None:
     assert "persistable continuation handle" in description
     assert "process restarts" in description
     assert "incomplete-write reclamation" in description
+    assert "idempotently established" in (WriteStartRequest.__doc__ or "")
+
+
+def test_write_completion_binds_the_immutable_session_length() -> None:
+    session = WriteSession(
+        object_path="archives/id/volumes/segment.bin.age",
+        write_token="opaque-adapter-continuation",
+        expected_bytes=2,
+    )
+
+    with pytest.raises(ValidationError, match="differs from its session"):
+        WriteCompleteRequest(
+            session=session,
+            segments=(WriteSegmentReceipt(number=1, segment_token="part", stored_bytes=1),),
+            expected_bytes=1,
+            expected_content_type="application/octet-stream",
+            required_identity_assertions={"identity": "exact"},
+            expected_placement="archive",
+        )
 
 
 @pytest.mark.parametrize(
@@ -695,9 +712,6 @@ def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda: AbortIncompleteWritesRequest(
-            object_prefix="objects/", initiated_before="not-a-timestamp"
-        ),
         lambda: ReadRequested(estimated_ready_at="2026-08-25T01:00:00Z"),
         lambda: ReadReady(available_until="2026-08-26T00:00:00+00:00"),
     ],

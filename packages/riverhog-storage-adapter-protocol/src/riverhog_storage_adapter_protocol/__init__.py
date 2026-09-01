@@ -3,7 +3,6 @@
 from riverhog_storage_adapter_protocol.protocol import (
     ADAPTER_PRIVATE_ASSERTION_PREFIX,
     STORAGE_ADAPTER_PROTOCOL,
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     BinaryContent,
     CompletedObjectReceipt,
@@ -61,7 +60,6 @@ from riverhog_storage_adapter_protocol.protocol import (
 __all__ = [
     "ADAPTER_PRIVATE_ASSERTION_PREFIX",
     "STORAGE_ADAPTER_PROTOCOL",
-    "AbortIncompleteWritesRequest",
     "AdapterDescriptor",
     "BinaryContent",
     "CompletedWriteLookupRequest",

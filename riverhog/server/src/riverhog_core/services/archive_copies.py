@@ -1621,8 +1621,40 @@ class SqlAlchemyArchiveCopyService:
                 return
             destination_storage_prefix = job.destination_storage_prefix
             destination_discarded = job.destination_discarded_at is not None
+            active_writes = list(
+                session.execute(
+                    select(
+                        ArchiveCopyObjectUploadRecord.object_id,
+                        ArchiveCopyObjectUploadRecord.object_path,
+                        ArchiveCopyObjectUploadRecord.write_token,
+                        ArchiveCopyObjectUploadRecord.expected_stored_bytes,
+                    )
+                    .where(
+                        ArchiveCopyObjectUploadRecord.collection_id == collection_id,
+                        ArchiveCopyObjectUploadRecord.destination_store == destination_store,
+                        ArchiveCopyObjectUploadRecord.write_token.is_not(None),
+                    )
+                    .order_by(ArchiveCopyObjectUploadRecord.object_id)
+                    .limit(_COPY_OBJECT_BATCH_MAX + 1)
+                )
+            )
+            if len(active_writes) > _COPY_OBJECT_BATCH_MAX:
+                raise RuntimeError("archive copy cancellation exceeded its bounded write window")
         if not destination_discarded:
             try:
+                for checkpoint in active_writes:
+                    assert checkpoint.write_token is not None
+                    self._volume_object_store(
+                        store_name=destination_store,
+                        collection_id=collection_id,
+                        object_id=checkpoint.object_id,
+                    ).abort_write(
+                        session=WriteSession(
+                            checkpoint.object_path,
+                            checkpoint.write_token,
+                            checkpoint.expected_stored_bytes,
+                        )
+                    )
                 self._archive_stores.require(
                     destination_store
                 ).store.discard_collection_archive_upload(

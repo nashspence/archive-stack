@@ -13,7 +13,6 @@ import pytest
 from http_api_contracts import canonical_json_bytes
 from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
@@ -84,6 +83,13 @@ class MemoryAdapter:
         )
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        for write_token, current in self.created.items():
+            if current == request:
+                return WriteSession(
+                    object_path=request.object_path,
+                    write_token=write_token,
+                    expected_bytes=request.expected_bytes,
+                )
         session = WriteSession(
             object_path=request.object_path,
             write_token=f"upload-{len(self.created) + 1}",
@@ -288,10 +294,6 @@ class MemoryAdapter:
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self.read_requests.append(request)
-
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        _ = request
-        return 0
 
 
 def _client(
@@ -845,6 +847,7 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
             "exact-range",
             "identity-conflict",
             "sparse-write-reconciliation",
+            "write-begin-recovery",
             "write-continuation-replay",
             "write-reconciliation",
             "write-completion-recovery",
