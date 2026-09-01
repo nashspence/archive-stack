@@ -79,19 +79,19 @@ def test_direct_ingress_batch_preserves_the_server_order_contract() -> None:
         )
 
 
-def test_terminal_derivation_evidence_is_the_only_nonlexical_upload_member() -> None:
+def test_upload_order_places_control_evidence_after_payload_and_derivation_last() -> None:
     files = [
         _file("riverhog/producer-evidence.json"),
         _file(DERIVATION_EVIDENCE_PATH),
         _file("video/source/archive.mkv"),
     ]
     batch = CollectionUploadFileBatchDocument.model_validate(
-        {"files": [files[0], files[2], files[1]]}
+        {"files": [files[2], files[0], files[1]]}
     )
 
     assert [item.path for item in batch.files] == [
-        "riverhog/producer-evidence.json",
         "video/source/archive.mkv",
+        "riverhog/producer-evidence.json",
         DERIVATION_EVIDENCE_PATH,
     ]
     identity = collection_content_identity(

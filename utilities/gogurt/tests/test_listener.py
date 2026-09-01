@@ -732,6 +732,15 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
         product_version=TEST_PRODUCT_VERSION,
     )
+    original_heartbeat = runtime._heartbeat
+    post_stop_worker_heartbeats: list[str] = []
+
+    def observed_heartbeat() -> None:
+        if runtime.stop_event.is_set() and threading.current_thread().name == "gogurt-dispatch":
+            post_stop_worker_heartbeats.append(threading.current_thread().name)
+        original_heartbeat()
+
+    monkeypatch.setattr(runtime, "_heartbeat", observed_heartbeat)
     thread = threading.Thread(target=runtime.run)
     thread.start()
     action_pid: int | None = None
@@ -743,6 +752,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         assert not thread.is_alive()
         assert _native_listener_adapter().process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
+        assert post_stop_worker_heartbeats == []
     finally:
         runtime.request_stop()
         thread.join(timeout=5)

@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from http_api_contracts import closed_literal_values
 from sqlalchemy import (
@@ -85,6 +85,9 @@ from stove0_core.evaluation import (
 from stove0_core.work_state import (
     ConcurrentWorkUpdate,
     Stove0StateError,
+    TargetProductionSealRecord,
+    TargetProductionSealState,
+    TargetSettlementSealRecord,
     WorkRecord,
     _admitted_child_records,
     _preview_target_expectations,
@@ -251,6 +254,7 @@ class _TargetOutputRow(_Base):
         ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     output_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     output_path: Mapped[str] = mapped_column(String(4096), nullable=False)
     document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -260,7 +264,13 @@ class _TargetOutputRow(_Base):
         CheckConstraint("length(output_id) >= 1", name="ck_stove0_target_outputs_id"),
         CheckConstraint("length(output_path) >= 1", name="ck_stove0_target_outputs_path"),
         CheckConstraint("document_bytes >= 0", name="ck_stove0_target_outputs_document_bytes"),
-        Index("uq_stove0_target_outputs_path", "work_id", "output_path", unique=True),
+        Index(
+            "uq_stove0_target_outputs_path",
+            "work_id",
+            "job_id",
+            "output_path",
+            unique=True,
+        ),
     )
 
 
@@ -272,6 +282,7 @@ class _TargetDispositionRow(_Base):
         ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     input_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
 
@@ -292,13 +303,90 @@ class _TargetSourceEdgeRow(_Base):
         ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
         primary_key=True,
     )
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     output_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     input_id: Mapped[str] = mapped_column(String(160), primary_key=True)
 
     __table_args__ = (
         CheckConstraint("length(output_id) >= 1", name="ck_stove0_target_source_edges_output"),
         CheckConstraint("length(input_id) >= 1", name="ck_stove0_target_source_edges_input"),
-        Index("ix_stove0_target_source_edges_input", "work_id", "input_id", "output_id"),
+        Index(
+            "ix_stove0_target_source_edges_input",
+            "work_id",
+            "job_id",
+            "input_id",
+            "output_id",
+        ),
+    )
+
+
+class _TargetProductionSealRow(_Base):
+    __tablename__ = "stove0_target_production_seals"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_stove0_target_production_seals_revision"),
+        CheckConstraint(
+            "state IN ('receiving','sealing','sealed','failed')",
+            name="ck_stove0_target_production_seals_state",
+        ),
+        CheckConstraint(
+            "document_bytes >= 0",
+            name="ck_stove0_target_production_seals_document_bytes",
+        ),
+        Index(
+            "ix_stove0_target_production_seals_state_updated",
+            "state",
+            "updated_at",
+            "work_id",
+            "job_id",
+        ),
+    )
+
+
+class _TargetSettlementSealRow(_Base):
+    __tablename__ = "stove0_target_settlement_seals"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_stove0_target_settlement_seals_revision"),
+        CheckConstraint(
+            "state IN ('binding','sealed','failed')",
+            name="ck_stove0_target_settlement_seals_state",
+        ),
+        CheckConstraint(
+            "document_bytes >= 0",
+            name="ck_stove0_target_settlement_seals_document_bytes",
+        ),
+        Index(
+            "ix_stove0_target_settlement_seals_state_updated",
+            "state",
+            "updated_at",
+            "work_id",
+            "job_id",
+        ),
     )
 
 
@@ -735,14 +823,16 @@ class SqlAlchemyStateStore:
             row = session.get(_ArtifactSelectionMemberRow, (selection_sha256, artifact_id))
             return None if row is None else ArtifactSubject.model_validate_json(row.document_json)
 
-    def record_target_output(self, work_id: str, output: OutputArtifact) -> None:
+    def record_target_output(self, work_id: str, job_id: str, output: OutputArtifact) -> None:
         encoded = _encode(output.model_dump(mode="json", by_alias=True, exclude_none=True))
         with self.sessions() as session, session.begin():
-            existing = session.get(_TargetOutputRow, (work_id, output.id))
+            _lock_receiving_target_production(session, work_id, job_id)
+            existing = session.get(_TargetOutputRow, (work_id, job_id, output.id))
             if existing is None:
                 session.add(
                     _TargetOutputRow(
                         work_id=work_id,
+                        job_id=job_id,
                         output_id=output.id,
                         output_path=output.path,
                         document_bytes=_encoded_bytes(encoded),
@@ -755,14 +845,17 @@ class SqlAlchemyStateStore:
     def record_target_disposition(
         self,
         work_id: str,
+        job_id: str,
         disposition: InputDispositionDeclaration,
     ) -> None:
         with self.sessions() as session, session.begin():
-            existing = session.get(_TargetDispositionRow, (work_id, disposition.input_id))
+            _lock_receiving_target_production(session, work_id, job_id)
+            existing = session.get(_TargetDispositionRow, (work_id, job_id, disposition.input_id))
             if existing is None:
                 session.add(
                     _TargetDispositionRow(
                         work_id=work_id,
+                        job_id=job_id,
                         input_id=disposition.input_id,
                         status=disposition.status,
                     )
@@ -770,35 +863,231 @@ class SqlAlchemyStateStore:
             elif existing.status != disposition.status:
                 raise ConcurrentWorkUpdate("target input disposition changed")
 
-    def record_target_source_edge(self, work_id: str, edge: OutputSourceEdge) -> None:
+    def record_target_source_edge(self, work_id: str, job_id: str, edge: OutputSourceEdge) -> None:
         with self.sessions() as session, session.begin():
+            _lock_receiving_target_production(session, work_id, job_id)
             if (
                 session.get(
                     _TargetSourceEdgeRow,
-                    (work_id, edge.output_id, edge.input_id),
+                    (work_id, job_id, edge.output_id, edge.input_id),
                 )
                 is None
             ):
                 session.add(
                     _TargetSourceEdgeRow(
                         work_id=work_id,
+                        job_id=job_id,
                         output_id=edge.output_id,
                         input_id=edge.input_id,
                     )
                 )
 
-    def load_target_output(self, work_id: str, output_id: str) -> OutputArtifact | None:
+    def ensure_target_production_receiving(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord:
+        with self.sessions() as session, session.begin():
+            work = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update()
+            )
+            if work is None:
+                raise KeyError(work_id)
+            _require_target_generation(work, job_id)
+            row = session.get(_TargetProductionSealRow, (work_id, job_id))
+            if row is not None:
+                return TargetProductionSealRecord.model_validate_json(row.document_json)
+            record = TargetProductionSealRecord(work_id=work_id, job_id=job_id)
+            encoded = _encode(record.model_dump(mode="json", by_alias=True, exclude_none=True))
+            session.add(
+                _TargetProductionSealRow(
+                    work_id=work_id,
+                    job_id=job_id,
+                    revision=record.revision,
+                    state=record.state,
+                    updated_at=utc_timestamp_now(),
+                    document_bytes=_encoded_bytes(encoded),
+                    document_json=encoded,
+                )
+            )
+            return record
+
+    def load_target_production_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetProductionSealRecord | None:
         with self.sessions() as session:
-            row = session.get(_TargetOutputRow, (work_id, output_id))
+            row = session.get(_TargetProductionSealRow, (work_id, job_id))
+            return (
+                None
+                if row is None
+                else TargetProductionSealRecord.model_validate_json(row.document_json)
+            )
+
+    def compare_and_swap_target_production_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetProductionSealRecord,
+    ) -> TargetProductionSealRecord:
+        if (
+            replacement.work_id != work_id
+            or replacement.job_id != job_id
+            or replacement.revision != expected_revision + 1
+        ):
+            raise ValueError("replacement target production seal has an invalid revision")
+        encoded = _encode(replacement.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with self.sessions() as session, session.begin():
+            work = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update()
+            )
+            if work is None:
+                raise KeyError(work_id)
+            row = session.scalar(
+                select(_TargetProductionSealRow)
+                .where(
+                    _TargetProductionSealRow.work_id == work_id,
+                    _TargetProductionSealRow.job_id == job_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise KeyError(work_id)
+            if row.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale target production seal revision: {expected_revision} != {row.revision}"
+                )
+            row.revision = replacement.revision
+            row.state = replacement.state
+            row.updated_at = utc_timestamp_now()
+            row.document_bytes = _encoded_bytes(encoded)
+            row.document_json = encoded
+            return replacement
+
+    def scan_target_production_seals(
+        self,
+        *,
+        state: TargetProductionSealState,
+        limit: int,
+    ) -> tuple[TargetProductionSealRecord, ...]:
+        if limit < 1:
+            return ()
+        with self.sessions() as session:
+            rows = session.scalars(
+                select(_TargetProductionSealRow)
+                .where(_TargetProductionSealRow.state == state)
+                .order_by(
+                    _TargetProductionSealRow.updated_at,
+                    _TargetProductionSealRow.work_id,
+                    _TargetProductionSealRow.job_id,
+                )
+                .limit(limit)
+            )
+            return tuple(
+                TargetProductionSealRecord.model_validate_json(row.document_json) for row in rows
+            )
+
+    def ensure_target_settlement_binding(
+        self, record: TargetSettlementSealRecord
+    ) -> TargetSettlementSealRecord:
+        encoded = _encode(record.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with self.sessions() as session, session.begin():
+            work = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == record.work_id).with_for_update()
+            )
+            if work is None:
+                raise KeyError(record.work_id)
+            _require_target_generation(work, record.job_id)
+            row = session.get(_TargetSettlementSealRow, (record.work_id, record.job_id))
+            if row is None:
+                session.add(
+                    _TargetSettlementSealRow(
+                        work_id=record.work_id,
+                        job_id=record.job_id,
+                        revision=record.revision,
+                        state=record.state,
+                        updated_at=utc_timestamp_now(),
+                        document_bytes=_encoded_bytes(encoded),
+                        document_json=encoded,
+                    )
+                )
+                return record
+            existing = TargetSettlementSealRecord.model_validate_json(row.document_json)
+            if (
+                existing.output_collection != record.output_collection
+                or existing.production_sha256 != record.production_sha256
+            ):
+                raise ConcurrentWorkUpdate("target settlement binding changed")
+            return existing
+
+    def load_target_settlement_seal(
+        self, work_id: str, job_id: str
+    ) -> TargetSettlementSealRecord | None:
+        with self.sessions() as session:
+            row = session.get(_TargetSettlementSealRow, (work_id, job_id))
+            return (
+                None
+                if row is None
+                else TargetSettlementSealRecord.model_validate_json(row.document_json)
+            )
+
+    def compare_and_swap_target_settlement_seal(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        expected_revision: int,
+        replacement: TargetSettlementSealRecord,
+    ) -> TargetSettlementSealRecord:
+        if (
+            replacement.work_id != work_id
+            or replacement.job_id != job_id
+            or replacement.revision != expected_revision + 1
+        ):
+            raise ValueError("replacement target settlement seal has an invalid revision")
+        encoded = _encode(replacement.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with self.sessions() as session, session.begin():
+            work = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update()
+            )
+            if work is None:
+                raise KeyError(work_id)
+            _require_target_generation(work, job_id)
+            row = session.scalar(
+                select(_TargetSettlementSealRow)
+                .where(
+                    _TargetSettlementSealRow.work_id == work_id,
+                    _TargetSettlementSealRow.job_id == job_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise KeyError(work_id)
+            if row.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale target settlement seal revision: {expected_revision} != {row.revision}"
+                )
+            row.revision = replacement.revision
+            row.state = replacement.state
+            row.updated_at = utc_timestamp_now()
+            row.document_bytes = _encoded_bytes(encoded)
+            row.document_json = encoded
+            return replacement
+
+    def load_target_output(
+        self, work_id: str, job_id: str, output_id: str
+    ) -> OutputArtifact | None:
+        with self.sessions() as session:
+            row = session.get(_TargetOutputRow, (work_id, job_id, output_id))
             return None if row is None else OutputArtifact.model_validate_json(row.document_json)
 
     def load_target_disposition(
         self,
         work_id: str,
+        job_id: str,
         input_id: str,
     ) -> InputDispositionDeclaration | None:
         with self.sessions() as session:
-            row = session.get(_TargetDispositionRow, (work_id, input_id))
+            row = session.get(_TargetDispositionRow, (work_id, job_id, input_id))
             return (
                 None
                 if row is None
@@ -807,10 +1096,10 @@ class SqlAlchemyStateStore:
                 )
             )
 
-    def iter_target_outputs(self, work_id: str) -> Iterator[OutputArtifact]:
+    def iter_target_outputs(self, work_id: str, job_id: str) -> Iterator[OutputArtifact]:
         statement = (
             select(_TargetOutputRow)
-            .where(_TargetOutputRow.work_id == work_id)
+            .where(_TargetOutputRow.work_id == work_id, _TargetOutputRow.job_id == job_id)
             .order_by(_TargetOutputRow.output_id)
             .execution_options(yield_per=100)
         )
@@ -818,10 +1107,10 @@ class SqlAlchemyStateStore:
             for row in session.scalars(statement):
                 yield OutputArtifact.model_validate_json(row.document_json)
 
-    def iter_target_outputs_by_path(self, work_id: str) -> Iterator[OutputArtifact]:
+    def iter_target_outputs_by_path(self, work_id: str, job_id: str) -> Iterator[OutputArtifact]:
         statement = (
             select(_TargetOutputRow)
-            .where(_TargetOutputRow.work_id == work_id)
+            .where(_TargetOutputRow.work_id == work_id, _TargetOutputRow.job_id == job_id)
             .order_by(_TargetOutputRow.output_path)
             .execution_options(yield_per=100)
         )
@@ -832,10 +1121,14 @@ class SqlAlchemyStateStore:
     def iter_target_dispositions(
         self,
         work_id: str,
+        job_id: str,
     ) -> Iterator[InputDispositionDeclaration]:
         statement = (
             select(_TargetDispositionRow)
-            .where(_TargetDispositionRow.work_id == work_id)
+            .where(
+                _TargetDispositionRow.work_id == work_id,
+                _TargetDispositionRow.job_id == job_id,
+            )
             .order_by(_TargetDispositionRow.input_id)
             .execution_options(yield_per=100)
         )
@@ -845,10 +1138,10 @@ class SqlAlchemyStateStore:
                     input_id=row.input_id, status=cast(Any, row.status)
                 )
 
-    def iter_target_source_edges(self, work_id: str) -> Iterator[OutputSourceEdge]:
+    def iter_target_source_edges(self, work_id: str, job_id: str) -> Iterator[OutputSourceEdge]:
         statement = (
             select(_TargetSourceEdgeRow)
-            .where(_TargetSourceEdgeRow.work_id == work_id)
+            .where(_TargetSourceEdgeRow.work_id == work_id, _TargetSourceEdgeRow.job_id == job_id)
             .order_by(_TargetSourceEdgeRow.output_id, _TargetSourceEdgeRow.input_id)
             .execution_options(yield_per=100)
         )
@@ -856,16 +1149,146 @@ class SqlAlchemyStateStore:
             for row in session.scalars(statement):
                 yield OutputSourceEdge(output_id=row.output_id, input_id=row.input_id)
 
-    def iter_target_source_edges_by_input(self, work_id: str) -> Iterator[OutputSourceEdge]:
+    def iter_target_source_edges_by_input(
+        self, work_id: str, job_id: str
+    ) -> Iterator[OutputSourceEdge]:
         statement = (
             select(_TargetSourceEdgeRow)
-            .where(_TargetSourceEdgeRow.work_id == work_id)
+            .where(_TargetSourceEdgeRow.work_id == work_id, _TargetSourceEdgeRow.job_id == job_id)
             .order_by(_TargetSourceEdgeRow.input_id, _TargetSourceEdgeRow.output_id)
             .execution_options(yield_per=100)
         )
         with read_snapshot(self.sessions) as session:
             for row in session.scalars(statement):
                 yield OutputSourceEdge(output_id=row.output_id, input_id=row.input_id)
+
+    def target_output_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_id: str | None,
+        limit: int,
+    ) -> tuple[OutputArtifact, ...]:
+        if limit < 1:
+            return ()
+        statement = select(_TargetOutputRow).where(
+            _TargetOutputRow.work_id == work_id,
+            _TargetOutputRow.job_id == job_id,
+        )
+        if after_id is not None:
+            statement = statement.where(_TargetOutputRow.output_id > after_id)
+        statement = statement.order_by(_TargetOutputRow.output_id).limit(limit)
+        with self.sessions() as session:
+            return tuple(
+                OutputArtifact.model_validate_json(row.document_json)
+                for row in session.scalars(statement)
+            )
+
+    def target_output_path_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_path: str | None,
+        limit: int,
+    ) -> tuple[OutputArtifact, ...]:
+        if limit < 1:
+            return ()
+        statement = select(_TargetOutputRow).where(
+            _TargetOutputRow.work_id == work_id,
+            _TargetOutputRow.job_id == job_id,
+        )
+        if after_path is not None:
+            statement = statement.where(_TargetOutputRow.output_path > after_path)
+        statement = statement.order_by(_TargetOutputRow.output_path).limit(limit)
+        with self.sessions() as session:
+            return tuple(
+                OutputArtifact.model_validate_json(row.document_json)
+                for row in session.scalars(statement)
+            )
+
+    def target_disposition_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        after_id: str | None,
+        limit: int,
+    ) -> tuple[InputDispositionDeclaration, ...]:
+        if limit < 1:
+            return ()
+        statement = select(_TargetDispositionRow).where(
+            _TargetDispositionRow.work_id == work_id,
+            _TargetDispositionRow.job_id == job_id,
+        )
+        if after_id is not None:
+            statement = statement.where(_TargetDispositionRow.input_id > after_id)
+        statement = statement.order_by(_TargetDispositionRow.input_id).limit(limit)
+        with self.sessions() as session:
+            return tuple(
+                InputDispositionDeclaration(
+                    input_id=row.input_id,
+                    status=cast(Any, row.status),
+                )
+                for row in session.scalars(statement)
+            )
+
+    def target_source_edge_page(
+        self,
+        work_id: str,
+        job_id: str,
+        *,
+        order: Literal["output", "input"],
+        after_output_id: str | None,
+        after_input_id: str | None,
+        limit: int,
+    ) -> tuple[OutputSourceEdge, ...]:
+        if limit < 1:
+            return ()
+        statement = select(_TargetSourceEdgeRow).where(
+            _TargetSourceEdgeRow.work_id == work_id,
+            _TargetSourceEdgeRow.job_id == job_id,
+        )
+        if after_output_id is not None or after_input_id is not None:
+            if after_output_id is None or after_input_id is None:
+                raise ValueError("target source-edge cursor is incomplete")
+            if order == "output":
+                statement = statement.where(
+                    or_(
+                        _TargetSourceEdgeRow.output_id > after_output_id,
+                        and_(
+                            _TargetSourceEdgeRow.output_id == after_output_id,
+                            _TargetSourceEdgeRow.input_id > after_input_id,
+                        ),
+                    )
+                )
+            else:
+                statement = statement.where(
+                    or_(
+                        _TargetSourceEdgeRow.input_id > after_input_id,
+                        and_(
+                            _TargetSourceEdgeRow.input_id == after_input_id,
+                            _TargetSourceEdgeRow.output_id > after_output_id,
+                        ),
+                    )
+                )
+        statement = (
+            statement.order_by(
+                _TargetSourceEdgeRow.output_id,
+                _TargetSourceEdgeRow.input_id,
+            )
+            if order == "output"
+            else statement.order_by(
+                _TargetSourceEdgeRow.input_id,
+                _TargetSourceEdgeRow.output_id,
+            )
+        ).limit(limit)
+        with self.sessions() as session:
+            return tuple(
+                OutputSourceEdge(output_id=row.output_id, input_id=row.input_id)
+                for row in session.scalars(statement)
+            )
 
     def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
         with self.sessions() as session:
@@ -1792,6 +2215,27 @@ def _encode(payload: object) -> str:
 
 def _encoded_bytes(value: str) -> int:
     return len(value.encode("utf-8"))
+
+
+def _require_target_generation(work: _WorkRow, job_id: str) -> None:
+    record = WorkRecord.model_validate_json(work.document_json)
+    current_job = (
+        record.controller_evidence.execution_envelope.execution_envelope_sha256
+        if record.controller_evidence is not None
+        else None
+    )
+    if current_job != job_id:
+        raise Stove0StateError("target execution generation is stale")
+
+
+def _lock_receiving_target_production(session: Session, work_id: str, job_id: str) -> None:
+    work = session.scalar(select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update())
+    if work is None:
+        raise KeyError(work_id)
+    _require_target_generation(work, job_id)
+    seal = session.get(_TargetProductionSealRow, (work_id, job_id))
+    if seal is not None and seal.state != "receiving":
+        raise Stove0StateError("target production declarations are closed")
 
 
 def _contains_secret_field(value: object) -> bool:

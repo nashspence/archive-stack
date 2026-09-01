@@ -39,7 +39,6 @@ from stove0_target_client import TargetClient
 from stove0_target_protocol import (
     AcceptedTargetJob,
     OperationContract,
-    OutputArtifact,
     OutputCollectionRef,
     TargetCallbackAccess,
     TargetContract,
@@ -115,10 +114,8 @@ class RiverhogControlPort(Protocol):
     def verify_and_settle(
         self,
         record: WorkRecord,
-        operation: OperationContract,
-        outputs: Iterable[OutputArtifact],
         parent_outcome: ParentOutcomeBinding | None = None,
-    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]: ...
+    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority | None]: ...
 
     def settle_outcomes(
         self,
@@ -517,14 +514,12 @@ class Stove0Coordinator:
         if phase in {"executing", "output_finalizing"}:
             return self._poll_target(record)
         if phase == "verifying":
-            assert record.workflow_plan is not None
-            assert record.target_plan is not None
             output, target_settlement = self.riverhog.verify_and_settle(
                 record,
-                self.planning.operation_contract(record.workflow_plan.operation),
-                self.work.store.iter_target_outputs_by_path(record.work_id),
                 self._parent_outcome(record),
             )
+            if target_settlement is None:
+                return record
             return self.work.verify_output(
                 work_id,
                 output,

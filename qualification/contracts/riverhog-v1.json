@@ -11125,6 +11125,12 @@
         "consumers": [
           "stove0-server"
         ],
+        "name": "STOVE0_TARGET_AUTHORITY_BATCH_SIZE"
+      },
+      {
+        "consumers": [
+          "stove0-server"
+        ],
         "name": "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP"
       },
       {
@@ -11211,7 +11217,7 @@
         {
           "distribution": "stove0-server",
           "fixture_sha256s": [
-            "01c9d4dfcd2263bd4a0a715715853a98d65b1402f52d1fe46efeb786d12ebfac"
+            "1d958b73fe147ea02aca17695b851b00a15f187593f73c7375199a6770975ea9"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11262,8 +11268,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1842,
-        "discovered": 1842,
+        "classified": 1843,
+        "discovered": 1843,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11313,7 +11319,7 @@
           "stove0-review-sampler-protocol": 54,
           "stove0-review-target": 4,
           "stove0-review-target-sampler": 3,
-          "stove0-server": 5,
+          "stove0-server": 6,
           "stove0-target-protocol": 163,
           "stove0-target-support": 1
         },
@@ -11321,7 +11327,7 @@
           "contract_max": 377,
           "extension_owned": 55,
           "fixed": 835,
-          "operational_policy": 498,
+          "operational_policy": 499,
           "segmented_no_total_max": 77
         },
         "stale": 0,
@@ -18065,6 +18071,18 @@
           "unit": "configured-value"
         },
         {
+          "configuration": "STOVE0_TARGET_AUTHORITY_BATCH_SIZE",
+          "dimension": "value",
+          "id": "configuration-environment:STOVE0_TARGET_AUTHORITY_BATCH_SIZE:value",
+          "maximum": null,
+          "owner": "stove0-server",
+          "policy": "operational_policy",
+          "reason": "operator-configured-capacity",
+          "rule": "configured-capacity/v1",
+          "source_pointer": "/external_contract/configuration_environment/110",
+          "unit": "configured-value"
+        },
+        {
           "configuration": "STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS",
           "dimension": "value",
           "id": "configuration-environment:STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:value",
@@ -18073,7 +18091,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/113",
+          "source_pointer": "/external_contract/configuration_environment/114",
           "unit": "configured-value"
         },
         {
@@ -38250,7 +38268,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "8b8a3d10d56188e09824e046f0e3b1622cdf7e380d482c858ec505abdf3e8c4d"
+      "sha256": "ad47724c3ab1b9e1acda7c4e425c9307f1a92a20334cbf17cf38b0c8003b6c08"
     },
     "http_openapi": {
       "riverhog": {
@@ -56381,7 +56399,8 @@
               "x-riverhog-permission-requirements": [
                 {
                   "any_of": [
-                    "collection-transforms:control"
+                    "collection-transforms:control",
+                    "collection-transforms:execute"
                   ]
                 }
               ],
@@ -56667,7 +56686,8 @@
               "x-riverhog-permission-requirements": [
                 {
                   "any_of": [
-                    "collection-transforms:control"
+                    "collection-transforms:control",
+                    "collection-transforms:execute"
                   ]
                 }
               ],
@@ -72173,11 +72193,26 @@
               "additionalProperties": false,
               "properties": {
                 "production": {
-                  "$ref": "#/components/schemas/TargetProductionAuthority"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TargetProductionAuthority"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "sealing",
+                    "sealed"
+                  ],
+                  "title": "State",
+                  "type": "string"
                 }
               },
               "required": [
-                "production"
+                "state"
               ],
               "title": "TargetProductionSealResponse",
               "type": "object"
@@ -98521,6 +98556,10 @@
           "IncrementalCollectionProducer": {
             "kind": "class",
             "members": {
+              "append_derivation_evidence": {
+                "kind": "method",
+                "signature": "(self, path: 'str', content: 'bytes') -> 'ProducerArtifactCustody | None'"
+              },
               "append_inputs": {
                 "kind": "method",
                 "signature": "(self, inputs: 'Sequence[ProducerInput]', *, provenance_journals: 'Mapping[str, bytes] | None' = None, expected_identities: 'Mapping[str, ProducerArtifactIdentity] | None' = None) -> 'tuple[ProducerArtifactCustody, ...]'"
@@ -100305,9 +100344,21 @@
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
+          "DERIVATION_DISPOSITION_EVIDENCE_PREFIX": {
+            "kind": "constant",
+            "value": "riverhog/derivation/dispositions"
+          },
+          "DERIVATION_EVIDENCE_ORDINAL_HEX_WIDTH": {
+            "kind": "constant",
+            "value": 64
+          },
           "DERIVATION_EVIDENCE_PATH": {
             "kind": "constant",
             "value": "riverhog/collection-derivation.json"
+          },
+          "DERIVATION_OUTPUT_EVIDENCE_PREFIX": {
+            "kind": "constant",
+            "value": "riverhog/derivation/output-edges"
           },
           "DownloadAllowanceExceeded": {
             "kind": "class",
@@ -100918,6 +100969,10 @@
             "kind": "function",
             "signature": "(item: 'CollectionUploadFileIn', constraints: 'CollectionUploadRegistrationConstraintsDocument') -> 'RawSourceDigestSummary | None'"
           },
+          "derivation_evidence_page_path": {
+            "kind": "function",
+            "signature": "(kind: \"Literal['dispositions', 'output-edges']\", start_ordinal: 'int') -> 'str'"
+          },
           "error_type_for_code": {
             "kind": "function",
             "signature": "(code: 'str') -> 'type[RiverhogError] | None'"
@@ -100949,6 +101004,10 @@
           "validate_riverhog_event": {
             "kind": "function",
             "signature": "(value: 'CloudEvent | dict[str, Any]') -> 'RiverhogLifecycleEvent'"
+          },
+          "verify_derivation_evidence": {
+            "kind": "function",
+            "signature": "(disposition_pages: 'Iterable[bytes]', output_pages: 'Iterable[bytes]', *, expected: 'ArtifactDispositionSetIdentity') -> 'ArtifactDispositionSetIdentity'"
           }
         },
         "module": "riverhog_protocol"
@@ -106170,8 +106229,14 @@
           },
           "TargetProductionSealResponse": {
             "kind": "class",
-            "schema_sha256": "74989e73309b53c780dd8b7b8d1f64148c9632f43d898ef8ab826bd7c9f99cf8",
-            "signature": "(*, production: stove0_target_protocol.protocol.TargetProductionAuthority) -> None"
+            "members": {
+              "validate_state": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "6f7a13f1208812f0f424f11b7006ea462410222ff9b0e962c602c71eabf08e3c",
+            "signature": "(*, state: Literal['sealing', 'sealed'], production: stove0_target_protocol.protocol.TargetProductionAuthority | None = None) -> None"
           },
           "TargetProgress": {
             "kind": "class",

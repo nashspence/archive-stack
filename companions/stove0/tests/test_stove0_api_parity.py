@@ -365,6 +365,7 @@ def _lifecycle_composition() -> Stove0Composition:
             target_callback_base_url="https://stove0.invalid",
             target_callback_allow_insecure_http=False,
             target_callback_signing_key="stove0-test-callback-signing-key",
+            target_authority_batch_size=100,
             workspace_assurance="ephemeral",
             claim_lease_seconds=1800,
             capability_ttl_seconds=900,
@@ -525,6 +526,7 @@ def _composition() -> Stove0Composition:
             target_callback_base_url="https://stove0.invalid",
             target_callback_allow_insecure_http=False,
             target_callback_signing_key="stove0-test-callback-signing-key",
+            target_authority_batch_size=100,
             workspace_assurance="ephemeral",
             claim_lease_seconds=1800,
             capability_ttl_seconds=900,
@@ -653,6 +655,7 @@ class _LifecycleTargetCallbacks:
             sha256="6" * 64,
         )
         return TargetProductionSealResponse(
+            state="sealed",
             production=TargetProductionAuthority.seal(
                 TargetProductionAuthorityPayload(
                     job_id=job_id,
@@ -664,7 +667,7 @@ class _LifecycleTargetCallbacks:
                     source_edge_sha256="9" * 64,
                     riverhog_disposition_set=disposition_set,
                 )
-            )
+            ),
         )
 
 

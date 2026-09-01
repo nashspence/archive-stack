@@ -130,47 +130,95 @@ CREATE INDEX ix_stove0_evaluation_children_work ON stove0_evaluation_children (w
     """
 CREATE TABLE stove0_target_input_dispositions (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	input_id VARCHAR(160) NOT NULL,
 	status VARCHAR(32) NOT NULL,
-	PRIMARY KEY (work_id, input_id),
+	PRIMARY KEY (work_id, job_id, input_id),
 	CONSTRAINT ck_stove0_target_dispositions_id CHECK (length(input_id) >= 1),
 	CONSTRAINT ck_stove0_target_dispositions_status CHECK (status IN ('omitted','preserved','rejected','transformed')),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_input_dispositions_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_input_dispositions_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_input_dispositions_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE TABLE stove0_target_outputs (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	output_id VARCHAR(160) NOT NULL,
 	output_path VARCHAR(4096) NOT NULL,
 	document_bytes BIGINT NOT NULL,
 	document_json TEXT NOT NULL,
-	PRIMARY KEY (work_id, output_id),
+	PRIMARY KEY (work_id, job_id, output_id),
 	CONSTRAINT ck_stove0_target_outputs_id CHECK (length(output_id) >= 1),
 	CONSTRAINT ck_stove0_target_outputs_path CHECK (length(output_path) >= 1),
 	CONSTRAINT ck_stove0_target_outputs_document_bytes CHECK (document_bytes >= 0),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_outputs_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_outputs_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_outputs_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE UNIQUE INDEX uq_stove0_target_outputs_path ON stove0_target_outputs (work_id, output_path)
+CREATE UNIQUE INDEX uq_stove0_target_outputs_path ON stove0_target_outputs (work_id, job_id, output_path)
     """.strip(),
     """
 CREATE TABLE stove0_target_source_edges (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	output_id VARCHAR(160) NOT NULL,
 	input_id VARCHAR(160) NOT NULL,
-	PRIMARY KEY (work_id, output_id, input_id),
+	PRIMARY KEY (work_id, job_id, output_id, input_id),
 	CONSTRAINT ck_stove0_target_source_edges_output CHECK (length(output_id) >= 1),
 	CONSTRAINT ck_stove0_target_source_edges_input CHECK (length(input_id) >= 1),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_source_edges_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_source_edges_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_source_edges_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_stove0_target_source_edges_input ON stove0_target_source_edges (work_id, input_id, output_id)
+CREATE INDEX ix_stove0_target_source_edges_input ON stove0_target_source_edges (work_id, job_id, input_id, output_id)
+    """.strip(),
+    """
+CREATE TABLE stove0_target_production_seals (
+	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
+	revision INTEGER NOT NULL,
+	state VARCHAR(32) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	PRIMARY KEY (work_id, job_id),
+	CONSTRAINT ck_stove0_target_production_seals_revision CHECK (revision >= 1),
+	CONSTRAINT ck_stove0_target_production_seals_state CHECK (state IN ('receiving','sealing','sealed','failed')),
+	CONSTRAINT ck_stove0_target_production_seals_document_bytes CHECK (document_bytes >= 0),
+	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
+	CONSTRAINT ck_stove0_target_production_seals_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_production_seals_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_target_production_seals_state_updated ON stove0_target_production_seals (state, updated_at, work_id, job_id)
+    """.strip(),
+    """
+CREATE TABLE stove0_target_settlement_seals (
+	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
+	revision INTEGER NOT NULL,
+	state VARCHAR(32) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	PRIMARY KEY (work_id, job_id),
+	CONSTRAINT ck_stove0_target_settlement_seals_revision CHECK (revision >= 1),
+	CONSTRAINT ck_stove0_target_settlement_seals_state CHECK (state IN ('binding','sealed','failed')),
+	CONSTRAINT ck_stove0_target_settlement_seals_document_bytes CHECK (document_bytes >= 0),
+	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
+	CONSTRAINT ck_stove0_target_settlement_seals_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_settlement_seals_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_target_settlement_seals_state_updated ON stove0_target_settlement_seals (state, updated_at, work_id, job_id)
     """.strip(),
     """
 CREATE TABLE stove0_work_evaluations (
@@ -340,47 +388,95 @@ CREATE INDEX ix_stove0_evaluation_children_work ON stove0_evaluation_children (w
     """
 CREATE TABLE stove0_target_input_dispositions (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	input_id VARCHAR(160) NOT NULL,
 	status VARCHAR(32) NOT NULL,
-	PRIMARY KEY (work_id, input_id),
+	PRIMARY KEY (work_id, job_id, input_id),
 	CONSTRAINT ck_stove0_target_dispositions_id CHECK (length(input_id) >= 1),
 	CONSTRAINT ck_stove0_target_dispositions_status CHECK (status IN ('omitted','preserved','rejected','transformed')),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_input_dispositions_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_input_dispositions_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_input_dispositions_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE TABLE stove0_target_outputs (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	output_id VARCHAR(160) NOT NULL,
 	output_path VARCHAR(4096) NOT NULL,
 	document_bytes BIGINT NOT NULL,
 	document_json TEXT NOT NULL,
-	PRIMARY KEY (work_id, output_id),
+	PRIMARY KEY (work_id, job_id, output_id),
 	CONSTRAINT ck_stove0_target_outputs_id CHECK (length(output_id) >= 1),
 	CONSTRAINT ck_stove0_target_outputs_path CHECK (length(output_path) >= 1),
 	CONSTRAINT ck_stove0_target_outputs_document_bytes CHECK (document_bytes >= 0),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_outputs_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_outputs_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_outputs_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE UNIQUE INDEX uq_stove0_target_outputs_path ON stove0_target_outputs (work_id, output_path)
+CREATE UNIQUE INDEX uq_stove0_target_outputs_path ON stove0_target_outputs (work_id, job_id, output_path)
     """.strip(),
     """
 CREATE TABLE stove0_target_source_edges (
 	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
 	output_id VARCHAR(160) NOT NULL,
 	input_id VARCHAR(160) NOT NULL,
-	PRIMARY KEY (work_id, output_id, input_id),
+	PRIMARY KEY (work_id, job_id, output_id, input_id),
 	CONSTRAINT ck_stove0_target_source_edges_output CHECK (length(output_id) >= 1),
 	CONSTRAINT ck_stove0_target_source_edges_input CHECK (length(input_id) >= 1),
 	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
-	CONSTRAINT ck_stove0_target_source_edges_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_stove0_target_source_edges_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_source_edges_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
-CREATE INDEX ix_stove0_target_source_edges_input ON stove0_target_source_edges (work_id, input_id, output_id)
+CREATE INDEX ix_stove0_target_source_edges_input ON stove0_target_source_edges (work_id, job_id, input_id, output_id)
+    """.strip(),
+    """
+CREATE TABLE stove0_target_production_seals (
+	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
+	revision INTEGER NOT NULL,
+	state VARCHAR(32) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	PRIMARY KEY (work_id, job_id),
+	CONSTRAINT ck_stove0_target_production_seals_revision CHECK (revision >= 1),
+	CONSTRAINT ck_stove0_target_production_seals_state CHECK (state IN ('receiving','sealing','sealed','failed')),
+	CONSTRAINT ck_stove0_target_production_seals_document_bytes CHECK (document_bytes >= 0),
+	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
+	CONSTRAINT ck_stove0_target_production_seals_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_production_seals_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_target_production_seals_state_updated ON stove0_target_production_seals (state, updated_at, work_id, job_id)
+    """.strip(),
+    """
+CREATE TABLE stove0_target_settlement_seals (
+	work_id VARCHAR(64) NOT NULL,
+	job_id VARCHAR(64) NOT NULL,
+	revision INTEGER NOT NULL,
+	state VARCHAR(32) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	PRIMARY KEY (work_id, job_id),
+	CONSTRAINT ck_stove0_target_settlement_seals_revision CHECK (revision >= 1),
+	CONSTRAINT ck_stove0_target_settlement_seals_state CHECK (state IN ('binding','sealed','failed')),
+	CONSTRAINT ck_stove0_target_settlement_seals_document_bytes CHECK (document_bytes >= 0),
+	FOREIGN KEY(work_id) REFERENCES stove0_work_records (work_id) ON DELETE CASCADE,
+	CONSTRAINT ck_stove0_target_settlement_seals_work_id_hex CHECK (length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_target_settlement_seals_job_id_hex CHECK (length(job_id) = 64 AND lower(job_id) = job_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(job_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_target_settlement_seals_state_updated ON stove0_target_settlement_seals (state, updated_at, work_id, job_id)
     """.strip(),
     """
 CREATE TABLE stove0_work_evaluations (

@@ -767,15 +767,18 @@ class FixtureTargetCallbacks:
         if not isinstance(request, TargetJobRequest):
             return
         store, work_id = cls._authorities[request.callback_access.token]
-        store.record_target_output(work_id, output)
+        job_id = request.declaration.job_id
+        store.record_target_output(work_id, job_id, output)
         selection_sha256 = request.declaration.plan.inputs.selection.selection_sha256
         for subject in store.iter_selection_artifacts(selection_sha256):
             store.record_target_disposition(
                 work_id,
+                job_id,
                 InputDispositionDeclaration(input_id=subject.id, status="transformed"),
             )
             store.record_target_source_edge(
                 work_id,
+                job_id,
                 OutputSourceEdge(output_id=output.id, input_id=subject.id),
             )
 
@@ -1138,8 +1141,6 @@ class FixtureRiverhog:
     def verify_and_settle(
         self,
         record: object,
-        _operation: OperationContract,
-        _outputs: object,
         parent_outcome: ParentOutcomeBinding | None = None,
     ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]:
         from stove0_core import WorkRecord
@@ -1197,6 +1198,24 @@ class RetirementWaitingRiverhog(FixtureRiverhog):
         return self.deletion_ready
 
 
+class DelayedSettlementRiverhog(FixtureRiverhog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.binding_ready = False
+
+    def verify_and_settle(
+        self,
+        record: object,
+        parent_outcome: ParentOutcomeBinding | None = None,
+    ) -> tuple[OutputCollectionRef, TargetSettlementAuthority | None]:
+        current = WorkRecord.model_validate(record)
+        assert current.target_status is not None
+        assert current.target_status.output_collection is not None
+        if not self.binding_ready:
+            return current.target_status.output_collection, None
+        return super().verify_and_settle(current, parent_outcome)
+
+
 class NestedFixtureRiverhog(FixtureRiverhog):
     def __init__(self) -> None:
         super().__init__()
@@ -1206,8 +1225,6 @@ class NestedFixtureRiverhog(FixtureRiverhog):
     def verify_and_settle(
         self,
         record: object,
-        _operation: OperationContract,
-        _outputs: object,
         parent_outcome: ParentOutcomeBinding | None = None,
     ) -> tuple[OutputCollectionRef, TargetSettlementAuthority]:
         record = WorkRecord.model_validate(record)
@@ -1467,6 +1484,36 @@ def test_coordination_settles_parent_only_after_successful_children_complete() -
 
     assert completed.phase == "complete"
     assert riverhog.coordination_settled is True
+
+
+def test_incomplete_post_root_binding_is_not_visible_to_coordination() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    riverhog = DelayedSettlementRiverhog()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+        target_callbacks=FixtureTargetCallbacks(store),
+    )
+    parent, child = _advance_child_to(coordinator, store, "verifying")
+
+    waiting = coordinator.step(child.work_id)
+
+    assert waiting.phase == "verifying"
+    assert waiting.target_settlement is None
+    assert coordinator.inspect_coordination(parent.work_id).succeeded_branches == ()
+    assert riverhog.outcomes == {}
+
+    riverhog.binding_ready = True
+    settled = coordinator.step(child.work_id)
+
+    assert settled.phase == "settled"
+    assert settled.target_settlement is not None
+    assert coordinator.inspect_coordination(parent.work_id).succeeded_branches
 
 
 def test_retirement_grace_and_deletion_blockers_leave_work_stably_waiting() -> None:

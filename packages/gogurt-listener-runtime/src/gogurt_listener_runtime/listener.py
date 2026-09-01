@@ -984,7 +984,11 @@ class ListenerRuntime:
                 error,
             )
             self.dispatch_queue.task_done()
-            self._heartbeat()
+            # Once shutdown begins, the runtime thread owns the final heartbeat.
+            # Let the worker terminate immediately after releasing action custody so
+            # shutdown cannot misclassify redundant publication as an unsettled worker.
+            if not self.stop_event.is_set():
+                self._heartbeat()
 
     def _supervised_worker(self) -> None:
         try:

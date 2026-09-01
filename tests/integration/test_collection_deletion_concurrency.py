@@ -60,7 +60,9 @@ from riverhog_protocol.collection_workflows import (
     CollectionRootIdentity,
     OperationIdentity,
     RecipeIdentity,
+    canonical_json_bytes,
     canonical_json_sha256,
+    derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Conflict
 from riverhog_protocol.paths import tag_set_identity
@@ -605,6 +607,52 @@ def _settle_outcomes(
     return settled
 
 
+def _derivation_evidence_records(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    authority: ArtifactDispositionSetIdentity,
+    *,
+    collection_id: int,
+) -> tuple[tuple[CollectionFileRecord, ...], int]:
+    pages = (
+        (
+            "dispositions",
+            service.list_dispositions(
+                claim_id,
+                authority_sha256=authority.sha256,
+                start_ordinal=0,
+                principal=WORKFLOW_PRINCIPAL,
+            ),
+        ),
+        (
+            "output-edges",
+            service.list_disposition_outputs(
+                claim_id,
+                authority_sha256=authority.sha256,
+                start_ordinal=0,
+                principal=WORKFLOW_PRINCIPAL,
+            ),
+        ),
+    )
+    records: list[CollectionFileRecord] = []
+    total_bytes = 0
+    for kind, page in pages:
+        content = canonical_json_bytes(page)
+        total_bytes += len(content)
+        records.append(
+            CollectionFileRecord(
+                collection_id=collection_id,
+                path=derivation_evidence_page_path(
+                    "dispositions" if kind == "dispositions" else "output-edges",
+                    0,
+                ),
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        )
+    return tuple(records), total_bytes
+
+
 def _seed_derived_output(
     database_url: str,
     *,
@@ -632,6 +680,12 @@ def _seed_derived_output(
         output_path=output_path,
     )
     disposition_set = _seal_disposition_set(service, claim_id, (disposition,), (output,))
+    evidence_records, evidence_bytes = _derivation_evidence_records(
+        service,
+        claim_id,
+        disposition_set,
+        collection_id=output_collection_id,
+    )
     claim = service.get_claim(claim_id, principal=WORKFLOW_PRINCIPAL)
     plan = cast(dict[str, object], claim["plan"])
     derivation = CollectionDerivation(
@@ -669,8 +723,8 @@ def _seed_derived_output(
                 created_by_app=f"transform:{execution_id}",
                 created_by_key_id=f"transform:{execution_id}",
                 created_at="2026-01-01T00:00:00.000000Z",
-                file_count=3,
-                file_bytes=len(CONTENT) + len(derivation.to_json_bytes()) + 2,
+                file_count=5,
+                file_bytes=len(CONTENT) + len(derivation.to_json_bytes()) + 2 + evidence_bytes,
             )
         )
         session.add(
@@ -701,6 +755,7 @@ def _seed_derived_output(
                     bytes=2,
                     sha256=hashlib.sha256(b"{}").hexdigest(),
                 ),
+                *evidence_records,
             )
         )
         session.add(
@@ -772,6 +827,12 @@ def _seed_multi_input_derived_output(
         ),
     )
     disposition_set = _seal_disposition_set(service, claim_id, dispositions, outputs)
+    evidence_records, evidence_bytes = _derivation_evidence_records(
+        service,
+        claim_id,
+        disposition_set,
+        collection_id=2,
+    )
     claim = service.get_claim(claim_id, principal=WORKFLOW_PRINCIPAL)
     plan = cast(dict[str, object], claim["plan"])
     derivation = CollectionDerivation(
@@ -809,9 +870,13 @@ def _seed_multi_input_derived_output(
                 created_by_app=f"transform:{EXECUTION_ID}",
                 created_by_key_id=f"transform:{EXECUTION_ID}",
                 created_at="2026-01-01T00:00:00.000000Z",
-                file_count=4,
+                file_count=6,
                 file_bytes=(
-                    len(CONTENT) + len(SECOND_CONTENT) + len(derivation.to_json_bytes()) + 2
+                    len(CONTENT)
+                    + len(SECOND_CONTENT)
+                    + len(derivation.to_json_bytes())
+                    + 2
+                    + evidence_bytes
                 ),
             )
         )
@@ -849,6 +914,7 @@ def _seed_multi_input_derived_output(
                     bytes=2,
                     sha256=hashlib.sha256(b"{}").hexdigest(),
                 ),
+                *evidence_records,
             )
         )
         copy = CollectionArchiveCopyRecord(
