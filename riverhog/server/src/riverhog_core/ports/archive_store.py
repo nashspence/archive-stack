@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol
 
 from riverhog_core.ports.download_allowance import DownloadAttribution
@@ -81,12 +80,6 @@ class ArchiveReadStatus:
 class ArchiveStore(Protocol):
     def read_mode(self) -> str: ...
     def new_collection_archive_storage_prefix(self) -> str: ...
-
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int: ...
 
     def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None: ...
 

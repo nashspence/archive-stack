@@ -4,7 +4,6 @@ namespace_prefix = "qualification"
 [retention]
 aws_deep_archive_expiration_days = 185
 b2_delete_days = 1
-multipart_abort_days = 4
 
 [restore]
 tier = "bulk"

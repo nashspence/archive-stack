@@ -4,7 +4,6 @@ import hashlib
 import os
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,11 @@ from riverhog_core.archive_formats import (
     ROOT_MANIFEST_STORAGE_FORMAT,
 )
 from riverhog_core.catalog_db import initialize_db, make_session_factory
-from riverhog_core.ports.archive_objects import WriteSegmentReceipt
+from riverhog_core.ports.archive_objects import (
+    ArchiveResumableObjectStore,
+    WriteSegmentReceipt,
+    WriteSession,
+)
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.runtime_config import StorageAdapterRegistration, load_runtime_config
 from riverhog_core.services.retrieval_cache import SqlAlchemyRetrievalCache
@@ -29,12 +32,8 @@ from riverhog_core.stores.storage_adapter_archive_objects import (
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
-from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
-    DeletePrefixRequest,
-)
+from riverhog_storage_adapter_protocol import DeletePrefixRequest
 from riverhog_storage_adapter_support import StorageAdapterClient
-from time_formats import format_utc_timestamp
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -113,6 +112,7 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
         "riverhog-plaintext-bytes": str(len(plaintext)),
         "riverhog-file-sha256": plaintext_sha256,
     }
+    active_writes: list[tuple[ArchiveResumableObjectStore, WriteSession]] = []
 
     try:
         session = resumable.begin_write(
@@ -121,6 +121,7 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
+        active_writes.append((resumable, session))
         segment = resumable.write_segment(session=session, number=1, content=ciphertext)
         completed = resumable.complete_write(
             session=session,
@@ -129,6 +130,7 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
             expected_content_type="application/vnd.riverhog.raw-volume+age",
             expected_metadata=metadata,
         )
+        active_writes.remove((resumable, session))
         assert completed.object_path == volume_path
 
         mirrored_path = f"{archive_prefix}/volumes/segment-000000000001.bin.age"
@@ -146,6 +148,7 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
+        active_writes.append((mirrored, mirrored_session))
         mirrored_segment = mirrored.write_segment(
             session=mirrored_session,
             number=1,
@@ -165,6 +168,7 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
             expected_content_type="application/vnd.riverhog.raw-volume+age",
             expected_metadata=metadata,
         )
+        active_writes.remove((mirrored, mirrored_session))
         cache_receipt = mirrored_completed.retrieval_cache
         assert cache_receipt is not None
         assert cache_receipt.cache_store == cache_registration.name
@@ -249,13 +253,8 @@ def test_canonical_archive_capabilities_against_garage_adapter(tmp_path: Path) -
             == plaintext
         )
     finally:
-        cutoff = format_utc_timestamp(datetime.now(UTC) + timedelta(seconds=1))
+        for object_store, write_session in active_writes:
+            object_store.abort_write(session=write_session)
         for client in (archive_client, cache_client):
-            client.abort_incomplete_writes(
-                AbortIncompleteWritesRequest(
-                    object_prefix=f"archives/{prefix}/",
-                    initiated_before=cutoff,
-                )
-            )
             client.delete_prefix(DeletePrefixRequest(object_prefix=f"archives/{prefix}/"))
             client.close()

@@ -201,18 +201,6 @@ def test_archive_key_generations_have_one_explicit_active_binding(tmp_path: Path
         )
 
 
-def test_load_runtime_config_parses_incomplete_archive_write_safeguards(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE", "96h")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL", "2h")
-
-    config = load_runtime_config()
-
-    assert config.archive_incomplete_write_max_age == timedelta(hours=96)
-    assert config.archive_incomplete_write_sweep_interval == timedelta(hours=2)
-
-
 def test_load_runtime_config_connects_archive_sweep_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4,11 +4,12 @@ import hashlib
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from datetime import datetime
 from typing import Any
 
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteWritesRequest,
+    CompletedObjectReceipt as AdapterCompletedObjectReceipt,
+)
+from riverhog_storage_adapter_protocol import (
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     ObjectLocator,
@@ -18,9 +19,6 @@ from riverhog_storage_adapter_protocol import (
     WriteCompleteRequest,
     WriteStartRequest,
     validated_storage_adapter,
-)
-from riverhog_storage_adapter_protocol import (
-    CompletedObjectReceipt as AdapterCompletedObjectReceipt,
 )
 from riverhog_storage_adapter_protocol import (
     WriteSegmentReceipt as AdapterWriteSegmentReceipt,
@@ -88,16 +86,6 @@ class StorageAdapterRetrievalCache:
             minimum_nonfinal_segment_bytes=self._descriptor.minimum_nonfinal_segment_bytes,
             maximum_segment_bytes=self._descriptor.maximum_segment_bytes,
             maximum_segment_count=self._descriptor.maximum_segment_count,
-        )
-
-    def abort_incomplete_writes(self, *, initiated_before: datetime) -> int:
-        if initiated_before.tzinfo is None:
-            raise ValueError("retrieval cache write cutoff must be timezone-aware")
-        return self._adapter.abort_incomplete_writes(
-            AbortIncompleteWritesRequest(
-                object_prefix="objects/",
-                initiated_before=format_utc_timestamp(initiated_before),
-            )
         )
 
     def begin_population(

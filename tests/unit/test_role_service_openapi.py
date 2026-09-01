@@ -251,4 +251,3 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
         "read_expired",
         "integrity_failure",
     }
-    assert by_operation[("POST", "/v1/maintenance/abort-incomplete-writes")] == common | request

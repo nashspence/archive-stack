@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select, update
 from time_formats import format_utc_timestamp, utc_now
@@ -198,17 +198,3 @@ class SqlAlchemyArchiveMaintenanceService:
                     utc_now() + timedelta(seconds=delay)
                 )
                 publication.failure = str(exc)[:1000]
-
-    def abort_incomplete_writes(self, *, initiated_before: datetime) -> int:
-        aborted = 0
-        for store_name, binding in self._archive_stores.items():
-            try:
-                count = binding.store.abort_incomplete_writes(initiated_before=initiated_before)
-            except Exception:
-                _LOG.exception(
-                    "incomplete archive write sweep failed: store=%s",
-                    store_name,
-                )
-                continue
-            aborted += count
-        return aborted

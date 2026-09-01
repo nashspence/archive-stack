@@ -183,6 +183,13 @@ class WriteSession(StorageAdapterModel):
 
 
 class WriteStartRequest(StorageAdapterModel):
+    """Exact authority for one idempotently established nonterminal write.
+
+    Repeating the same canonical request against the same configured adapter while the
+    write remains nonterminal returns the same continuation session. Operational
+    credentials used to realize that session remain adapter-private.
+    """
+
     object_path: str = Field(min_length=1, max_length=4096)
     expected_bytes: int = Field(ge=1)
     content_type: str = Field(min_length=1, max_length=255)
@@ -276,6 +283,8 @@ class WriteCompleteRequest(StorageAdapterModel):
 
     @model_validator(mode="after")
     def validate_bytes(self) -> Self:
+        if self.expected_bytes != self.session.expected_bytes:
+            raise ValueError("write completion byte count differs from its session")
         if sum(segment.stored_bytes for segment in self.segments) != self.expected_bytes:
             raise ValueError("write byte count does not equal its segments")
         return self
@@ -544,25 +553,6 @@ class ReadStatus(StorageAdapterModel):
         return ReadPreparationRequest(objects=value).objects
 
 
-class AbortIncompleteWritesRequest(StorageAdapterModel):
-    object_prefix: str = Field(min_length=1, max_length=4096)
-    initiated_before: str = Field(
-        min_length=1,
-        max_length=100,
-        description=("Caller-authorized cutoff that terminalizes matching nonterminal writes."),
-    )
-
-    @field_validator("object_prefix")
-    @classmethod
-    def canonical_prefix(cls, value: str) -> str:
-        return normalize_object_path(value, allow_prefix=True)
-
-    @field_validator("initiated_before")
-    @classmethod
-    def canonical_initiated_before(cls, value: str) -> str:
-        return _canonical_utc_timestamp(value)
-
-
 class StorageAdapterErrorBody(StorageAdapterModel):
     code: StorageAdapterErrorCode
     message: str = Field(min_length=1, max_length=2000)
@@ -805,8 +795,6 @@ class StorageAdapterPort(Protocol):
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None: ...
 
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int: ...
-
 
 class _ContentValidation:
     def __init__(self, content: BinaryContent, *, expected_bytes: int) -> None:
@@ -1031,12 +1019,6 @@ class ValidatedStorageAdapterPort:
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self._adapter.cleanup_read(request)
 
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        return self._affected(
-            self._adapter.abort_incomplete_writes(request),
-            "abort-incomplete-writes",
-        )
-
     @staticmethod
     def _affected(value: object, operation: str) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1055,7 +1037,6 @@ def validated_storage_adapter(adapter: StorageAdapterPort) -> ValidatedStorageAd
 __all__ = [
     "ADAPTER_PRIVATE_ASSERTION_PREFIX",
     "STORAGE_ADAPTER_PROTOCOL",
-    "AbortIncompleteWritesRequest",
     "AdapterDescriptor",
     "BinaryContent",
     "CompletedObjectReceipt",

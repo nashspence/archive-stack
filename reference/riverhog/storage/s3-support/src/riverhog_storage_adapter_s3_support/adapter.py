@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Protocol, cast
 
 from botocore.exceptions import ClientError
 from riverhog_storage_adapter_protocol import (
     ADAPTER_PRIVATE_ASSERTION_PREFIX,
-    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     BinaryContent,
     CompletedObjectReceipt,
@@ -39,7 +38,7 @@ from riverhog_storage_adapter_protocol import (
     WriteSession,
     WriteStartRequest,
 )
-from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
+from time_formats import format_utc_timestamp, utc_now
 
 _MINIMUM_NONFINAL_PART_BYTES = 5 * 1024 * 1024
 _MAXIMUM_PART_BYTES = 5 * 1024 * 1024 * 1024
@@ -151,13 +150,21 @@ class S3StorageAdapter:
         )
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        object_key = self._key(request.object_path)
+        active_upload = self._active_write_for_key(object_key)
+        if active_upload is not None:
+            return WriteSession(
+                object_path=request.object_path,
+                expected_bytes=request.expected_bytes,
+                write_token=active_upload,
+            )
         metadata = self._stored_metadata(
             request.required_identity_assertions,
             placement=request.placement,
         )
         provider_request: dict[str, Any] = {
             "Bucket": self._config.bucket,
-            "Key": self._key(request.object_path),
+            "Key": object_key,
             "ContentType": request.content_type,
             "Metadata": metadata,
         }
@@ -528,43 +535,24 @@ class S3StorageAdapter:
                 objects=self._provider_objects(request),
             )
 
-    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
-        cutoff = parse_utc_timestamp(request.initiated_before).astimezone(UTC)
-        provider_request: dict[str, Any] = {
-            "Bucket": self._config.bucket,
-            "Prefix": self._key(request.object_prefix),
-        }
-        aborted = 0
-        while True:
-            response = cast(dict[str, Any], self._client.list_multipart_uploads(**provider_request))
-            for upload in response.get("Uploads") or ():
-                if not isinstance(upload, dict):
-                    continue
-                key = str(upload.get("Key", ""))
-                upload_id = str(upload.get("UploadId", ""))
-                initiated = upload.get("Initiated")
-                if (
-                    not key.startswith(str(provider_request["Prefix"]))
-                    or not upload_id
-                    or not isinstance(initiated, datetime)
-                    or initiated.tzinfo is None
-                    or initiated.astimezone(UTC) >= cutoff
-                ):
-                    continue
-                self._client.abort_multipart_upload(
-                    Bucket=self._config.bucket,
-                    Key=key,
-                    UploadId=upload_id,
-                )
-                aborted += 1
-            if not response.get("IsTruncated"):
-                return aborted
-            next_key = str(response.get("NextKeyMarker", ""))
-            next_upload = str(response.get("NextUploadIdMarker", ""))
-            if not next_key or not next_upload:
-                raise RuntimeError("S3 multipart listing omitted pagination markers")
-            provider_request["KeyMarker"] = next_key
-            provider_request["UploadIdMarker"] = next_upload
+    def _active_write_for_key(self, object_key: str) -> str | None:
+        """Resolve one exact nonterminal write without sweeping provider state."""
+
+        response = cast(
+            dict[str, Any],
+            self._client.list_multipart_uploads(
+                Bucket=self._config.bucket,
+                Prefix=object_key,
+                MaxUploads=1,
+            ),
+        )
+        for upload in response.get("Uploads") or ():
+            if not isinstance(upload, dict) or str(upload.get("Key", "")) != object_key:
+                continue
+            upload_id = str(upload.get("UploadId", ""))
+            if upload_id:
+                return upload_id
+        return None
 
     def _key(self, object_path: str) -> str:
         return "/".join(

@@ -50,6 +50,7 @@ def _expected_checks(descriptor: AdapterDescriptor) -> tuple[str, ...]:
         checks.append("sparse-write-reconciliation")
     checks.extend(
         (
+            "write-begin-recovery",
             "write-continuation-replay",
             "write-reconciliation",
             "write-completion-recovery",
@@ -224,6 +225,10 @@ def run_storage_adapter_conformance(
             placement="immediate",
         )
         session = client.begin_write(write_request)
+        recovered_session = continuation_client.begin_write(write_request)
+        if recovered_session != session:
+            raise AssertionError("lost begin response created a different write session")
+        checks.append("write-begin-recovery")
         first_segment = client.write_segment(
             session=session,
             number=1,
