@@ -71,15 +71,25 @@ class CatalogReplica:
                     revision INTEGER NOT NULL CHECK (revision > 0),
                     archive_root_sha256 TEXT,
                     content_identity TEXT,
+                    description TEXT,
+                    description_revision INTEGER,
+                    description_identity TEXT,
                     deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
                     PRIMARY KEY (generation, collection_id),
                     FOREIGN KEY (generation) REFERENCES catalog_replica_generations(id)
                         ON DELETE CASCADE,
                     CHECK (
-                        deleted = 1 AND archive_root_sha256 IS NULL AND content_identity IS NULL
+                        deleted = 1
+                           AND archive_root_sha256 IS NULL
+                           AND content_identity IS NULL
+                           AND description IS NULL
+                           AND description_revision IS NULL
+                           AND description_identity IS NULL
                         OR deleted = 0
                            AND length(archive_root_sha256) = 64
                            AND length(content_identity) = 64
+                           AND description_revision >= 0
+                           AND length(description_identity) = 64
                     )
                 ) WITHOUT ROWID;
                 CREATE INDEX IF NOT EXISTS ix_catalog_replica_collections_live
@@ -250,7 +260,8 @@ class CatalogReplica:
                 raise RuntimeError("catalog replica is not synchronized for its current view")
             rows = db.execute(
                 """
-                SELECT collection_id, revision, archive_root_sha256, content_identity
+                SELECT collection_id, revision, archive_root_sha256, content_identity,
+                       description, description_revision, description_identity
                 FROM catalog_replica_collections
                 WHERE generation = ? AND collection_id > ? AND deleted = 0
                 ORDER BY collection_id
@@ -264,6 +275,9 @@ class CatalogReplica:
                     revision=str(row["revision"]),
                     archive_root_sha256=str(row["archive_root_sha256"]),
                     content_identity=str(row["content_identity"]),
+                    description=row["description"],
+                    description_revision=int(row["description_revision"]),
+                    description_identity=str(row["description_identity"]),
                 )
                 for row in rows
             ]
@@ -279,7 +293,8 @@ class CatalogReplica:
                 raise RuntimeError("catalog replica is not synchronized for its current view")
             row = db.execute(
                 """
-                SELECT collection_id, revision, archive_root_sha256, content_identity
+                SELECT collection_id, revision, archive_root_sha256, content_identity,
+                       description, description_revision, description_identity
                 FROM catalog_replica_collections
                 WHERE generation = ? AND collection_id = ? AND deleted = 0
                 """,
@@ -292,6 +307,9 @@ class CatalogReplica:
                 revision=str(row["revision"]),
                 archive_root_sha256=str(row["archive_root_sha256"]),
                 content_identity=str(row["content_identity"]),
+                description=row["description"],
+                description_revision=int(row["description_revision"]),
+                description_identity=str(row["description_identity"]),
             )
 
     def reclaim(self, *, limit: int = 100) -> int:
@@ -402,6 +420,9 @@ class CatalogReplica:
         revision = int(item.revision)
         root = None if deleted else item.archive_root_sha256  # type: ignore[union-attr]
         content = None if deleted else item.content_identity  # type: ignore[union-attr]
+        description = None if deleted else item.description  # type: ignore[union-attr]
+        description_revision = None if deleted else item.description_revision  # type: ignore[union-attr]
+        description_identity = None if deleted else item.description_identity  # type: ignore[union-attr]
         existing = db.execute(
             "SELECT * FROM catalog_replica_collections WHERE generation = ? AND collection_id = ?",
             (generation, item.collection_id),
@@ -410,24 +431,48 @@ class CatalogReplica:
             if (
                 existing["archive_root_sha256"],
                 existing["content_identity"],
+                existing["description"],
+                existing["description_revision"],
+                existing["description_identity"],
                 bool(existing["deleted"]),
-            ) != (root, content, deleted):
+            ) != (
+                root,
+                content,
+                description,
+                description_revision,
+                description_identity,
+                deleted,
+            ):
                 raise ValueError("equal catalog revisions have different contents")
             return
         db.execute(
             """
             INSERT INTO catalog_replica_collections (
                 generation, collection_id, revision,
-                archive_root_sha256, content_identity, deleted
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                archive_root_sha256, content_identity, description,
+                description_revision, description_identity, deleted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (generation, collection_id) DO UPDATE SET
                 revision = excluded.revision,
                 archive_root_sha256 = excluded.archive_root_sha256,
                 content_identity = excluded.content_identity,
+                description = excluded.description,
+                description_revision = excluded.description_revision,
+                description_identity = excluded.description_identity,
                 deleted = excluded.deleted
             WHERE excluded.revision > catalog_replica_collections.revision
             """,
-            (generation, item.collection_id, revision, root, content, int(deleted)),
+            (
+                generation,
+                item.collection_id,
+                revision,
+                root,
+                content,
+                description,
+                description_revision,
+                description_identity,
+                int(deleted),
+            ),
         )
 
     def _invalidate(self, error: RiverhogError, *, serial: int) -> None:

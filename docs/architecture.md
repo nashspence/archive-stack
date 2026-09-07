@@ -16,10 +16,10 @@ Contracts define packages; architecture records ownership.
 - **Provenance authority.** Per-file provenance is append-only custody history. Journals remain
   exact prefixes across handoffs; clients capture or continue them by default, and omissions require
   a reason. Journals and their index are authoritative; database rows are a rebuildable projection.
-- **Collection views.** Collections are immutable namespaces and deletion units. Access groups are
-  mutable authorization state; applications own descriptive indexes and derived materializations.
-- **Deployment configuration.** Deployments own identity, credentials, destinations, topology, and
-  policy.
+- **Collection views.** Collections are immutable namespaces/deletion units; access groups are
+  mutable authorization. An optional mutable description is copy-adjacent recovery material
+  projected into the catalog; applications own richer indexes.
+- **Deployment configuration.** Deployments own credentials, topology, and policy.
 
 ## Boundary model
 

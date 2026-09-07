@@ -32,6 +32,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
+    CollectionDescriptionPublicationRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadFileRecord,
@@ -293,6 +294,41 @@ class SqlAlchemyCollectionDeletionService:
                 is not None
             ):
                 return False
+            description = session.scalar(
+                select(CollectionDescriptionPublicationRecord)
+                .where(
+                    CollectionDescriptionPublicationRecord.collection_id == collection_id,
+                    CollectionDescriptionPublicationRecord.object_path.is_not(None),
+                )
+                .order_by(CollectionDescriptionPublicationRecord.store)
+                .limit(1)
+            )
+            if description is not None:
+                copy = session.get(
+                    CollectionArchiveCopyRecord,
+                    (collection_id, description.store),
+                )
+                if copy is None or copy.archive_storage_prefix is None:
+                    raise Conflict("collection description has no owned archive copy")
+                description_store = description.store
+                description_prefix = copy.archive_storage_prefix
+            else:
+                description_store = None
+                description_prefix = None
+        if description_store is not None and description_prefix is not None:
+            self._archive_stores.require(description_store).store.delete_collection_description(
+                collection_id=collection_id,
+                archive_storage_prefix=description_prefix,
+            )
+            with session_scope(self._session_factory) as session:
+                current = session.get(
+                    CollectionDescriptionPublicationRecord,
+                    (collection_id, description_store),
+                )
+                if current is not None and current.object_path is not None:
+                    session.delete(current)
+            return True
+        with session_scope(self._session_factory) as session:
             archive = session.scalar(
                 select(CollectionArchiveObjectRecord)
                 .where(CollectionArchiveObjectRecord.collection_id == collection_id)
@@ -853,6 +889,27 @@ def _active_blockers(
             ),
         )
     )
+    collection = session.get(CollectionRecord, collection_id)
+    if collection is not None and collection.description_mutation_state != "idle":
+        blockers.append("collection description replacement is active")
+    description_publications = list(
+        session.scalars(
+            select(CollectionDescriptionPublicationRecord.store)
+            .where(
+                CollectionDescriptionPublicationRecord.collection_id == collection_id,
+                CollectionDescriptionPublicationRecord.state == "publishing",
+            )
+            .order_by(CollectionDescriptionPublicationRecord.store)
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
+        )
+    )
+    blockers.extend(
+        _bounded_blocker_sample(
+            description_publications,
+            render=lambda store: f"collection description publication is active: {store}",
+            overflow="additional collection description publications are active",
+        )
+    )
     return blockers
 
 
@@ -915,6 +972,7 @@ def _collection_cascade_tables() -> tuple[Table, ...]:
         CollectionRecord.__tablename__,
         CollectionAccessGroupMembershipRecord.__tablename__,
         CollectionArchiveObjectRecord.__tablename__,
+        CollectionDescriptionPublicationRecord.__tablename__,
         RetrievalCacheObjectRecord.__tablename__,
         RetrievalCacheLeaseRecord.__tablename__,
     }

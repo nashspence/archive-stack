@@ -24,6 +24,8 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
             {
                 "id": 42,
                 "created_at": "2026-07-26T18:43:00.000000Z",
+                "description": "Morning footage — camera seven",
+                "description_identity": "a" * 64,
                 "files": 2,
                 "bytes": 100,
                 "remote_storage_bytes": 128,
@@ -54,12 +56,15 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
     assert json.loads(result.stdout) == payload
     assert human.exit_code == 0
     assert "encryption=age-v1-scrypt:fixture-archive-key-v2" in human.stdout
+    assert "description: Morning footage — camera seven" in human.stdout
 
 
 def test_collection_show_human_and_json_use_one_identical_api_response(monkeypatch) -> None:
     payload = {
         "id": 42,
         "created_at": "2026-07-26T18:43:00.000000Z",
+        "description": "Morning footage — camera seven",
+        "description_identity": "a" * 64,
         "files": 1,
         "bytes": 100,
         "remote_storage_bytes": 128,
@@ -81,10 +86,71 @@ def test_collection_show_human_and_json_use_one_identical_api_response(monkeypat
 
     assert human.exit_code == 0
     assert "remote storage: 128 B" in human.stdout
+    assert "description: Morning footage — camera seven" in human.stdout
     assert "encryption: age-v1-scrypt:fixture-archive-key-v2" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout) == payload
     assert calls == [42, 42]
+
+
+def test_collection_description_mutation_has_human_and_json_parity(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class FakeClient:
+        def get_collection(self, collection_id: int) -> dict[str, object]:
+            calls.append(("get", collection_id))
+            return {
+                "id": collection_id,
+                "description": None,
+                "description_identity": "a" * 64,
+            }
+
+        def replace_collection_description(
+            self,
+            collection_id: int,
+            description: str | None,
+            *,
+            expected_identity: str,
+        ) -> dict[str, object]:
+            calls.append(("replace", collection_id, description, expected_identity))
+            return {
+                "collection_id": collection_id,
+                "description": description,
+                "description_identity": "b" * 64,
+            }
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    runner = CliRunner()
+    human = runner.invoke(
+        app,
+        ["collection", "describe", "42", "--description", "Morning footage"],
+    )
+    machine = runner.invoke(
+        app,
+        [
+            "collection",
+            "describe",
+            "42",
+            "--clear",
+            "--if-match",
+            "c" * 64,
+            "--json",
+        ],
+    )
+
+    assert human.exit_code == 0
+    assert "description: Morning footage" in human.stdout
+    assert machine.exit_code == 0
+    assert json.loads(machine.stdout) == {
+        "collection_id": 42,
+        "description": None,
+        "description_identity": "b" * 64,
+    }
+    assert calls == [
+        ("get", 42),
+        ("replace", 42, "Morning footage", "a" * 64),
+        ("replace", 42, None, "c" * 64),
+    ]
 
 
 def test_archive_store_views_project_the_same_api_models_in_human_and_json(

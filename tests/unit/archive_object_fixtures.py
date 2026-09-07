@@ -60,6 +60,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     ArchiveStore,
     CollectionArchiveIdentity,
+    CollectionDescriptionReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import (
@@ -67,6 +68,7 @@ from riverhog_core.runtime_config import (
     DEV_ARCHIVE_PASSPHRASE_ID,
     RuntimeConfig,
 )
+from riverhog_protocol import COLLECTION_DESCRIPTION_RELATIVE_PATH
 from riverhog_provenance import (
     PROVENANCE_BINDING_SEGMENT_FILES_MAX,
     PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
@@ -1030,6 +1032,41 @@ class MemoryArchiveStore:
         self.deleted.append(tuple(current.object_id for current in objects))
         for current in objects:
             self.objects.pop(current.object_path, None)
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionDescriptionReceipt:
+        assert collection_id == COLLECTION_ID
+        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
+        object_path = f"{archive_storage_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        ciphertext = encrypt_age_scrypt(document, DEV_ARCHIVE_PASSPHRASE, log_n=1)
+        self.objects[object_path] = ciphertext
+        self.object_metadata[object_path] = {
+            "riverhog-plaintext-sha256": hashlib.sha256(document).hexdigest()
+        }
+        return CollectionDescriptionReceipt(
+            object_path=object_path,
+            revision=self._version(ciphertext),
+            stored_bytes=len(ciphertext),
+            stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
+            published_at=UPLOADED_AT,
+        )
+
+    def delete_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None:
+        assert collection_id == COLLECTION_ID
+        object_path = f"{archive_storage_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        self.objects.pop(object_path, None)
+        self.object_metadata.pop(object_path, None)
 
     def read_archive_artifact(
         self,

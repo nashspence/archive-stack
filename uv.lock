@@ -1843,12 +1843,14 @@ version = "0.1.0"
 source = { editable = "riverhog/recovery" }
 dependencies = [
     { name = "riverhog-archive-contracts" },
+    { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "riverhog-archive-contracts", editable = "packages/riverhog-archive-contracts" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
 

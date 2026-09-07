@@ -201,6 +201,16 @@ def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> N
     ) in architecture
 
 
+def test_architecture_states_the_mutable_description_authority_policy() -> None:
+    architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
+
+    assert (
+        "An optional mutable description is copy-adjacent recovery material projected into the "
+        "catalog"
+    ) in architecture
+    assert "applications own richer indexes" in architecture
+
+
 def test_repository_map_exactly_covers_the_workspace_layout() -> None:
     architecture_path = REPO / "docs/architecture.md"
     architecture = architecture_path.read_text(encoding="utf-8")

@@ -13,6 +13,7 @@ from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     APPLICATION_PERMISSIONS,
     CATALOG_READ,
+    COLLECTION_DESCRIPTIONS_MANAGE,
     COLLECTION_TRANSFORMS_CONTROL,
     COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
@@ -149,6 +150,77 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
         workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/renew")]
         == f"{COLLECTION_TRANSFORMS_CONTROL}|{COLLECTION_TRANSFORMS_EXECUTE}"
     )
+    assert {
+        (method, path): permission
+        for method, path, permission in protected
+        if path.endswith("/description")
+    } == {("PUT", "/v1/collections/{collection_id}/description"): (COLLECTION_DESCRIPTIONS_MANAGE)}
+
+
+def test_collection_description_replacement_parses_condition_and_returns_identity() -> None:
+    principal = ApplicationPrincipal(
+        app="editor",
+        key_id="editor-key",
+        access=frozenset({ApplicationAccess(COLLECTION_DESCRIPTIONS_MANAGE, ALL_RESOURCES)}),
+    )
+
+    class Keys:
+        def authenticate(self, token: str) -> ApplicationPrincipal | None:
+            return principal if token == "editor-token" else None
+
+    class Descriptions:
+        def replace(
+            self,
+            collection_id: int,
+            *,
+            description: str | None,
+            expected_identity: str,
+            principal: ApplicationPrincipal,
+        ) -> dict[str, object]:
+            assert collection_id == 42
+            assert description == "Updated description"
+            assert expected_identity == "a" * 64
+            assert principal.app == "editor"
+            return {
+                "collection_id": 42,
+                "description": description,
+                "description_revision": 7,
+                "description_identity": "b" * 64,
+                "description_publication": "current",
+            }
+
+    app = create_app(
+        container=cast(
+            Any,
+            SimpleNamespace(
+                app_keys=Keys(),
+                collection_descriptions=Descriptions(),
+            ),
+        )
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.put(
+                "/v1/collections/42/description",
+                headers={
+                    "Authorization": "Bearer editor-token",
+                    "If-Match": '"' + "a" * 64 + '"',
+                },
+                json={"description": "Updated description"},
+            )
+            assert response.status_code == 200
+            assert response.headers["ETag"] == '"' + "b" * 64 + '"'
+            assert response.json() == {
+                "collection_id": 42,
+                "description": "Updated description",
+                "description_revision": 7,
+                "description_identity": "b" * 64,
+                "description_publication": "current",
+            }
+
+    anyio.run(exercise)
 
 
 def test_application_authentication_uses_the_public_error_contract() -> None:

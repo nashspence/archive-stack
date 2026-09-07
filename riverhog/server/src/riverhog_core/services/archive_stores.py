@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from http_api_contracts import closed_literal_values
 from riverhog_protocol import ArchiveStoreSort, SortOrder
 from riverhog_protocol.errors import BadRequest, NotFound
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 from state_schema import read_snapshot
 
@@ -16,6 +16,7 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
+    CollectionDescriptionPublicationRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.domain.models import (
@@ -229,7 +230,13 @@ def _store_aggregates(
         literal(1).label("objects"),
         CollectionArchiveObjectRecord.stored_bytes.label("stored_bytes"),
     )
-    owned = immutable.subquery()
+    descriptions = select(
+        CollectionDescriptionPublicationRecord.collection_id.label("collection_id"),
+        CollectionDescriptionPublicationRecord.store.label("store"),
+        literal(1).label("objects"),
+        func.coalesce(CollectionDescriptionPublicationRecord.stored_bytes, 0).label("stored_bytes"),
+    ).where(CollectionDescriptionPublicationRecord.object_path.is_not(None))
+    owned = union_all(immutable, descriptions).subquery()
     rows = session.execute(
         select(
             copies.c.store,

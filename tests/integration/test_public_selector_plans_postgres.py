@@ -286,6 +286,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 creation_custody_mode, content_identity, encryption_format,
                 passphrase_id, provenance_mode, provenance_identity, inventory_identity,
                 archive_generation, archive_root_sha256, catalog_revision, ingest_source,
+                description, description_search, description_revision, description_identity,
                 created_by_app, created_at, file_count, file_bytes
             )
             SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha},
@@ -293,16 +294,23 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                    CASE WHEN g = {rows} THEN 'qualification-key-v1'
                         ELSE 'qualification-key-v2' END,
                    'omitted', NULL, {sha}, {sha}, {sha}, g,
-                   'fixture-' || lpad(g::text, 6, '0'), 'qualification', {timestamp},
+                   'fixture-' || lpad(g::text, 6, '0'),
+                   'Reference description ' || lpad(g::text, 6, '0'),
+                   'reference description ' || lpad(g::text, 6, '0'),
+                   1, {sha},
+                   'qualification', {timestamp},
                    1, g
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
             INSERT INTO catalog_events (
                 revision, change, collection_id, occurred_at, inventory_identity,
-                archive_root_sha256, content_identity, committed_at, published
+                archive_root_sha256, content_identity, description, description_revision,
+                description_identity, committed_at, published
             )
-            SELECT g, 'created', g, {timestamp}, {sha}, {sha}, {sha}, {timestamp}, true
+            SELECT g, 'created', g, {timestamp}, {sha}, {sha}, {sha},
+                   'Reference description ' || lpad(g::text, 6, '0'), 1, {sha},
+                   {timestamp}, true
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -571,7 +579,11 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 )
             )
     for name, kwargs, index in (
-        ("q", {"q": "065536"}, "ix_collections_search_trgm"),
+        (
+            "q",
+            {"q": "description 016384"},
+            "ix_collections_description_search_trgm",
+        ),
         (
             "encryption_format",
             {"encryption_format": "age-v1-scrypt"},
@@ -1653,3 +1665,38 @@ def test_every_public_database_selector_has_its_declared_postgres_operator(
             f"{sorted(case.expected_nodes)}; used indexes {sorted(indexes)} and nodes "
             f"{sorted(nodes)}"
         )
+
+
+def test_collection_query_has_indexed_identity_and_description_projections(
+    qualified_engines: _QualifiedEngines,
+) -> None:
+    statement = (
+        _riverhog_plan_statement(
+            _collection_list_statement(
+                q="16384",
+                encryption_format=None,
+                passphrase_id=None,
+                sort="id",
+                order="asc",
+                principal=None,
+            ),
+            order="asc",
+        )
+        .order_by(None)
+        .limit(100)
+    )
+    compiled = statement.compile(
+        dialect=qualified_engines.riverhog.dialect,
+        compile_kwargs={"literal_binds": True},
+    )
+    with qualified_engines.riverhog.begin() as connection:
+        connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        connection.exec_driver_sql("SET LOCAL enable_indexscan = off")
+        payload = connection.exec_driver_sql(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {compiled}"
+        ).scalar_one()
+
+    assert {
+        "ix_collections_search_trgm",
+        "ix_collections_description_search_trgm",
+    } <= _index_names(payload)

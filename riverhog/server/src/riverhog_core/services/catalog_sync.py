@@ -198,6 +198,9 @@ class SqlAlchemyCatalogSyncService:
                     collection_id=int(row.id),
                     archive_root_sha256=row.archive_root_sha256,
                     content_identity=row.content_identity,
+                    description=row.description,
+                    description_revision=row.description_revision,
+                    description_identity=row.description_identity,
                     revision=row.catalog_revision,
                 )
                 for row in page_rows
@@ -312,6 +315,9 @@ class SqlAlchemyCatalogSyncService:
                             collection_id=event.collection_id,
                             archive_root_sha256=event.archive_root_sha256,
                             content_identity=event.content_identity,
+                            description=event.description,
+                            description_revision=event.description_revision,
+                            description_identity=event.description_identity,
                             revision=str(event.revision),
                         )
                     )
@@ -459,6 +465,9 @@ def _catalog_collection_page_statement(
             CollectionRecord.id,
             CollectionRecord.archive_root_sha256,
             CollectionRecord.content_identity,
+            CollectionRecord.description,
+            CollectionRecord.description_revision,
+            CollectionRecord.description_identity,
             CollectionRecord.catalog_revision,
         )
         .where(
@@ -539,6 +548,9 @@ def _descriptor(
     collection_id: int,
     archive_root_sha256: str | None,
     content_identity: str,
+    description: str | None,
+    description_revision: int,
+    description_identity: str,
     revision: int | None,
 ) -> CatalogSyncDescriptor:
     if archive_root_sha256 is None or revision is None:
@@ -547,6 +559,9 @@ def _descriptor(
         collection_id=collection_id,
         archive_root_sha256=archive_root_sha256,
         content_identity=content_identity,
+        description=description,
+        description_revision=description_revision,
+        description_identity=description_identity,
         revision=str(revision),
     )
 

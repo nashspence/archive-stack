@@ -8,7 +8,12 @@ import os
 import sys
 from pathlib import Path
 
-from riverhog_recover.recovery import RecoveryError, read_recovery_descriptor, recover_archive
+from riverhog_recover.recovery import (
+    RecoveryError,
+    read_recovery_descriptor,
+    recover_archive,
+    recover_collection_description,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,7 +27,12 @@ def _parser() -> argparse.ArgumentParser:
         version=importlib.metadata.version("riverhog-recover"),
     )
     parser.add_argument("archive", type=Path, help="downloaded opaque archive directory")
-    parser.add_argument("output", type=Path, help="new directory for recovered files")
+    parser.add_argument("output", type=Path, nargs="?", help="new directory for recovered files")
+    parser.add_argument(
+        "--description-only",
+        action="store_true",
+        help="validate and emit only description.json.age without reading collection payloads",
+    )
     parser.add_argument(
         "--passphrases-file",
         type=Path,
@@ -58,10 +68,26 @@ def _passphrases(path: Path | None, *, archive: Path) -> dict[str, str]:
 def main() -> None:
     args = _parser().parse_args()
     try:
+        passphrases = _passphrases(args.passphrases_file, archive=args.archive)
+        if args.description_only:
+            if args.output is not None:
+                raise RecoveryError("output must be omitted with --description-only")
+            description = recover_collection_description(
+                args.archive,
+                passphrases=passphrases,
+                age_command=args.age_command,
+            )
+            print(
+                "null" if description is None else description.to_json_bytes().decode("utf-8"),
+                flush=True,
+            )
+            return
+        if args.output is None:
+            raise RecoveryError("output is required unless --description-only is used")
         summary = recover_archive(
             args.archive,
             args.output,
-            passphrases=_passphrases(args.passphrases_file, archive=args.archive),
+            passphrases=passphrases,
             age_command=args.age_command,
         )
     except RecoveryError as exc:

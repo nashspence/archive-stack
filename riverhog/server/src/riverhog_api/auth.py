@@ -12,6 +12,7 @@ from riverhog_core.app_permissions import (
     ARCHIVES_READ,
     CATALOG_READ,
     COLLECTION_ACCESS_GROUPS_MANAGE,
+    COLLECTION_DESCRIPTIONS_MANAGE,
     COLLECTION_TRANSFORMS_CONTROL,
     COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
@@ -163,6 +164,15 @@ CollectionCreator = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),
 ]
+CollectionDescriptionManager = Annotated[
+    ApplicationPrincipal,
+    Depends(
+        cast(
+            Callable[..., object],
+            require_permission(COLLECTION_DESCRIPTIONS_MANAGE),
+        )
+    ),
+]
 CollectionUploadReader = Annotated[
     ApplicationPrincipal,
     Depends(
@@ -241,6 +251,7 @@ __all__ = [
     "BOOTSTRAP_TOKEN_ENV",
     "CatalogReader",
     "CollectionCreator",
+    "CollectionDescriptionManager",
     "CollectionDeleter",
     "CollectionAccessGroupManager",
     "CollectionTransformController",

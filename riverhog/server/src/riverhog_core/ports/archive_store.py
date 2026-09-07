@@ -30,6 +30,15 @@ class ArchiveArtifactRead:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionDescriptionReceipt:
+    object_path: str
+    revision: str | None
+    stored_bytes: int
+    stored_sha256: str
+    published_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveObjectIdentity:
     object_id: str
     kind: str
@@ -86,6 +95,22 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
+    ) -> None: ...
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionDescriptionReceipt: ...
+
+    def delete_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
     ) -> None: ...
 
     def read_archive_artifact(

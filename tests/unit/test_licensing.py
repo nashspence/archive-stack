@@ -94,6 +94,7 @@ def test_recovery_tool_is_independent_and_advertised() -> None:
     assert config["project"]["dependencies"] == [
         "riverhog-archive-contracts>=0.1,<0.2",
         "riverhog-provenance>=0.1,<0.2",
+        "riverhog-protocol>=0.1,<0.2",
     ]
     contracts = tomllib.loads(
         (REPO_ROOT / "packages/riverhog-archive-contracts/pyproject.toml").read_text(

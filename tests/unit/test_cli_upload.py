@@ -92,6 +92,8 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
             "test-upload",
             "--archive-store",
             "b2",
+            "--description",
+            "Morning footage — camera seven",
             "--dry-run",
             "--json",
         ],
@@ -101,6 +103,7 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
     payload = json.loads(result.stdout)
     assert payload["collection_id"] is None
     assert payload["archive_store"] == "b2"
+    assert payload["description"] == "Morning footage — camera seven"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
     human = RUNNER.invoke(
         riverhog_main.app,
@@ -277,6 +280,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             **_kwargs: object,
         ) -> dict[str, object]:
             assert idempotency_key == "test-upload"
+            assert _kwargs["description"] == "Morning footage"
             return {
                 "collection_id": COLLECTION_ID,
                 "state": "open",
@@ -406,6 +410,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
         "test-upload",
         root,
         ingest_source=str(root),
+        description="Morning footage",
         file_concurrency=1,
         json_mode=True,
         provenance_observer_factory=native_provenance_observer,

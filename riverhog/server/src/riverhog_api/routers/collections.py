@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from http_api_contracts import (
     QuotedSha256Identity,
     mutable_browse_operation,
@@ -31,6 +31,7 @@ from riverhog_api.auth import (
     CatalogReader,
     CollectionCreator,
     CollectionDeleter,
+    CollectionDescriptionManager,
     CollectionUploadReader,
 )
 from riverhog_api.browse import (
@@ -46,6 +47,7 @@ from riverhog_api.schemas.collections import (
     CollectionArchiveCopyListOut,
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
+    CollectionDescriptionOut,
     CollectionSummaryOut,
     CollectionUploadDiscardPlanOut,
     CollectionUploadDiscardResultOut,
@@ -62,6 +64,7 @@ from riverhog_api.schemas.collections import (
     ListCollectionUploadSessionFilesResponse,
     ListCollectionUploadSessionsResponse,
     RegisterCollectionUploadSessionFilesRequest,
+    ReplaceCollectionDescriptionRequest,
 )
 
 router = APIRouter(tags=["collections"])
@@ -245,6 +248,7 @@ def create_or_resume_collection_upload_session(
     payload = container.collection_uploads.create_or_resume(
         idempotency_key=request.idempotency_key,
         ingest_source=request.ingest_source,
+        description=request.description,
         archive_store=request.archive_store,
         initiator=principal,
         event_context=request.event_context,
@@ -596,6 +600,29 @@ def get_collection(
     return CollectionSummaryOut.model_validate(
         map_collection(container.collections.get(collection_id, principal=principal))
     )
+
+
+@router.put(
+    "/collections/{collection_id}/description",
+    response_model=CollectionDescriptionOut,
+)
+def replace_collection_description(
+    collection_id: CollectionIdParameter,
+    request: ReplaceCollectionDescriptionRequest,
+    response: Response,
+    if_match: Annotated[QuotedSha256Identity, Header(alias="If-Match")],
+    container: ContainerDep,
+    principal: CollectionDescriptionManager,
+) -> CollectionDescriptionOut:
+    payload = container.collection_descriptions.replace(
+        collection_id,
+        description=request.description,
+        expected_identity=parse_quoted_sha256_identity(if_match),
+        principal=principal,
+    )
+    result = CollectionDescriptionOut.model_validate(payload)
+    response.headers["ETag"] = f'"{result.description_identity}"'
+    return result
 
 
 @router.post(

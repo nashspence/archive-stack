@@ -21,11 +21,13 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "riverhog-archive-contracts>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
+  "riverhog-protocol>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
 riverhog-archive-contracts = { workspace = true }
 riverhog-provenance = { workspace = true }
+riverhog-protocol = { workspace = true }
 
 [project.scripts]
 riverhog-recover = "riverhog_recover.cli:main"

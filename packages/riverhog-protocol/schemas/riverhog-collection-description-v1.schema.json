@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-collection-description-v1.schema.json",
+  "title": "Riverhog collection description document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "archive_root_sha256",
+    "description",
+    "description_identity",
+    "format",
+    "revision"
+  ],
+  "properties": {
+    "archive_root_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "description": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "x-riverhog-encoded-bytes-max": 32768,
+          "x-riverhog-extent": {
+            "policy": "contract_max",
+            "reason": "bounded-human-authored-catalog-description"
+          },
+          "x-unicode-normalization": "NFC"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description_identity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "format": {
+      "const": "riverhog-collection-description/v1"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "x-riverhog-extent": {
+        "policy": "fixed",
+        "reason": "exact-json-safe-monotonic-description-revision"
+      }
+    }
+  }
+}

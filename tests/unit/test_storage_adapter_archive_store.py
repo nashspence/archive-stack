@@ -9,6 +9,10 @@ from riverhog_core.ports.archive_store import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    CollectionDescriptionDocument,
+)
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     CompletedObjectReceipt,
@@ -310,6 +314,65 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
 
     assert len(adapter.deleted) == 1
     assert adapter.deleted[0].mode == "all_versions"
+
+
+def test_collection_description_is_replaced_idempotently_without_readback() -> None:
+    adapter = _MemoryAdapter()
+    store = _store(adapter)
+    first = CollectionDescriptionDocument.seal(
+        archive_root_sha256="a" * 64,
+        revision=1,
+        description="First description",
+    )
+
+    receipt = store.publish_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        document=first.to_json_bytes(),
+        passphrase_id="riverhog-dev-key-v1",
+    )
+    repeated = store.publish_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        document=first.to_json_bytes(),
+        passphrase_id="riverhog-dev-key-v1",
+    )
+
+    path = f"archives/opaque/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+    stored = adapter.objects[path]
+    assert receipt == repeated
+    assert adapter.reads == 0
+    assert stored.placement == "immediate"
+    assert stored.identity == {
+        "riverhog-format": "riverhog-collection-description/v1",
+        "riverhog-archive-root-sha256": "a" * 64,
+        "riverhog-description-identity": first.description_identity,
+        "riverhog-description-revision": "1",
+        "riverhog-encryption": "age-v1-scrypt",
+        "riverhog-passphrase-id": "riverhog-dev-key-v1",
+        "riverhog-plaintext-bytes": str(len(first.to_json_bytes())),
+        "riverhog-plaintext-sha256": hashlib.sha256(first.to_json_bytes()).hexdigest(),
+    }
+
+    cleared = CollectionDescriptionDocument.seal(
+        archive_root_sha256="a" * 64,
+        revision=2,
+        description=None,
+    )
+    store.publish_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        document=cleared.to_json_bytes(),
+        passphrase_id="riverhog-dev-key-v1",
+    )
+    assert adapter.objects[path].identity["riverhog-description-revision"] == "2"
+
+    store.delete_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+    )
+    assert path not in adapter.objects
+    assert adapter.deleted[-1].mode == "all_versions"
 
 
 def test_discard_removes_completed_objects_from_the_exact_archive_namespace() -> None:
