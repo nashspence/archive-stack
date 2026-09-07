@@ -97,7 +97,7 @@ class TargetCollectionPublication:
         if source_count == 0:
             raise ValueError("target output source references must be nonempty")
         self._release_custodied_files(receipts)
-        return cast(tuple[ProducerArtifactCustody, ...], receipts)
+        return receipts
 
     def finish_success(
         self,

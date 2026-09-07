@@ -54,7 +54,6 @@ from riverhog_api.schemas.collections import (
     CollectionUploadSessionOut,
     CollectionUploadUnitOut,
     CollectionUploadWorkBatchOut,
-    CompleteCollectionUploadSessionRequest,
     CreateOrResumeCollectionUploadSessionOut,
     CreateOrResumeCollectionUploadSessionRequest,
     DeleteCollectionRequest,
@@ -424,7 +423,6 @@ def list_collection_upload_session_files(
 )
 def complete_collection_upload_session(
     collection_id: CollectionIdParameter,
-    request: CompleteCollectionUploadSessionRequest,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:

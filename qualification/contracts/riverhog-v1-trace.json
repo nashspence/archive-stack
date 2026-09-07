@@ -1,10 +1,10 @@
 {
-  "contract_canonical_sha256": "bb869e13fd5e6aea6484ca9133d988703bb02bbda8a4a6cb46c3c5d2f3eaa4bb",
-  "contract_projection_sha256": "38908fc9e6dab0d88e9ada8fc497cfd9ae68880edaa2514a2aa5c5d7fd3a83a2",
+  "contract_canonical_sha256": "b3b392099583b96eaed35a30ab5bdd927041880c33a826793033b4eae463f0d4",
+  "contract_projection_sha256": "81c8fc133c9a014258758ccc48b73234a253b45a18e5de2b78d77fdc40c35e9d",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1795,
-    "extent_source_links": 1795,
+    "extent_decisions": 1794,
+    "extent_source_links": 1794,
     "source_authorities": 197,
     "source_kinds": {
       "cli": 5,
@@ -3382,11 +3382,6 @@
       "id": "http:riverhog:components:/schemas/CollectionUploadWorkBatchDocument/properties/work:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadWorkBatchDocument/properties/work"
-    },
-    {
-      "id": "http:riverhog:components:/schemas/CompleteCollectionUploadSessionRequest/properties/content_identity:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CompleteCollectionUploadSessionRequest/properties/content_identity"
     },
     {
       "id": "http:riverhog:components:/schemas/CreateArchiveCopyRequest/properties/event_context/anyOf/0:encoded-bytes",
@@ -12511,7 +12506,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "e1b2b6666073015e9ae689bf4b187bcdee2f897c8274133e5902f94cc8bdceb0"
+          "sha256": "7c2050b8dd81d80735ca9afea56e4755de05b6857f950459a3391bd68f2fbc1f"
         }
       ],
       "id": "state:riverhog-catalog"

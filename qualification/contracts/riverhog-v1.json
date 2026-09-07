@@ -11152,7 +11152,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "e1b2b6666073015e9ae689bf4b187bcdee2f897c8274133e5902f94cc8bdceb0"
+            "7c2050b8dd81d80735ca9afea56e4755de05b6857f950459a3391bd68f2fbc1f"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11230,8 +11230,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1795,
-        "discovered": 1795,
+        "classified": 1794,
+        "discovered": 1794,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11266,7 +11266,7 @@
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json": 7,
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json": 2,
           "mango-fish": 2,
-          "riverhog": 725,
+          "riverhog": 724,
           "riverhog-api-client": 7,
           "riverhog-client": 3,
           "riverhog-ftp-adapter": 20,
@@ -11288,7 +11288,7 @@
         "policies": {
           "contract_max": 369,
           "extension_owned": 55,
-          "fixed": 828,
+          "fixed": 827,
           "operational_policy": 468,
           "segmented_no_total_max": 75
         },
@@ -21221,21 +21221,6 @@
           "unit": "items"
         },
         {
-          "dimension": "length",
-          "id": "http:riverhog:components:/schemas/CompleteCollectionUploadSessionRequest/properties/content_identity:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CompleteCollectionUploadSessionRequest/properties/content_identity",
-          "unit": "characters"
-        },
-        {
           "dimension": "encoded-size",
           "id": "http:riverhog:components:/schemas/CreateArchiveCopyRequest/properties/event_context/anyOf/0:encoded-bytes",
           "maximum": 4096,
@@ -22758,7 +22743,7 @@
           "owner": "riverhog",
           "policy": "segmented_no_total_max",
           "progression": {
-            "progression": "repeated-canonical-registration"
+            "progression": "repeated-artifact-registration"
           },
           "reason": "bounded-upload-registration",
           "rule": "bounded-segment/v1",
@@ -37513,7 +37498,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "5281ca9ed5d4ddf14cf4b606aeace129b0ea0d8ffca0d4426189097e8d92bbbd"
+      "sha256": "54031b3e28aadd6ed28101af55394634cf00904e2973bd69330e6611114538e3"
     },
     "http_openapi": {
       "riverhog": {
@@ -43874,27 +43859,6 @@
               "title": "CompleteCollectionUploadCustodyOut",
               "type": "object"
             },
-            "CompleteCollectionUploadSessionRequest": {
-              "additionalProperties": false,
-              "properties": {
-                "content_identity": {
-                  "pattern": "^[0-9a-f]{64}$",
-                  "title": "Content Identity",
-                  "type": "string"
-                },
-                "files_total": {
-                  "minimum": 1.0,
-                  "title": "Files Total",
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "files_total",
-                "content_identity"
-              ],
-              "title": "CompleteCollectionUploadSessionRequest",
-              "type": "object"
-            },
             "CreateAppKeyRequest": {
               "additionalProperties": false,
               "properties": {
@@ -47657,7 +47621,7 @@
                   "type": "array",
                   "x-riverhog-extent": {
                     "policy": "segmented_no_total_max",
-                    "progression": "repeated-canonical-registration",
+                    "progression": "repeated-artifact-registration",
                     "reason": "bounded-upload-registration"
                   }
                 }
@@ -58763,16 +58727,6 @@
                   }
                 }
               ],
-              "requestBody": {
-                "content": {
-                  "application/json": {
-                    "schema": {
-                      "$ref": "#/components/schemas/CompleteCollectionUploadSessionRequest"
-                    }
-                  }
-                },
-                "required": true
-              },
               "responses": {
                 "200": {
                   "content": {
@@ -75503,8 +75457,7 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection upload files",
-          "collection upload start"
+          "collection upload files"
         ],
         "client": "ApiClient",
         "method": "GET",
@@ -96160,7 +96113,7 @@
               },
               "complete_collection_upload_session": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, files_total: 'int', content_identity: 'str') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
               },
               "create_app_key": {
                 "kind": "method",
@@ -96474,14 +96427,14 @@
             "members": {
               "publish": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[ProducerFile]', *, source_event_id: 'str', source_context: 'Mapping[str, object] | None' = None, inline_evidence: 'Mapping[str, bytes] | None' = None, provenance_journals: 'Mapping[str, bytes] | None' = None, provenance_builder: 'ProvenanceBuilder | None' = None, idempotency_key: 'str | None' = None, event_context: 'Mapping[str, object] | None' = None, poll_seconds: 'float' = 2.0, timeout_seconds: 'float' = 86400, progress: 'ReadProgress | None' = None) -> 'ProducedCollection'"
+                "signature": "(self, files: 'Iterable[ProducerFile]', *, source_event_id: 'str', source_context: 'Mapping[str, object] | None' = None, provenance_journals: 'Iterable[tuple[str, bytes]] | None' = None, idempotency_key: 'str | None' = None, event_context: 'Mapping[str, object] | None' = None, poll_seconds: 'float' = 2.0, timeout_seconds: 'float' = 86400, progress: 'ReadProgress | None' = None) -> 'ProducedCollection'"
               },
               "publish_inputs": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[ProducerInput]', *, source_event_id: 'str', source_context: 'Mapping[str, object] | None' = None, inline_evidence: 'Mapping[str, bytes] | None' = None, provenance_journals: 'Mapping[str, bytes] | None' = None, provenance_builder: 'ProvenanceBuilder | None' = None, idempotency_key: 'str | None' = None, event_context: 'Mapping[str, object] | None' = None, poll_seconds: 'float' = 2.0, timeout_seconds: 'float' = 86400, progress: 'ReadProgress | None' = None) -> 'ProducedCollection'"
+                "signature": "(self, files: 'Iterable[ProducerInput]', *, source_event_id: 'str', source_context: 'Mapping[str, object] | None' = None, provenance_journals: 'Iterable[tuple[str, bytes]] | None' = None, idempotency_key: 'str | None' = None, event_context: 'Mapping[str, object] | None' = None, poll_seconds: 'float' = 2.0, timeout_seconds: 'float' = 86400, progress: 'ReadProgress | None' = None) -> 'ProducedCollection'"
               }
             },
-            "signature": "(api: 'ApiClient', *, producer_app: 'str', adapter_id: 'str', adapter_version: 'str', ingest_source: 'str', archive_store: 'ArchiveStoreName | None' = None, provenance_omission_reason: 'str' = 'Producer did not receive host provenance; immutable producer evidence records the source boundary.', server_generated_provenance: 'bool' = False) -> 'None'"
+            "signature": "(api: 'ApiClient', *, producer_app: 'str', adapter_id: 'str', adapter_version: 'str', ingest_source: 'str', archive_store: 'ArchiveStoreName | None' = None, provenance_mode: \"Literal['captured', 'omitted']\" = 'omitted', provenance_omission_reason: 'str' = 'Producer did not receive host provenance; immutable producer evidence records the source boundary.', server_generated_provenance: 'bool' = False) -> 'None'"
           },
           "CollectionUploadIdempotencyKey": {
             "kind": "type-alias",
@@ -96514,10 +96467,6 @@
                 "kind": "method",
                 "signature": "(self, inputs: 'Sequence[ProducerInput]', *, provenance_journals: 'Mapping[str, bytes] | None' = None, expected_identities: 'Mapping[str, ProducerArtifactIdentity] | None' = None) -> 'tuple[ProducerArtifactCustody, ...]'"
               },
-              "custody_receipts": {
-                "kind": "property",
-                "signature": "(self) -> 'Mapping[str, ProducerArtifactCustody]'"
-              },
               "finish": {
                 "kind": "method",
                 "signature": "(self, *, terminal_evidence: 'Mapping[str, bytes]', provenance_journals: 'Mapping[str, bytes] | None' = None, poll_seconds: 'float' = 2.0, timeout_seconds: 'float' = 86400) -> 'ProducedCollection'"
@@ -96526,13 +96475,9 @@
                 "kind": "method",
                 "signature": "(self) -> 'None'"
               },
-              "is_registered": {
+              "stage_provenance_journals": {
                 "kind": "method",
-                "signature": "(self, path: 'str') -> 'bool'"
-              },
-              "registered_artifacts": {
-                "kind": "property",
-                "signature": "(self) -> 'tuple[ProducerArtifactIdentity, ...]'"
+                "signature": "(self, journals: 'Iterable[tuple[str, bytes]]') -> 'None'"
               },
               "stop": {
                 "kind": "method",
@@ -96645,22 +96590,6 @@
             "kind": "object",
             "type": "types.UnionType"
           },
-          "ProducerProvenance": {
-            "fields": [
-              {
-                "default": "required",
-                "name": "bindings",
-                "type": "'Mapping[str, Mapping[str, object]]'"
-              },
-              {
-                "default": "required",
-                "name": "journals",
-                "type": "'Mapping[str, bytes]'"
-              }
-            ],
-            "kind": "class",
-            "signature": "(bindings: 'Mapping[str, Mapping[str, object]]', journals: 'Mapping[str, bytes]') -> None"
-          },
           "ProducerStream": {
             "fields": [
               {
@@ -96691,10 +96620,6 @@
             ],
             "kind": "class",
             "signature": "(path: 'str', bytes: 'int', sha256: 'str', read_range: 'RangeReader', provenance: 'Mapping[str, object] | None' = None) -> None"
-          },
-          "ProvenanceBuilder": {
-            "kind": "object",
-            "type": "collections.abc._CallableGenericAlias"
           },
           "ProvenanceMode": {
             "kind": "type-alias",
@@ -98134,12 +98059,12 @@
           "CollectionUploadFileBatchDocument": {
             "kind": "class",
             "members": {
-              "validate_canonical_file_order": {
+              "validate_unique_file_paths": {
                 "kind": "method",
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "f66308d4ec631b7c9de1e5e9d07e7f6774c5602832c8a68e143ad9feb7e45722",
+            "schema_sha256": "aad7ffcd6f9b4328b1c183b23364fdfffbc5600bcde529a3265fb50f2356e501",
             "signature": "(*, files: Annotated[list[riverhog_protocol.collection_upload_transport.CollectionUploadFileIn], MinLen(min_length=1), MaxLen(max_length=100)]) -> None"
           },
           "CollectionUploadFileIn": {
@@ -101229,7 +101154,7 @@
             "members": {
               "append_incremental_output": {
                 "kind": "method",
-                "signature": "(self, writer: 'IncrementalDerivedCollectionWriter', source: 'ProducerInput', *, identity: 'ProducerArtifactIdentity') -> 'tuple[object, ...]'"
+                "signature": "(self, writer: 'IncrementalDerivedCollectionWriter', source: 'ProducerInput', *, identity: 'ProducerArtifactIdentity') -> 'tuple[ProducerArtifactCustody, ...]'"
               },
               "close": {
                 "kind": "method",
@@ -101359,10 +101284,6 @@
               "append": {
                 "kind": "method",
                 "signature": "(self, source: 'ProducerInput', *, identity: 'ProducerArtifactIdentity') -> 'tuple[ProducerArtifactCustody, ...]'"
-              },
-              "custody_receipts": {
-                "kind": "property",
-                "signature": "(self) -> 'Mapping[str, ProducerArtifactCustody]'"
               },
               "finish": {
                 "kind": "method",
@@ -104537,10 +104458,6 @@
               "append": {
                 "kind": "method",
                 "signature": "(self, source: 'ProducerInput', artifact: 'OutputArtifact', *, derived_from: 'Iterable[str]') -> 'tuple[ProducerArtifactCustody, ...]'"
-              },
-              "custody_receipts": {
-                "kind": "property",
-                "signature": "(self) -> 'Mapping[str, ProducerArtifactCustody]'"
               },
               "finish_success": {
                 "kind": "method",

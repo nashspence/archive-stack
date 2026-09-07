@@ -144,7 +144,7 @@ def _race(
         return futures[0].result(timeout=20), futures[1].result(timeout=20)
 
 
-def test_exact_concurrent_registration_is_one_append_only_planner_step(
+def test_exact_concurrent_registration_is_one_physical_planner_step(
     database_url: str,
 ) -> None:
     first, second = _services(database_url)
@@ -170,6 +170,35 @@ def test_exact_concurrent_registration_is_one_append_only_planner_step(
         assert upload.planner_checkpoint_json is not None
         assert '"next_file_order":1' in upload.planner_checkpoint_json
         assert (upload.file_count, upload.file_bytes) == (1, 0)
+
+
+def test_distinct_concurrent_registrations_preserve_both_members(
+    database_url: str,
+) -> None:
+    first, second = _services(database_url)
+    collection_id = _create(first)
+    first_file = {**_FILE, "path": "z/output.bin"}
+    second_file = {**_FILE, "path": "a/output.bin"}
+
+    results = _race(
+        lambda: first.register_files(collection_id, (first_file,)),
+        lambda: second.register_files(collection_id, (second_file,)),
+    )
+
+    assert all(not isinstance(result, Exception) for result in results)
+    with session_scope(make_session_factory(database_url)) as session:
+        rows = list(
+            session.scalars(
+                select(CollectionUploadFileRecord)
+                .where(CollectionUploadFileRecord.collection_id == collection_id)
+                .order_by(CollectionUploadFileRecord.file_order)
+            )
+        )
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert {row.path for row in rows} == {"a/output.bin", "z/output.bin"}
+        assert [row.file_order for row in rows] == [0, 1]
+        assert upload.file_count == 2
 
 
 def test_concurrent_provenance_retry_commits_one_next_ordinal(

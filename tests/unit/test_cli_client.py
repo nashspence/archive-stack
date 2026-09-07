@@ -292,7 +292,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
             }
         ],
     }
-    assert client.calls[2][2]["json"] == {}
+    assert "json" not in client.calls[2][2]
 
 
 def test_collection_upload_client_rejects_a_custody_receipt_for_another_artifact() -> None:

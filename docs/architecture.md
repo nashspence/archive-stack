@@ -27,11 +27,11 @@ Contracts define packages; architecture records ownership.
   implementation-neutral tooling; reference contracts and support stay with their family.
   Non-reference release units do not depend on references; reference images, qualification, and
   tests compose them explicitly.
-- **Public contracts.** Integration uses published HTTP and CloudEvents contracts.
-  Shared models own identities. Exact HTTP/OpenAPI contracts own CRUD and official client JSON.
-  The generated contract freeze inventories external extents from executable authorities.
-- **Riverhog platform.** Server owns archive construction, publication, copies, retrieval, and
-  verified delivery; the client owns local materializations.
+- **Public contracts.** Published HTTP and CloudEvents contracts define integration. Shared models
+  own identities; HTTP/OpenAPI owns CRUD and official client JSON. The generated freeze inventories
+  external extents.
+- **Riverhog platform.** Server owns sealed membership, canonical content identity, archive
+  construction, copies, retrieval, and verified delivery; clients own materializations.
 - **Ingress adapters.** Ingress adapters are content-opaque, bounded-custody Riverhog clients; they
   relinquish bytes only after finalization.
 - **Storage adapters.** Storage adapters translate opaque-object capabilities into

@@ -9,7 +9,7 @@ import shutil
 import stat
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -243,12 +243,11 @@ class FtpAdapter:
 
     def _eligible(
         self, source: SourceConfig, *, flush: bool
-    ) -> list[tuple[Path, str, os.stat_result]]:
+    ) -> Iterator[tuple[Path, str, os.stat_result]]:
         if source.close_mode == "explicit-flush" and not flush:
-            return []
+            return
         cutoff_ns = time.time_ns() - source.stable_seconds * 1_000_000_000
-        rows: list[tuple[Path, str, os.stat_result]] = []
-        for path in sorted(source.root.rglob("*")):
+        for path in source.root.rglob("*"):
             relative = path.relative_to(source.root)
             if not relative.parts or relative.parts[0] == _CONTROL_DIR:
                 continue
@@ -264,8 +263,7 @@ class FtpAdapter:
                 continue
             if not flush and observed.st_mtime_ns > cutoff_ns:
                 continue
-            rows.append((path, relative.as_posix(), observed))
-        return rows
+            yield (path, relative.as_posix(), observed)
 
     def _claim_new_batch(self, source: SourceConfig) -> Path | None:
         marker = source.root / _FLUSH_MARKER
@@ -423,6 +421,7 @@ class FtpAdapter:
             adapter_version="1.0.0",
             ingest_source=source.ingest_source,
             archive_store=source.archive_store,
+            provenance_mode="captured" if source.provenance == "capture" else "omitted",
             provenance_omission_reason=(
                 source.provenance_omission_reason
                 or "Protocol source explicitly omitted host provenance."
@@ -432,7 +431,7 @@ class FtpAdapter:
             files,
             source_event_id=str(manifest["source_event_id"]),
             source_context={"adapter": "ftp", "source": source.id},
-            provenance_journals=journals,
+            provenance_journals=journals.items(),
             idempotency_key=str(manifest["claim_id"]),
             event_context={"adapter": "ftp", "source": source.id},
         )
