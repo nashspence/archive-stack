@@ -40,7 +40,6 @@ def test_transform_identity_is_stable_and_order_independent_at_seal_boundary() -
         operation=operation,
         inputs=reversed(roots()),
         effective_intent={"preserve_audio": True, "quality": 31},
-        output_tags=("archive-video", "source-camera"),
         retirement_policy="retain",
     )
     second = TransformIntent.from_mapping(json.loads(first.to_json_bytes()))
@@ -58,7 +57,6 @@ def test_derivation_is_self_contained_and_canonical() -> None:
         operation=operation,
         inputs=roots(),
         effective_intent={},
-        output_tags=("archive-video",),
     )
     derivation = CollectionDerivation(
         execution_id=intent.transform_id,
@@ -68,7 +66,6 @@ def test_derivation_is_self_contained_and_canonical() -> None:
         operation=operation,
         input_set_sha256=SHA_A,
         artifact_set_sha256=SHA_B,
-        output_tag_set_sha256=SHA_C,
         execution_envelope_sha256=SHA_A,
         execution_sha256=SHA_B,
         controller_evidence=CONTROLLER_EVIDENCE,
@@ -120,7 +117,6 @@ def test_derivation_binds_the_exact_sealed_authorities() -> None:
         operation=operation,
         inputs=roots(),
         effective_intent={},
-        output_tags=("archive-video",),
     )
     derivation = CollectionDerivation(
         execution_id=intent.transform_id,
@@ -130,7 +126,6 @@ def test_derivation_binds_the_exact_sealed_authorities() -> None:
         operation=operation,
         input_set_sha256=SHA_A,
         artifact_set_sha256=SHA_B,
-        output_tag_set_sha256=SHA_C,
         execution_envelope_sha256=SHA_A,
         execution_sha256=SHA_B,
         controller_evidence=CONTROLLER_EVIDENCE,
@@ -140,5 +135,4 @@ def test_derivation_binds_the_exact_sealed_authorities() -> None:
 
     assert derivation.input_set_sha256 == SHA_A
     assert derivation.artifact_set_sha256 == SHA_B
-    assert derivation.output_tag_set_sha256 == SHA_C
     assert derivation.disposition_set.sha256 == SHA_D

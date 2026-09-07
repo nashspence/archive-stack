@@ -28,7 +28,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.list_controls import ClaimState, ProcessingClaimSort, SortOrder
-from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag, CollectionId
+from riverhog_protocol.paths import CanonicalRelPath, CollectionId
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 ProcessingClaimId = SHA256
@@ -232,39 +232,6 @@ class CollectionArtifactPageDocument(RiverhogWorkflowDocument):
     start_ordinal: int = Field(ge=0)
     next_ordinal: int | None = Field(default=None, ge=1)
     artifacts: list[CollectionArtifactIdentityDocument] = Field(
-        max_length=WORKFLOW_SET_BATCH_MAX,
-        json_schema_extra={
-            "x-riverhog-extent": {
-                "policy": "segmented_no_total_max",
-                "reason": "bounded-authority-page",
-                "progression": "authority-bound-start_ordinal",
-            }
-        },
-    )
-
-
-class OutputTagBatchDocument(RiverhogWorkflowDocument):
-    fence: int = Field(ge=1)
-    start_ordinal: int = Field(ge=0)
-    tags: list[CanonicalTag] = Field(
-        min_length=1,
-        max_length=WORKFLOW_SET_BATCH_MAX,
-        json_schema_extra={
-            "uniqueItems": True,
-            "x-riverhog-extent": {
-                "policy": "segmented_no_total_max",
-                "reason": "bounded-authority-append",
-                "progression": "start_ordinal",
-            },
-        },
-    )
-
-
-class OutputTagPageDocument(RiverhogWorkflowDocument):
-    authority: ExactSetAuthorityDocument
-    start_ordinal: int = Field(ge=0)
-    next_ordinal: int | None = Field(default=None, ge=1)
-    tags: list[CanonicalTag] = Field(
         max_length=WORKFLOW_SET_BATCH_MAX,
         json_schema_extra={
             "x-riverhog-extent": {
@@ -490,7 +457,6 @@ class CollectionDerivationDocument(RiverhogWorkflowDocument):
     operation: OperationIdentityDocument
     input_set_sha256: SHA256
     artifact_set_sha256: SHA256
-    output_tag_set_sha256: SHA256
     execution_envelope_sha256: SHA256
     execution_sha256: SHA256
     controller_evidence: ControllerEvidenceDocument
@@ -654,7 +620,6 @@ class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
     operation: OperationIdentityDocument
     inputs: ExactSetAuthorityDocument
     artifacts: ArtifactSetAuthorityDocument
-    output_tags: ExactSetAuthorityDocument
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
     sealed_at: Timestamp
@@ -927,8 +892,6 @@ __all__ = [
     "CollectionRootPageDocument",
     "ExactSetAuthorityDocument",
     "OperationIdentityDocument",
-    "OutputTagBatchDocument",
-    "OutputTagPageDocument",
     "OutcomeSetDocument",
     "ProcessingClaimAbandonDocument",
     "ProcessingClaimCreateDocument",

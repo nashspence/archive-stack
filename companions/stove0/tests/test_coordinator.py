@@ -392,7 +392,6 @@ class FixturePlanning:
                 ),
                 target_registration_id="fixture-target",
                 target_contract_sha256=self.target.contract_sha256,
-                output_tags=("fixture-output",),
                 retirement_policy="retain",
             ),
             observations=observations,
@@ -490,7 +489,6 @@ class ForkJoinPlanning:
                     ),
                     target_registration_id="fixture-target",
                     target_contract_sha256=self.target.contract_sha256,
-                    output_tags=(f"fixture-{branch_id}",),
                     retirement_policy="retain",
                 ),
             )
@@ -513,7 +511,6 @@ class ForkJoinPlanning:
                 ),
                 target_registration_id="fixture-target",
                 target_contract_sha256=self.target.contract_sha256,
-                output_tags=("fixture-joined",),
                 retirement_policy="retain",
             ),
         )
@@ -598,7 +595,6 @@ class NestedPlanning(FixturePlanning):
                 ),
                 target_registration_id="fixture-target",
                 target_contract_sha256=self.target.contract_sha256,
-                output_tags=("fixture-output",),
                 retirement_policy="retain",
             ),
         )
@@ -821,7 +817,6 @@ def _successful_target_status(
         operation=workflow.operation.to_identity(),
         input_set_sha256=_sha("a"),
         artifact_set_sha256=_sha("b"),
-        output_tag_set_sha256=_sha("c"),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256=_sha("9"),
         controller_evidence=declaration.controller_evidence.model_dump(
@@ -1526,7 +1521,6 @@ def test_retirement_grace_and_deletion_blockers_leave_work_stably_waiting() -> N
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retire-after-verified-output",
         )
     )

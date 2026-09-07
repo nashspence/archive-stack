@@ -514,14 +514,6 @@ def _seal_workflow_claim(
         principal=WORKFLOW_PRINCIPAL,
     )
     service.seal_claim_artifacts(claim_id, fence=1, principal=WORKFLOW_PRINCIPAL)
-    service.append_claim_output_tags(
-        claim_id,
-        fence=1,
-        start_ordinal=0,
-        tags=("docs",),
-        principal=WORKFLOW_PRINCIPAL,
-    )
-    service.seal_claim_output_tags(claim_id, fence=1, principal=WORKFLOW_PRINCIPAL)
     controller_evidence: dict[str, JsonValue] = {
         "format": "stove0-controller-evidence/v1",
         "execution_envelope": {"execution_envelope_sha256": execution_id},
@@ -697,7 +689,6 @@ def _seed_derived_output(
         operation=OPERATION,
         input_set_sha256=str(cast(dict[str, object], plan["inputs"])["sha256"]),
         artifact_set_sha256=str(cast(dict[str, object], plan["artifacts"])["sha256"]),
-        output_tag_set_sha256=str(cast(dict[str, object], plan["output_tags"])["sha256"]),
         execution_envelope_sha256=execution_id,
         execution_sha256="5" * 64,
         controller_evidence=controller_evidence,
@@ -844,7 +835,6 @@ def _seed_multi_input_derived_output(
         operation=OPERATION,
         input_set_sha256=str(cast(dict[str, object], plan["inputs"])["sha256"]),
         artifact_set_sha256=str(cast(dict[str, object], plan["artifacts"])["sha256"]),
-        output_tag_set_sha256=str(cast(dict[str, object], plan["output_tags"])["sha256"]),
         execution_envelope_sha256=EXECUTION_ID,
         execution_sha256="5" * 64,
         controller_evidence=controller_evidence,

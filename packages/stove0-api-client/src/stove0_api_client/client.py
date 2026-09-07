@@ -37,6 +37,7 @@ from stove0_operator_contracts import (
 from stove0_protocol import (
     ArtifactSelectionPage,
     BranchSetEvaluation,
+    CollectionRootRef,
     EvaluationDefinition,
     WorkflowPreview,
 )
@@ -177,7 +178,7 @@ class Stove0ApiClient:
     def create_work(
         self,
         recipe_id: str,
-        collection_ids: Sequence[int],
+        inputs: Sequence[CollectionRootRef],
         *,
         preview_sha256: str,
         recipe_revision: int | None = None,
@@ -187,7 +188,7 @@ class Stove0ApiClient:
             recipe_id=recipe_id,
             preview_sha256=preview_sha256,
             recipe_revision=recipe_revision,
-            collection_ids=tuple(collection_ids),
+            inputs=tuple(inputs),
             effective_intent=dict(effective_intent or {}),
         )
         return WorkView.model_validate(
@@ -241,7 +242,7 @@ class Stove0ApiClient:
     def preview_workflow(
         self,
         recipe_id: str,
-        collection_ids: Sequence[int],
+        inputs: Sequence[CollectionRootRef],
         *,
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
@@ -249,7 +250,7 @@ class Stove0ApiClient:
         request = WorkflowPreviewIn(
             recipe_id=recipe_id,
             recipe_revision=recipe_revision,
-            collection_ids=tuple(collection_ids),
+            inputs=tuple(inputs),
             effective_intent=dict(effective_intent or {}),
         )
         return WorkflowPreview.model_validate(
@@ -358,12 +359,10 @@ class Stove0ApiClient:
         self,
         *,
         role: SchedulerRole = "combined",
-        event_limit: int = 100,
         work_limit: int = 25,
     ) -> SchedulerRun:
         request = SchedulerRunIn(
             role=role,
-            event_limit=event_limit,
             work_limit=work_limit,
         )
         return SchedulerRun.model_validate(

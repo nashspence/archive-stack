@@ -2314,6 +2314,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "stove0-api-client" },
+    { name = "stove0-protocol" },
     { name = "stove0-recipe-config" },
     { name = "typer" },
 ]
@@ -2323,6 +2324,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "stove0-api-client", editable = "packages/stove0-api-client" },
+    { name = "stove0-protocol", editable = "packages/stove0-protocol" },
     { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
     { name = "typer", specifier = ">=0.12,<1.0" },
 ]

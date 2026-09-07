@@ -353,7 +353,6 @@ def test_workflow_target_and_controller_evidence_bind_one_another() -> None:
             target_registration_id="nvenc-primary",
             target_contract_sha256=_sha("f"),
             requested_target_options={"preset": "p7"},
-            output_tags=("archive-video",),
             retirement_policy="retain",
         )
     )
@@ -457,7 +456,6 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             operation=operation,
             target_registration_id="fixture-target",
             target_contract_sha256=_sha("f"),
-            output_tags=("archive-video",),
             retirement_policy="retain",
         ),
     )
@@ -540,7 +538,6 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             operation=operation,
             target_registration_id="fixture-target",
             target_contract_sha256=_sha("f"),
-            output_tags=("review-output",),
             retirement_policy="retire-after-verified-output",
         )
 

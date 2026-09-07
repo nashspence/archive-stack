@@ -28,7 +28,7 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     RecipeIdentity,
 )
-from riverhog_protocol.paths import CollectionId, normalize_relpath, normalize_tag
+from riverhog_protocol.paths import CollectionId, normalize_relpath
 
 from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
@@ -640,7 +640,6 @@ class WorkflowPlanPayload(Stove0ProtocolModel):
     target_contract_sha256: Sha256
     requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: RetrievalPolicy = "available-only"
-    output_tags: tuple[str, ...] = ()
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
     output_policy: dict[str, JsonValue] = Field(default_factory=dict)
@@ -655,20 +654,8 @@ class WorkflowPlanPayload(Stove0ProtocolModel):
             raise ValueError("workflow observations must be unique and ordered by request id")
         return value
 
-    @field_validator("output_tags")
-    @classmethod
-    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        tags = tuple(sorted(normalize_tag(item) for item in value))
-        if tags != value or len(tags) != len(set(tags)):
-            raise ValueError("workflow output tags must be unique and canonical")
-        return tags
-
     @model_validator(mode="after")
     def protect_evaluation_sources(self) -> Self:
-        if self.result_kind == "collection" and not self.output_tags:
-            raise ValueError("collection-producing workflow requires output tags")
-        if self.result_kind == "external-effect" and self.output_tags:
-            raise ValueError("external-effect workflow cannot declare output tags")
         if self.result_kind == "external-effect" and self.retirement_policy != "retain":
             raise ValueError("external-effect workflow must retain source collections")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
@@ -703,25 +690,12 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
     target_contract_sha256: Sha256
     requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: RetrievalPolicy = "available-only"
-    output_tags: tuple[str, ...] = ()
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
     output_policy: dict[str, JsonValue] = Field(default_factory=dict)
 
-    @field_validator("output_tags")
-    @classmethod
-    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        tags = tuple(sorted(normalize_tag(item) for item in value))
-        if tags != value or len(tags) != len(set(tags)):
-            raise ValueError("workflow output tags must be unique and canonical")
-        return tags
-
     @model_validator(mode="after")
     def validate_retirement(self) -> Self:
-        if self.result_kind == "collection" and not self.output_tags:
-            raise ValueError("collection-producing workflow intent requires output tags")
-        if self.result_kind == "external-effect" and self.output_tags:
-            raise ValueError("external-effect workflow intent cannot declare output tags")
         if self.result_kind == "external-effect" and self.retirement_policy != "retain":
             raise ValueError("external-effect workflow intent must retain source collections")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
@@ -737,7 +711,6 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
             target_contract_sha256=plan.target_contract_sha256,
             requested_target_options=plan.requested_target_options,
             input_retrieval_policy=plan.input_retrieval_policy,
-            output_tags=plan.output_tags,
             retirement_policy=plan.retirement_policy,
             retirement_grace_seconds=plan.retirement_grace_seconds,
             output_policy=plan.output_policy,
@@ -759,7 +732,6 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
                 target_contract_sha256=self.target_contract_sha256,
                 requested_target_options=self.requested_target_options,
                 input_retrieval_policy=self.input_retrieval_policy,
-                output_tags=self.output_tags,
                 retirement_policy=self.retirement_policy,
                 retirement_grace_seconds=self.retirement_grace_seconds,
                 output_policy=self.output_policy,

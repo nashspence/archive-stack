@@ -236,7 +236,6 @@ class TargetExecutionRuntime:
                     workflow.operation.id,
                     workflow.operation.sha256,
                 ),
-                output_tags=workflow.output_tags,
             )
             runtime = CollectionTransformRuntime.from_capability(
                 base_url=authority.riverhog_base_url,

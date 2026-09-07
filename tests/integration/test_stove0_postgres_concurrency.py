@@ -15,7 +15,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from stove0_core import (
@@ -299,7 +298,6 @@ def _active_target_work(
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         )
     )
@@ -382,7 +380,6 @@ def _active_target_work(
         operation=workflow.operation.to_identity(),
         input_set_sha256="a" * 64,
         artifact_set_sha256="b" * 64,
-        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256="8" * 64,
         controller_evidence=record.controller_evidence.model_dump(
@@ -645,7 +642,6 @@ def _branch_decision() -> BranchSetDecision:
                 operation=OperationRef(id="fixture.branch/v1", sha256="f" * 64),
                 target_registration_id="fixture-target",
                 target_contract_sha256="1" * 64,
-                output_tags=(f"fixture-{branch_id}",),
                 retirement_policy="retain",
             ),
         )
@@ -665,7 +661,6 @@ def _branch_decision() -> BranchSetDecision:
             operation=OperationRef(id="fixture.join/v1", sha256="2" * 64),
             target_registration_id="fixture-target",
             target_contract_sha256="1" * 64,
-            output_tags=("fixture-joined",),
             retirement_policy="retain",
         ),
     )
@@ -1340,9 +1335,6 @@ def test_postgres_concurrent_scheduler_ticks_admit_once_and_preserve_terminal_tr
         def advance(store: SqlAlchemyStateStore) -> None:
             try:
                 scheduler = Stove0Scheduler(
-                    riverhog=cast(object, None),  # type: ignore[arg-type]
-                    catalog=cast(object, None),  # type: ignore[arg-type]
-                    planner=cast(object, None),  # type: ignore[arg-type]
                     coordinator=TransitionCoordinator(
                         store,
                         barrier,

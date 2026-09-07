@@ -223,18 +223,9 @@ def _create_claim(
         principal=_principal(),
     )
     artifacts = service.seal_claim_artifacts(claim_id, fence=fence, principal=_principal())
-    service.append_claim_output_tags(
-        claim_id,
-        fence=fence,
-        start_ordinal=0,
-        tags=("archive-camera",),
-        principal=_principal(),
-    )
-    output_tags = service.seal_claim_output_tags(claim_id, fence=fence, principal=_principal())
     result = service.get_claim(claim_id, principal=_principal())
     result["inputs"] = inputs
     result["artifacts"] = artifacts
-    result["output_tags"] = output_tags
     return result
 
 
@@ -485,10 +476,6 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         operation=OperationIdentity("archive-video/v1", "c" * 64),
         input_set_sha256=cast(str, claim["inputs"]["authority"]["sha256"]),  # type: ignore[index]
         artifact_set_sha256=cast(str, claim["artifacts"]["authority"]["sha256"]),  # type: ignore[index]
-        output_tag_set_sha256=cast(
-            str,
-            claim["output_tags"]["authority"]["sha256"],  # type: ignore[index]
-        ),
         execution_envelope_sha256=EXECUTION_ID,
         execution_sha256="e" * 64,
         controller_evidence=CONTROLLER_EVIDENCE,
@@ -1071,10 +1058,6 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
             artifact_set_sha256=cast(
                 str,
                 claim["artifacts"]["authority"]["sha256"],  # type: ignore[index]
-            ),
-            output_tag_set_sha256=cast(
-                str,
-                claim["output_tags"]["authority"]["sha256"],  # type: ignore[index]
             ),
             execution_envelope_sha256=execution_id,
             execution_sha256="e" * 64,

@@ -46,8 +46,6 @@ from riverhog_api.schemas.workflows import (
     CollectionDerivationOut,
     CollectionRootBatchIn,
     CollectionRootPageOut,
-    OutputTagBatchIn,
-    OutputTagPageOut,
     ProcessingClaimAbandonIn,
     ProcessingClaimCreateIn,
     ProcessingClaimFenceIn,
@@ -231,78 +229,6 @@ def list_processing_claim_artifacts(
 ) -> CollectionArtifactPageOut:
     return CollectionArtifactPageOut.model_validate(
         container.collection_workflows.list_claim_artifacts(
-            claim_id,
-            authority_sha256=authority_sha256,
-            start_ordinal=start_ordinal,
-            principal=principal,
-        )
-    )
-
-
-@router.put(
-    "/collection-processing-claims/{claim_id}/plan/output-tags",
-    response_model=ReceivingSetOut,
-    openapi_extra=operation_interface("client-only-primitive"),
-)
-def append_processing_claim_output_tags(
-    claim_id: ProcessingClaimId,
-    request: OutputTagBatchIn,
-    container: ContainerDep,
-    principal: CollectionTransformController,
-) -> ReceivingSetOut:
-    return ReceivingSetOut.model_validate(
-        container.collection_workflows.append_claim_output_tags(
-            claim_id,
-            fence=request.fence,
-            start_ordinal=request.start_ordinal,
-            tags=request.tags,
-            principal=principal,
-        )
-    )
-
-
-@router.post(
-    "/collection-processing-claims/{claim_id}/plan/output-tags/seal",
-    response_model=ReceivingSetOut,
-    openapi_extra=operation_interface("client-only-primitive"),
-)
-def seal_processing_claim_output_tags(
-    claim_id: ProcessingClaimId,
-    request: ProcessingClaimFenceIn,
-    container: ContainerDep,
-    principal: CollectionTransformController,
-) -> ReceivingSetOut:
-    return ReceivingSetOut.model_validate(
-        container.collection_workflows.seal_claim_output_tags(
-            claim_id,
-            fence=request.fence,
-            principal=principal,
-        )
-    )
-
-
-@router.get(
-    "/collection-processing-claims/{claim_id}/plan/output-tags",
-    response_model=OutputTagPageOut,
-    openapi_extra={
-        **operation_interface("client-only-primitive"),
-        **exact_authority_page_operation(
-            authority="processing-claim-output-tags",
-            authority_parameter="authority_sha256",
-            cursor_parameter="start_ordinal",
-            fixed_limit=128,
-        ),
-    },
-)
-def list_processing_claim_output_tags(
-    claim_id: ProcessingClaimId,
-    container: ContainerDep,
-    principal: CollectionTransformLeaseManager,
-    authority_sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
-    start_ordinal: Annotated[int, Query(ge=0)] = 0,
-) -> OutputTagPageOut:
-    return OutputTagPageOut.model_validate(
-        container.collection_workflows.list_claim_output_tags(
             claim_id,
             authority_sha256=authority_sha256,
             start_ordinal=start_ordinal,

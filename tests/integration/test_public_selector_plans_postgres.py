@@ -179,10 +179,6 @@ _NON_PLAN_QUERY_OPERATIONS = {
         "authority_sha256",
         "start_ordinal",
     },
-    ("riverhog", "list_processing_claim_output_tags"): {
-        "authority_sha256",
-        "start_ordinal",
-    },
     ("riverhog", "list_collection_upload_session_files"): {"page_size", "page_token"},
     ("riverhog", "list_collection_upload_session_tags"): {"page_size", "page_token"},
     ("riverhog", "list_collection_archive_copies"): {"page_size", "page_token"},

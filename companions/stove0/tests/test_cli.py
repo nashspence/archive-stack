@@ -10,6 +10,7 @@ from stove0_operator_contracts import Stove0EventPage
 from typer.testing import CliRunner
 
 CONFORMANCE_CATALOG = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
+COLLECTION_ROOT = f"1:{'1' * 64}:{'2' * 64}"
 
 
 class FakeClient:
@@ -81,7 +82,7 @@ def _commands(definition: Path) -> dict[str, list[str]]:
             "work",
             "create",
             "fixture/v1",
-            "1",
+            COLLECTION_ROOT,
             "--preview-sha256",
             "a" * 64,
         ],
@@ -91,7 +92,7 @@ def _commands(definition: Path) -> dict[str, list[str]]:
         "step_work": ["work", "step", "work-1"],
         "retry_work": ["work", "retry", "work-1"],
         "cancel_work": ["work", "cancel", "work-1"],
-        "preview_workflow": ["preview", "fixture/v1", "1"],
+        "preview_workflow": ["preview", "fixture/v1", COLLECTION_ROOT],
         "list_evaluations": ["evaluation", "list"],
         "create_evaluation": ["evaluation", "create", str(definition)],
         "get_evaluation": ["evaluation", "show", "evaluation-1"],

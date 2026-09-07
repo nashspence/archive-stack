@@ -80,7 +80,6 @@ from stove0_protocol import (
     ARTIFACT_SELECTION_PAGE_MAX,
     ArtifactSelectionPage,
     BranchSetEvaluation,
-    CollectionRootRef,
     EvaluationDefinition,
     WorkflowPreview,
     WorkIdentity,
@@ -221,9 +220,6 @@ class Stove0Composition:
             ),
             evaluations=EvaluationService(state.evaluation_store(), work=work),
             scheduler=Stove0Scheduler(
-                riverhog=riverhog_api,
-                catalog=recipes,
-                planner=planner,
                 coordinator=coordinator,
                 state=state,
                 production_seals=target_callbacks,
@@ -854,11 +850,9 @@ def create_app(
         tags=["scheduler"],
     )
     def scheduler_status() -> SchedulerStatus:
-        saved = composition.state.load_cursor("riverhog-lifecycle/v1")
         return SchedulerStatus(
             running=False,
             interval_seconds=composition.config.scheduler_interval_seconds,
-            cursor=saved[0] if saved else "0",
             roles=("controller", "worker", "combined"),
         )
 
@@ -873,7 +867,6 @@ def create_app(
         return SchedulerRun.model_validate(
             composition.scheduler.run_once(
                 role=request.role,
-                event_limit=request.event_limit,
                 work_limit=request.work_limit,
             )
         )
@@ -889,20 +882,20 @@ def _work_identity(
     composition: Stove0Composition,
     request: WorkflowPreviewIn,
 ) -> WorkIdentity:
-    roots: list[CollectionRootRef] = []
-    for collection_id in request.collection_ids:
-        current = composition.riverhog_api.get_collection(collection_id)
-        roots.append(
-            CollectionRootRef(
-                collection_id=collection_id,
-                archive_root_sha256=str(current.get("archive_root_sha256") or ""),
-                content_identity=str(current.get("content_identity") or ""),
+    for root in request.inputs:
+        current = composition.riverhog_api.get_collection(root.collection_id)
+        if (
+            str(current.get("archive_root_sha256") or "") != root.archive_root_sha256
+            or str(current.get("content_identity") or "") != root.content_identity
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"collection receipt differs from Riverhog: {root.collection_id}",
             )
-        )
     planner = cast(RecipePlanner, composition.coordinator.planning)
     return planner.create_work(
         request.recipe_id,
-        roots,
+        list(request.inputs),
         revision=request.recipe_revision,
         effective_intent=request.effective_intent,
     )
@@ -928,20 +921,8 @@ def _scheduler_loop(
 
 
 def _log_scheduler_failures(role: SchedulerRole, result: dict[str, object]) -> None:
-    """Make isolated event and work advancement failures operator-visible."""
+    """Make isolated work advancement failures operator-visible."""
 
-    events = result.get("events")
-    event_failures = events.get("failures") if isinstance(events, dict) else None
-    if isinstance(event_failures, list):
-        for failure in event_failures:
-            if not isinstance(failure, dict):
-                continue
-            LOGGER.error(
-                "stove0 %s scheduler could not reconcile lifecycle event %s: %s",
-                role,
-                failure.get("event_id", "unknown"),
-                failure.get("error", "unknown error"),
-            )
     work = result.get("work")
     failures = work.get("failures") if isinstance(work, dict) else None
     if not isinstance(failures, list):

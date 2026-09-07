@@ -36,7 +36,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_protocol.paths import tag_set_identity
 from riverhog_protocol.portable_collection import PortableCollectionInventoryPage
 from stove0_observer_protocol import ObservationRequest, ObserverRuntimeAuthority
 from stove0_protocol import (
@@ -124,7 +123,6 @@ class RiverhogApi(Protocol):
         operation_id: str,
         operation_sha256: str,
         input_artifacts: Iterable[Mapping[str, Any]],
-        output_tags: Sequence[str],
         retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
     ) -> ProcessingClaimDocument: ...
@@ -163,14 +161,6 @@ class RiverhogApi(Protocol):
     ) -> ProcessingClaimDocument: ...
 
     def get_collection(self, collection_id: int) -> dict[str, Any]: ...
-
-    def get_collection_tags(
-        self,
-        collection_id: int,
-        *,
-        page_size: int = 25,
-        page_token: str | None = None,
-    ) -> dict[str, Any]: ...
 
     def get_collection_derivation(
         self, collection_id: int
@@ -264,39 +254,6 @@ def _verify_disposition_authority(
         != production.riverhog_disposition_set
     ):
         raise RuntimeError("Riverhog generic derivation authority changed")
-
-
-def _collection_tags(api: RiverhogApi, collection_id: int) -> tuple[str, ...]:
-    page_token: str | None = None
-    authority: tuple[int, str] | None = None
-    tags: list[str] = []
-    while True:
-        payload = api.get_collection_tags(
-            collection_id,
-            page_size=100,
-            page_token=page_token,
-        )
-        current = (
-            int(payload.get("metadata_revision") or 0),
-            str(payload.get("inventory_identity") or ""),
-        )
-        if authority is None:
-            authority = current
-        elif authority != current:
-            raise RuntimeError("Riverhog collection tags changed during bounded traversal")
-        raw_tags = payload.get("tags")
-        if not isinstance(raw_tags, list):
-            raise RuntimeError("Riverhog returned invalid collection tags")
-        tags.extend(str(tag) for tag in raw_tags)
-        next_page_token = payload.get("next_page_token")
-        if next_page_token is None:
-            break
-        if not isinstance(next_page_token, str) or not next_page_token:
-            raise RuntimeError("Riverhog returned an invalid collection-tag page token")
-        page_token = next_page_token
-    if authority is None or tags != sorted(set(tags)):
-        raise RuntimeError("Riverhog collection tag traversal is invalid")
-    return tuple(tags)
 
 
 class Stove0RiverhogClient:
@@ -508,7 +465,6 @@ class Stove0RiverhogClient:
             operation_id=plan.operation.id,
             operation_sha256=plan.operation.sha256,
             input_artifacts=(_artifact_identity(item).as_dict() for item in inputs),
-            output_tags=plan.output_tags,
             retirement_policy=plan.retirement_policy,
             retirement_grace_seconds=plan.retirement_grace_seconds,
         )
@@ -601,8 +557,6 @@ class Stove0RiverhogClient:
         verified = CollectionDerivation.from_mapping(stored_document)
         if verified != derivation or stored.get("document_sha256") != derivation.sha256:
             raise RuntimeError("Riverhog derivation differs from the target publication evidence")
-        if collection.get("tag_set_identity") != tag_set_identity(record.workflow_plan.output_tags):
-            raise RuntimeError("Riverhog output tags differ from the sealed stove0 plan")
         output = OutputCollectionRef(
             collection_id=_positive_int(collection.get("id"), "collection id"),
             archive_root_sha256=_text(

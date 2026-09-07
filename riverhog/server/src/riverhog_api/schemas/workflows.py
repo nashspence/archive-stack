@@ -43,12 +43,6 @@ from riverhog_protocol.collection_workflow_transport import (
     OperationIdentityDocument as OperationIdentityIn,
 )
 from riverhog_protocol.collection_workflow_transport import (
-    OutputTagBatchDocument as OutputTagBatchIn,
-)
-from riverhog_protocol.collection_workflow_transport import (
-    OutputTagPageDocument as OutputTagPageOut,
-)
-from riverhog_protocol.collection_workflow_transport import (
     ProcessingClaimAbandonDocument as ProcessingClaimAbandonIn,
 )
 from riverhog_protocol.collection_workflow_transport import (
@@ -106,8 +100,6 @@ __all__ = [
     "CollectionArtifactIdentityIn",
     "CollectionRootIdentityIn",
     "OperationIdentityIn",
-    "OutputTagBatchIn",
-    "OutputTagPageOut",
     "ProcessingClaimAbandonIn",
     "ProcessingClaimCreateIn",
     "ProcessingClaimFenceIn",
