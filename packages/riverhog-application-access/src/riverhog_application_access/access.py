@@ -14,7 +14,7 @@ from pydantic import (
 )
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
-from riverhog_protocol.paths import normalize_collection_id, normalize_tag
+from riverhog_protocol.paths import normalize_collection_id
 
 ALL_PERMISSIONS: Literal["*"] = "*"
 ALL_RESOURCES = "*"
@@ -27,9 +27,9 @@ COLLECTION_TRANSFORMS_CONTROL: Literal["collection-transforms:control"] = (
 COLLECTION_TRANSFORMS_EXECUTE: Literal["collection-transforms:execute"] = (
     "collection-transforms:execute"
 )
-COLLECTION_TAGS_MANAGE: Literal["collection-tags:manage"] = "collection-tags:manage"
-TAGS_CREATE: Literal["tags:create"] = "tags:create"
-TAGS_DELETE: Literal["tags:delete"] = "tags:delete"
+COLLECTION_ACCESS_GROUPS_MANAGE: Literal["collection-access-groups:manage"] = (
+    "collection-access-groups:manage"
+)
 COLLECTIONS_DELETE: Literal["collections:delete"] = "collections:delete"
 ARCHIVES_READ: Literal["archives:read"] = "archives:read"
 ARCHIVES_MANAGE: Literal["archives:manage"] = "archives:manage"
@@ -41,7 +41,7 @@ PROVENANCE_READ: Literal["provenance:read"] = "provenance:read"
 PROVENANCE_EXPORT: Literal["provenance:export"] = "provenance:export"
 
 COLLECTION_PREFIX = "collection:"
-TAG_PREFIX = "tag:"
+GROUP_PREFIX = "group:"
 
 type ApplicationPermission = Literal[
     "*",
@@ -50,9 +50,7 @@ type ApplicationPermission = Literal[
     "collections:create",
     "collection-transforms:control",
     "collection-transforms:execute",
-    "collection-tags:manage",
-    "tags:create",
-    "tags:delete",
+    "collection-access-groups:manage",
     "collections:delete",
     "archives:read",
     "archives:manage",
@@ -65,7 +63,7 @@ type ApplicationPermission = Literal[
 ]
 type ApplicationResource = Annotated[
     str,
-    Field(pattern=r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*|collection:[1-9][0-9]*)$"),
+    Field(pattern=r"^(?:\*|group:[0-9a-f]{64}|collection:[1-9][0-9]*)$"),
 ]
 
 APPLICATION_PERMISSIONS = frozenset(
@@ -75,9 +73,7 @@ APPLICATION_PERMISSIONS = frozenset(
         COLLECTIONS_CREATE,
         COLLECTION_TRANSFORMS_CONTROL,
         COLLECTION_TRANSFORMS_EXECUTE,
-        COLLECTION_TAGS_MANAGE,
-        TAGS_CREATE,
-        TAGS_DELETE,
+        COLLECTION_ACCESS_GROUPS_MANAGE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
@@ -94,7 +90,6 @@ COLLECTION_SCOPED_PERMISSIONS = frozenset(
     {
         CATALOG_READ,
         RETRIEVAL_MANAGE,
-        COLLECTION_TAGS_MANAGE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
@@ -225,8 +220,18 @@ def collection_resource(collection_id: int | str) -> str:
     return f"{COLLECTION_PREFIX}{normalized}"
 
 
-def tag_resource(tag: str) -> str:
-    return f"{TAG_PREFIX}{_canonical_tag(tag)}"
+def group_resource(group_id: str) -> str:
+    if not isinstance(group_id, str) or len(group_id) != 64:
+        raise ApplicationAccessError("collection access group id must be lowercase SHA-256")
+    try:
+        int(group_id, 16)
+    except ValueError as exc:
+        raise ApplicationAccessError(
+            "collection access group id must be lowercase SHA-256"
+        ) from exc
+    if group_id != group_id.casefold():
+        raise ApplicationAccessError("collection access group id must be lowercase SHA-256")
+    return f"{GROUP_PREFIX}{group_id}"
 
 
 def permission_resources(access: Iterable[ApplicationAccess], permission: str) -> set[str]:
@@ -261,8 +266,8 @@ def _normalize_access_fields(
     if normalized_permission == ALL_PERMISSIONS and normalized_resource != ALL_RESOURCES:
         raise ApplicationAccessError("wildcard permission requires wildcard resource access")
     if normalized_permission == COLLECTIONS_CREATE:
-        if normalized_resource.startswith(COLLECTION_PREFIX):
-            raise ApplicationAccessError("collections:create must target a tag or all tags")
+        if normalized_resource != ALL_RESOURCES:
+            raise ApplicationAccessError("collections:create does not accept a scoped resource")
     elif (
         normalized_permission not in COLLECTION_SCOPED_PERMISSIONS
         and normalized_resource != ALL_RESOURCES
@@ -291,10 +296,7 @@ def _grant_relationship_schemas() -> list[dict[str, Any]]:
             "required": ["permission"],
             "properties": {
                 "permission": {"const": COLLECTIONS_CREATE},
-                "resource": {
-                    "type": "string",
-                    "pattern": r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*)$",
-                },
+                "resource": {"const": ALL_RESOURCES},
             },
         },
         {
@@ -304,7 +306,7 @@ def _grant_relationship_schemas() -> list[dict[str, Any]]:
                 "resource": {
                     "type": "string",
                     "pattern": (
-                        r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*|"
+                        r"^(?:\*|group:[0-9a-f]{64}|"
                         r"collection:[1-9][0-9]*)$"
                     ),
                 },
@@ -325,21 +327,13 @@ def _normalize_resource(value: str) -> str:
     folded = candidate.casefold()
     if folded == ALL_RESOURCES:
         return ALL_RESOURCES
-    if folded.startswith(TAG_PREFIX):
-        return tag_resource(candidate[len(TAG_PREFIX) :])
+    if folded.startswith(GROUP_PREFIX):
+        return group_resource(candidate[len(GROUP_PREFIX) :])
     if folded.startswith(COLLECTION_PREFIX):
         return collection_resource(candidate[len(COLLECTION_PREFIX) :])
-    raise ApplicationAccessError("application resources must be *, tag:<tag>, or collection:<id>")
-
-
-def _canonical_tag(value: str) -> str:
-    try:
-        normalized = normalize_tag(value)
-    except ValueError as exc:
-        raise ApplicationAccessError(str(exc)) from exc
-    if value != normalized:
-        raise ApplicationAccessError("application access tag must be canonical")
-    return normalized
+    raise ApplicationAccessError(
+        "application resources must be *, group:<group-id>, or collection:<id>"
+    )
 
 
 __all__ = [
@@ -359,7 +353,7 @@ __all__ = [
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",
-    "COLLECTION_TAGS_MANAGE",
+    "COLLECTION_ACCESS_GROUPS_MANAGE",
     "COLLECTION_TRANSFORMS_CONTROL",
     "COLLECTION_TRANSFORMS_EXECUTE",
     "EVENTS_READ",
@@ -369,14 +363,12 @@ __all__ = [
     "PROVENANCE_READ",
     "QUOTAS_MANAGE",
     "RETRIEVAL_MANAGE",
-    "TAGS_CREATE",
-    "TAGS_DELETE",
-    "TAG_PREFIX",
+    "GROUP_PREFIX",
     "access_covers",
     "collection_resource",
     "normalize_access",
     "permission_covers",
     "permission_resources",
     "resource_covers",
-    "tag_resource",
+    "group_resource",
 ]

@@ -32,8 +32,6 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionTagRecord,
-    TagRecord,
 )
 from riverhog_core.collection_metadata import (
     collection_content_identity,
@@ -62,7 +60,6 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     ArchiveStore,
     CollectionArchiveIdentity,
-    MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import (
@@ -70,7 +67,6 @@ from riverhog_core.runtime_config import (
     DEV_ARCHIVE_PASSPHRASE_ID,
     RuntimeConfig,
 )
-from riverhog_protocol.paths import tag_set_identity
 from riverhog_provenance import (
     PROVENANCE_BINDING_SEGMENT_FILES_MAX,
     PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
@@ -745,14 +741,6 @@ def seed_archive_copy(
             provenance_identity=provenance_identity,
             files=file_rows,
         )
-        session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at=UPLOADED_AT,
-                collection_count=1,
-            )
-        )
         collection = CollectionRecord(
             id=current.collection_id,
             creation_idempotency_key="fixture-docs",
@@ -760,28 +748,17 @@ def seed_archive_copy(
             creation_custody_mode="producer-retained",
             archive_generation=json.loads(current.manifest_bytes)["archive_generation"],
             content_identity=content_identity,
-            tag_set_identity=tag_set_identity(("docs",)),
             encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
             passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
             inventory_identity=inventory_identity,
-            metadata_revision=1,
-            metadata_updated_at=UPLOADED_AT,
             created_by_app="fixture",
             created_at=UPLOADED_AT,
             file_count=len(file_rows),
             file_bytes=sum(item[1] for item in file_rows),
         )
         session.add(collection)
-        session.add(
-            CollectionTagRecord(
-                collection_id=current.collection_id,
-                tag_id="docs",
-                assigned_by_app="fixture",
-                assigned_at=UPLOADED_AT,
-            )
-        )
         for file in current.files:
             session.add(
                 CollectionFileRecord(
@@ -858,7 +835,6 @@ class MemoryArchiveStore:
         self.verified: list[tuple[str, ...]] = []
         self.deleted: list[tuple[str, ...]] = []
         self.discarded_uploads: list[str] = []
-        self.published_metadata: list[tuple[int, str, bytes]] = []
         self.objects: dict[str, bytes] = {}
         self.object_metadata: dict[str, dict[str, str]] = {}
         self.object_content_types: dict[str, str] = {}
@@ -1053,25 +1029,6 @@ class MemoryArchiveStore:
         self.deleted.append(tuple(current.object_id for current in objects))
         for current in objects:
             self.objects.pop(current.object_path, None)
-
-    def publish_collection_metadata(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        manifest: bytes,
-        passphrase_id: str,
-    ) -> MutableManifestReceipt:
-        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
-        self.published_metadata.append((collection_id, archive_storage_prefix, manifest))
-        object_path = f"{archive_storage_prefix}/metadata.json.age"
-        return MutableManifestReceipt(
-            object_path=object_path,
-            revision=f"v{len(self.published_metadata)}",
-            stored_bytes=len(manifest),
-            stored_sha256=hashlib.sha256(manifest).hexdigest(),
-            published_at=UPLOADED_AT,
-        )
 
     def read_archive_artifact(
         self,

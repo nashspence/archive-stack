@@ -63,7 +63,9 @@ def _event_data(collection_id: int) -> dict[str, object]:
     return {
         "collection_id": collection_id,
         "collection_created_at": utc_timestamp_now(),
-        "collection_tag_count": 0,
+        "files_total": 0,
+        "bytes_total": 0,
+        "archive_root_sha256": f"{collection_id:064x}",
         "actor": {"app": "riverhog"},
         "initiator": {"app": "fixture"},
     }
@@ -81,7 +83,7 @@ def test_event_reads_and_concurrent_context_reapers_do_only_bounded_work(
     for ordinal in range(23):
         first.emit(
             owner_app="fixture",
-            type="collection.tags_changed",
+            type="collection.finalized",
             subject=str(ordinal + 1),
             data=_event_data(ordinal + 1),
             context_json='{"route":"fixture"}',
@@ -89,7 +91,7 @@ def test_event_reads_and_concurrent_context_reapers_do_only_bounded_work(
         )
     first.emit(
         owner_app="fixture",
-        type="collection.tags_changed",
+        type="collection.finalized",
         subject="24",
         data=_event_data(24),
         context_json='{"route":"future"}',

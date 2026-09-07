@@ -17,7 +17,6 @@ from typing import Literal, cast
 from riverhog_protocol.paths import (
     CollectionId,
     normalize_relpath,
-    normalize_tag,
     validate_collection_id,
 )
 
@@ -133,13 +132,6 @@ def _json_object(value: object, label: str) -> dict[str, JsonValue]:
     if not isinstance(normalized, dict):  # defensive; Mapping above already guarantees this
         raise ValueError(f"{label} must be a JSON object")
     return normalized
-
-
-def _canonical_tags(values: Sequence[object]) -> tuple[str, ...]:
-    tags = tuple(sorted(normalize_tag(str(value)) for value in values))
-    if not tags or len(tags) != len(set(tags)):
-        raise ValueError("output tags must be nonempty, canonical, and unique")
-    return tags
 
 
 @dataclass(frozen=True, order=True, slots=True)

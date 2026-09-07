@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from riverhog_age import CHUNK_SIZE
 from riverhog_core.app_permissions import (
+    ALL_RESOURCES,
     COLLECTIONS_CREATE,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -28,12 +29,10 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     RetrievalPlanObjectRecord,
     RetrievalPlanPlacementRecord,
-    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -98,9 +97,14 @@ def test_postgres_current_v1_fixture_validates_and_restarts(
     with restarted.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO tags (id, created_by_app, created_at) "
-                "VALUES ('fixture', 'fixture', '2026-01-01T00:00:00.000000Z')"
-            )
+                "INSERT INTO collection_access_groups "
+                "(id, creation_idempotency_key, created_by_app, status, "
+                "authorization_revision, created_at, updated_at, collection_count) "
+                "VALUES (:id, 'fixture', 'fixture', 'active', 1, "
+                "'2026-01-01T00:00:00.000000Z', "
+                "'2026-01-01T00:00:00.000000Z', 0)"
+            ),
+            {"id": "0" * 64},
         )
     restarted.dispose()
 
@@ -149,15 +153,7 @@ def test_postgres_upload_idempotency_is_independent_per_application(
     isolated_database_url: str,
 ) -> None:
     initialize_db(isolated_database_url)
-    with session_scope(make_session_factory(isolated_database_url)) as session:
-        session.add(
-            TagRecord(
-                id="photos",
-                created_by_app="fixture",
-                created_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")})
+    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES)})
     memory_store = MemoryArchiveStore()
     archive_stores = ArchiveStoreRegistry({"archive": archive_store_binding(memory_store)})
 
@@ -168,8 +164,6 @@ def test_postgres_upload_idempotency_is_independent_per_application(
         )
         return service.create_or_resume(
             idempotency_key="shared-retry-key",
-            initial_tag="photos",
-            tag_set_identity_sha256=tag_set_identity(("photos",)),
             ingest_source="postgres-fixture",
             archive_store=None,
             initiator=ApplicationPrincipal(app=app, key_id=key_id, access=access),
@@ -197,17 +191,6 @@ def test_postgres_upload_idempotency_is_independent_per_application(
     idempotency_index = indexes["ux_collection_uploads_application_idempotency_key"]
     assert idempotency_index["column_names"] == ["initiated_by_app", "idempotency_key"]
     assert idempotency_index["unique"] is True
-    upload_tag_indexes = {
-        str(index["name"]): index for index in inspect(engine).get_indexes("collection_upload_tags")
-    }
-    assert upload_tag_indexes["ix_collection_upload_tags_tag"]["column_names"] == [
-        "tag_id",
-        "collection_id",
-    ]
-    assert {
-        tuple(str(column) for column in constraint["constrained_columns"])
-        for constraint in inspect(engine).get_foreign_keys("collection_upload_tags")
-    } == {("collection_id",), ("tag_id",)}
     engine.dispose()
 
 
@@ -215,23 +198,13 @@ def test_postgres_archive_sequence_state_round_trips_full_v1_domain(
     isolated_database_url: str,
 ) -> None:
     initialize_db(isolated_database_url)
-    with session_scope(make_session_factory(isolated_database_url)) as session:
-        session.add(
-            TagRecord(
-                id="archive-sequence",
-                created_by_app="fixture",
-                created_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:archive-sequence")})
+    access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES)})
     service = SqlAlchemyCollectionUploadService(
         RuntimeConfig(database_url=isolated_database_url),
         ArchiveStoreRegistry({"archive": archive_store_binding(MemoryArchiveStore())}),
     )
     created = service.create_or_resume(
         idempotency_key="archive-sequence-persistence",
-        initial_tag="archive-sequence",
-        tag_set_identity_sha256=tag_set_identity(("archive-sequence",)),
         ingest_source="postgres-fixture",
         archive_store=None,
         initiator=ApplicationPrincipal(app="fixture", key_id="fixture-key", access=access),

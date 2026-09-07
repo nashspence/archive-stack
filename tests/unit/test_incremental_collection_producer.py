@@ -18,8 +18,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import TagRecord
+from riverhog_core.catalog_db import initialize_db
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
@@ -30,7 +29,6 @@ from riverhog_protocol import (
     CollectionUploadWorkBatchDocument,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
-from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -51,7 +49,6 @@ class _CustodyApi:
     def create_or_resume_collection_upload_session(
         self,
         _idempotency_key: str,
-        _tags: Sequence[str],
         **kwargs: object,
     ) -> dict[str, object]:
         assert kwargs["custody_mode"] == "custody-transfer"
@@ -151,7 +148,6 @@ def _producer(api: _CustodyApi) -> IncrementalCollectionProducer:
         adapter_id="fixture-target/v1",
         adapter_version="1.0.0",
         ingest_source="transform:fixture",
-        tags=("derived",),
         source_event_id="fixture-execution",
         idempotency_key="fixture-execution",
     )
@@ -300,13 +296,10 @@ class _ServiceApi:
     def create_or_resume_collection_upload_session(
         self,
         idempotency_key: str,
-        tags: Sequence[str],
         **kwargs: object,
     ) -> dict[str, object]:
         return self.service.create_or_resume(
             idempotency_key=idempotency_key,
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source=str(kwargs["ingest_source"]),
             archive_store=None,
             initiator=self.principal,
@@ -407,14 +400,6 @@ def _bounded_service_api(tmp_path: Path) -> tuple[_ServiceApi, MemoryArchiveStor
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     config = RuntimeConfig(database_url=database_url, archive_scrypt_work_factor=1)
     initialize_db(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            TagRecord(
-                id="derived",
-                created_by_app="fixture",
-                created_at="2026-08-25T00:00:00.000000Z",
-            )
-        )
     store = MemoryArchiveStore()
     binding = replace(archive_store_binding(store), store=store)
     service = SqlAlchemyCollectionUploadService(
@@ -449,7 +434,6 @@ def test_many_artifact_publication_retains_only_the_unsealed_pack_window(
         adapter_id="fixture-target/v1",
         adapter_version="1.0.0",
         ingest_source="transform:fixture",
-        tags=("derived",),
         source_event_id="many-artifact-execution",
         idempotency_key="many-artifact-execution",
     )

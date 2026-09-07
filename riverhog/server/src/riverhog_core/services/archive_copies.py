@@ -37,7 +37,6 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
     RetrievalCacheLeaseRecord,
 )
@@ -1527,16 +1526,6 @@ class SqlAlchemyArchiveCopyService:
             destination.last_uploaded_at = str(uploaded_at)
             destination.last_verified_at = str(uploaded_at)
             destination.failure = None
-            session.merge(
-                CollectionMetadataPublicationRecord(
-                    collection_id=collection_id,
-                    store=destination_store,
-                    desired_revision=collection.metadata_revision,
-                    state="pending",
-                    attempt_count=0,
-                    next_attempt_at=format_utc_timestamp(utc_now()),
-                )
-            )
             job.state = "completed"
             job.completed_at = format_utc_timestamp(utc_now())
             job.next_attempt_at = None

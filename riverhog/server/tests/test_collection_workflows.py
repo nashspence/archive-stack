@@ -14,9 +14,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionTagRecord,
     CollectionUploadRecord,
-    TagRecord,
 )
 from riverhog_core.catalog_workflow_models import (
     CollectionProcessingClaimRecord,
@@ -42,7 +40,6 @@ from riverhog_protocol.collection_workflows import (
     derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Conflict
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -68,7 +65,6 @@ def _collection(
     collection_id: int,
     *,
     creator: str,
-    tag: str,
     root: str,
     idempotency_key: str | None = None,
 ) -> None:
@@ -78,14 +74,11 @@ def _collection(
         creation_identity_sha256=f"{collection_id:064x}",
         creation_custody_mode="producer-retained",
         content_identity=str(collection_id) * 64,
-        tag_set_identity=tag_set_identity((tag,)),
         encryption_format="age-v1-scrypt",
         passphrase_id="fixture-archive-key-v1",
         provenance_mode="omitted",
         provenance_identity=None,
         inventory_identity="f" * 64,
-        metadata_revision=1,
-        metadata_updated_at=NOW,
         ingest_source="fixture",
         created_by_app=creator,
         created_by_key_id=None,
@@ -93,15 +86,6 @@ def _collection(
     )
     session.add(collection)
     session.flush()
-    session.add(
-        CollectionTagRecord(
-            collection_id=collection_id,
-            tag_id=tag,
-            assigned_by_app=creator,
-            assigned_by_key_id=None,
-            assigned_at=NOW,
-        )
-    )
     if collection_id == 1:
         session.add(
             CollectionFileRecord(
@@ -152,23 +136,7 @@ def _principal() -> ApplicationPrincipal:
 
 def _setup(factory: SessionFactory) -> CollectionRootIdentity:
     with factory() as session, session.begin():
-        session.add_all(
-            [
-                TagRecord(
-                    id="intake-camera",
-                    created_by_app="test",
-                    created_by_key_id=None,
-                    created_at=NOW,
-                ),
-                TagRecord(
-                    id="archive-camera",
-                    created_by_app="test",
-                    created_by_key_id=None,
-                    created_at=NOW,
-                ),
-            ]
-        )
-        _collection(session, 1, creator="ftp", tag="intake-camera", root="a" * 64)
+        _collection(session, 1, creator="ftp", root="a" * 64)
     return CollectionRootIdentity(1, "a" * 64, "1" * 64)
 
 
@@ -487,7 +455,6 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
             session,
             2,
             creator=f"transform:{EXECUTION_ID}",
-            tag="archive-camera",
             root="6" * 64,
             idempotency_key=EXECUTION_ID,
         )
@@ -701,7 +668,6 @@ def test_fenced_restart_refuses_an_existing_execution_output(
             session,
             2,
             creator=f"transform:{EXECUTION_ID}",
-            tag="archive-camera",
             root="6" * 64,
             idempotency_key=EXECUTION_ID,
         )
@@ -755,7 +721,6 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
                 collection_id=3,
                 idempotency_key=EXECUTION_ID,
                 creation_identity_sha256="a" * 64,
-                tag_set_identity=tag_set_identity(("archive-camera",)),
                 ingest_source=f"transform:{EXECUTION_ID}",
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
@@ -1070,7 +1035,6 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
                 session,
                 output_collection_id,
                 creator=f"transform:{execution_id}",
-                tag="archive-camera",
                 root=str(output_collection_id) * 64,
                 idempotency_key=execution_id,
             )

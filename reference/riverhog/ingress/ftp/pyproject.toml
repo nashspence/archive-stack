@@ -24,7 +24,6 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-ftp-adapter-api-client>=0.1,<0.2",
-  "riverhog-protocol>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
   "starlette>=0.37,<2.0",
   "uvicorn[standard]>=0.30,<1.0",
@@ -37,7 +36,6 @@ riverhog-ftp-adapter = "riverhog_ftp_adapter.app:main"
 http-api-contracts = { workspace = true }
 riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-api-client = { workspace = true }
-riverhog-protocol = { workspace = true }
 riverhog-provenance = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

@@ -19,7 +19,6 @@ class CollectionUploadCreationIdentityPayload(BaseModel):
     format: Literal["riverhog-collection-upload-creation/v1"] = (
         "riverhog-collection-upload-creation/v1"
     )
-    tag_set_identity: Sha256
     ingest_source: str | None = None
     archive_store: ArchiveStoreName
     event_context: dict[str, JsonValue] | None = None

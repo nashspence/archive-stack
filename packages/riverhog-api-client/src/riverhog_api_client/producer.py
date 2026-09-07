@@ -179,7 +179,6 @@ class CollectionProducer:
         adapter_id: str,
         adapter_version: str,
         ingest_source: str,
-        tags: Sequence[str],
         archive_store: ArchiveStoreName | None = None,
         provenance_omission_reason: str = (
             "Producer did not receive host provenance; immutable producer evidence records "
@@ -192,7 +191,6 @@ class CollectionProducer:
         self.adapter_id = adapter_id
         self.adapter_version = adapter_version
         self.ingest_source = ingest_source
-        self.tags = tuple(tags)
         self.archive_store = archive_store
         self.server_generated_provenance = server_generated_provenance
         reason = provenance_omission_reason.strip()
@@ -288,7 +286,6 @@ class CollectionProducer:
         )
         session = self.api.create_or_resume_collection_upload_session(
             key,
-            self.tags,
             ingest_source=self.ingest_source,
             archive_store=self.archive_store,
             event_context=event_context,
@@ -487,7 +484,6 @@ class IncrementalCollectionProducer:
         adapter_id: str,
         adapter_version: str,
         ingest_source: str,
-        tags: Sequence[str],
         source_event_id: str,
         source_context: Mapping[str, object] | None = None,
         idempotency_key: str | None = None,
@@ -537,7 +533,6 @@ class IncrementalCollectionProducer:
         self.constraints: CollectionUploadRegistrationConstraintsDocument | None
         session = api.create_or_resume_collection_upload_session(
             idempotency_key or evidence.sha256,
-            tags,
             ingest_source=ingest_source,
             archive_store=archive_store,
             event_context=event_context,

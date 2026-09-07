@@ -61,9 +61,6 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
             "SELECT inventory_identity, remote_deleted "
             "FROM desired_collections WHERE collection_id = 1"
         ).fetchone()
-        tags = connection.execute(
-            "SELECT tag FROM desired_collection_tags WHERE collection_id = 1 ORDER BY tag"
-        ).fetchall()
         file = connection.execute(
             "SELECT path, bytes, sha256 FROM desired_files WHERE collection_id = 1"
         ).fetchone()
@@ -78,7 +75,6 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
     assert status.condition == "current"
     assert collection is not None
     assert tuple(collection) == ("b" * 64, 0)
-    assert [str(row[0]) for row in tags] == ["fixture"]
     assert file is not None
     assert tuple(file) == ("notes/fixture.txt", 12, "a" * 64)
     assert retrieval is not None

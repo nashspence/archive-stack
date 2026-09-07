@@ -17,6 +17,7 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.browse import keyset_statement
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
+from riverhog_core.services.access_groups import _group_list_statement
 from riverhog_core.services.app_keys import (
     _access_list_statement,
     _app_list_statement,
@@ -30,12 +31,12 @@ from riverhog_core.services.download_allowances import _key_quota_statements
 from riverhog_core.services.provenance import _provenance_file_statement
 from riverhog_core.services.retrieval import _cache_list_statement
 from riverhog_core.services.search import _search_statement
-from riverhog_core.services.tags import _tag_list_statement
 from riverhog_protocol import (
     ApplicationAccessSort,
     ApplicationKeySort,
     ApplicationSort,
     ArchiveCopySort,
+    CollectionAccessGroupSort,
     CollectionSort,
     CollectionUploadSort,
     DownloadQuotaSort,
@@ -43,7 +44,6 @@ from riverhog_protocol import (
     ProvenanceSort,
     RetrievalCacheSort,
     SearchSort,
-    TagSort,
 )
 from sqlalchemy import text
 from sqlalchemy.engine import Engine, make_url
@@ -118,7 +118,7 @@ _DATABASE_PLAN_OPERATIONS = {
     ("riverhog", "list_processing_claims"): "processing-claims",
     ("riverhog", "list_retrieval_cache_objects"): "retrieval-cache",
     ("riverhog", "search"): "search",
-    ("riverhog", "list_tags"): "tags",
+    ("riverhog", "list_collection_access_groups"): "collection-access-groups",
     ("stove0", "list_evaluations"): "stove0-evaluations",
     ("stove0", "list_work"): "stove0-work",
 }
@@ -127,7 +127,8 @@ _DATABASE_FILTER_SELECTORS = {
     "application-keys": {"active", "q"},
     "applications": {"active", "q"},
     "archive-copies": {"q", "state"},
-    "collections": {"encryption_format", "passphrase_id", "q", "tag"},
+    "collection-access-groups": {"q", "status"},
+    "collections": {"encryption_format", "passphrase_id", "q"},
     "download-quotas": {"active", "app", "q"},
     "processing-claims": {"state"},
     "provenance": {"q", "status"},
@@ -140,13 +141,11 @@ _DATABASE_FILTER_SELECTORS = {
         "q",
         "source_store",
         "state",
-        "tag",
     },
     "search": {"collection", "q"},
     "stove0-evaluations": {"phase", "q"},
     "stove0-work": {"phase", "q"},
-    "tags": {"q"},
-    "uploads": {"q", "state", "tag"},
+    "uploads": {"q", "state"},
 }
 _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "acquire_collection_upload_session_work"): {"limit"},
@@ -180,13 +179,16 @@ _NON_PLAN_QUERY_OPERATIONS = {
         "start_ordinal",
     },
     ("riverhog", "list_collection_upload_session_files"): {"page_size", "page_token"},
-    ("riverhog", "list_collection_upload_session_tags"): {"page_size", "page_token"},
     ("riverhog", "list_collection_archive_copies"): {"page_size", "page_token"},
+    ("riverhog", "list_collection_access_group_members"): {"page_size", "page_token"},
+    ("riverhog", "list_collection_access_groups_for_collection"): {
+        "page_size",
+        "page_token",
+    },
     ("riverhog", "list_collection_provenance_journal_agents"): {
         "page_size",
         "page_token",
     },
-    ("riverhog", "get_collection_tags"): {"page_size", "page_token"},
     ("riverhog", "list_lifecycle_events"): {"after", "limit"},
     ("riverhog", "list_retrieval_plan_files"): {"page_size", "start_ordinal"},
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
@@ -261,23 +263,29 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
     with engine.begin() as connection:
         for statement in (
             f"""
-            INSERT INTO tags (id, created_by_app, created_at, collection_count)
-            SELECT 'tag-' || lpad(g::text, 6, '0'), 'qualification', {timestamp}, g
+            INSERT INTO collection_access_groups (
+                id, creation_idempotency_key, created_by_app, display_label, status,
+                authorization_revision, created_at, updated_at, collection_count
+            )
+            SELECT {sha}, 'group-' || g, 'qualification',
+                   'Group ' || lpad(g::text, 6, '0'),
+                   CASE WHEN g = {rows} THEN 'disabled' ELSE 'active' END,
+                   1, {timestamp}, {timestamp}, 1
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
             INSERT INTO collections (
                 id, creation_idempotency_key, creation_identity_sha256,
-                creation_custody_mode, content_identity, tag_set_identity, encryption_format,
+                creation_custody_mode, content_identity, encryption_format,
                 passphrase_id, provenance_mode, provenance_identity, inventory_identity,
-                archive_generation, metadata_revision, metadata_updated_at, ingest_source,
+                archive_generation, ingest_source,
                 created_by_app, created_at, file_count, file_bytes
             )
-            SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha}, {sha},
+            SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha},
                    CASE WHEN g = {rows} THEN 'age-v1-scrypt' ELSE 'age-v1-other' END,
                    CASE WHEN g = {rows} THEN 'qualification-key-v1'
                         ELSE 'qualification-key-v2' END,
-                   'omitted', NULL, {sha}, {sha}, 1, {timestamp},
+                   'omitted', NULL, {sha}, {sha},
                    'fixture-' || lpad(g::text, 6, '0'), 'qualification', {timestamp},
                    1, g
             FROM generate_series(1, {rows}) AS g
@@ -321,16 +329,16 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             WHERE provenance_status = 'omitted'
             """,
             f"""
-            INSERT INTO collection_tags (
-                collection_id, tag_id, assigned_by_app, assigned_at
+            INSERT INTO collection_access_group_memberships (
+                collection_id, group_id, added_by_app, added_at
             )
-            SELECT g, 'tag-' || lpad(g::text, 6, '0'), 'qualification', {timestamp}
+            SELECT g, {sha}, 'qualification', {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
             INSERT INTO collection_uploads (
                 collection_id, idempotency_key, creation_identity_sha256,
-                archive_generation, tag_set_identity,
+                archive_generation,
                 ingest_source, provenance_mode, provenance_omission_reason,
                 provenance_identity, encryption_format, passphrase_id,
                 initiated_by_app, initiated_by_key_id, event_context_json,
@@ -342,7 +350,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 file_count, file_bytes, custodied_file_count, custodied_file_bytes,
                 search_text
             )
-            SELECT {rows} + g, 'upload-' || g, {sha}, {sha}, {sha},
+            SELECT {rows} + g, 'upload-' || g, {sha}, {sha},
                    'source-' || lpad(g::text, 6, '0'), 'omitted',
                    'qualification fixture', NULL, 'age-v1-scrypt',
                    'qualification-key-v1', 'qualification', NULL, NULL,
@@ -354,11 +362,6 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                    {timestamp}, 0, NULL, NULL, NULL, 'qualification/' || g,
                    '{{}}', g % 32, g * 1024, 0, 0,
                    'source-' || lpad(g::text, 6, '0')
-            FROM generate_series(1, {rows}) AS g
-            """,
-            f"""
-            INSERT INTO collection_upload_tags (collection_id, tag_id)
-            SELECT {rows} + g, 'tag-' || lpad(g::text, 6, '0')
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -381,7 +384,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             )
             SELECT substring(md5(g::text), 1, 16),
                    CASE WHEN g = {rows} THEN 'provenance:read' ELSE 'catalog:read' END,
-                   CASE WHEN g = {rows} THEN 'tag:tag-000001' ELSE '*' END,
+                   CASE WHEN g = {rows} THEN 'group:' || repeat(md5('1'), 2) ELSE '*' END,
                    {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
@@ -532,7 +535,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             statement = _riverhog_plan_statement(
                 _collection_list_statement(
                     q=None,
-                    tag=None,
                     encryption_format=None,
                     passphrase_id=None,
                     sort=sort,
@@ -550,7 +552,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             )
     for name, kwargs, index in (
         ("q", {"q": "065536"}, "ix_collections_search_trgm"),
-        ("tag", {"tag": "tag-004096"}, "ix_collection_tags_tag"),
         (
             "encryption_format",
             {"encryption_format": "age-v1-scrypt"},
@@ -565,7 +566,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         statement = _riverhog_plan_statement(
             _collection_list_statement(
                 q=str(kwargs["q"]) if "q" in kwargs else None,
-                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
                 encryption_format=(
                     str(kwargs["encryption_format"]) if "encryption_format" in kwargs else None
                 ),
@@ -636,37 +636,50 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         )
     )
 
-    tag_indexes = {
-        "id": "tags_pkey",
-        "created_at": "ix_tags_created_at_id",
-        "collections": "ix_tags_collection_count_id",
+    group_indexes = {
+        "id": "collection_access_groups_pkey",
+        "display_label": "ix_collection_access_groups_display_label_id",
+        "created_at": "ix_collection_access_groups_created_at_id",
+        "updated_at": "ix_collection_access_groups_updated_at_id",
+        "status": "ix_collection_access_groups_status_id",
+        "collections": "ix_collection_access_groups_collection_count_id",
     }
-    for sort in sorted(closed_literal_values(TagSort)):
+    for sort in sorted(closed_literal_values(CollectionAccessGroupSort)):
         for order in ("asc", "desc"):
             statement = _riverhog_plan_statement(
-                _tag_list_statement(
+                _group_list_statement(
                     q=None,
+                    status=None,
                     sort=sort,
                     order=order,
-                    principal=_READER,
                 ),
                 order=order,
             )
             cases.append(
                 _PlanCase(
-                    f"tags.sort.{sort}.{order}",
+                    f"collection-access-groups.sort.{sort}.{order}",
                     statement,
-                    frozenset({tag_indexes[sort]}),
+                    frozenset({group_indexes[sort]}),
                 )
             )
     cases.append(
         _PlanCase(
-            "tags.filter.q",
+            "collection-access-groups.filter.q",
             _riverhog_plan_statement(
-                _tag_list_statement(q="065536", sort="id", order="asc", principal=_READER),
+                _group_list_statement(q="065536", status=None, sort="id", order="asc"),
                 order="asc",
             ),
-            frozenset({"ix_tags_id_trgm"}),
+            frozenset({"ix_collection_access_groups_search_trgm"}),
+        )
+    )
+    cases.append(
+        _PlanCase(
+            "collection-access-groups.filter.status",
+            _riverhog_plan_statement(
+                _group_list_statement(q=None, status="disabled", sort="id", order="asc"),
+                order="asc",
+            ),
+            frozenset({"ix_collection_access_groups_status_id"}),
         )
     )
 
@@ -682,7 +695,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             statement = _riverhog_plan_statement(
                 _upload_list_statement(
                     q=None,
-                    tag=None,
                     state=None,
                     sort=sort,
                     order=order,
@@ -699,13 +711,11 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             )
     for name, kwargs, index in (
         ("q", {"q": "source-065536"}, "ix_collection_uploads_search_trgm"),
-        ("tag", {"tag": "tag-004096"}, "ix_collection_upload_tags_tag"),
         ("state", {"state": "open"}, "ix_collection_uploads_state"),
     ):
         statement = _riverhog_plan_statement(
             _upload_list_statement(
                 q=str(kwargs["q"]) if "q" in kwargs else None,
-                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
                 state=str(kwargs["state"]) if "state" in kwargs else None,
                 sort="id",
                 order="asc",
@@ -847,7 +857,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             statement = _riverhog_plan_statement(
                 _cache_list_statement(
                     q=None,
-                    tag=None,
                     collection_id=None,
                     source_store=None,
                     cache_store=None,
@@ -913,7 +922,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             None,
         ),
         ("state", {"state": "delete_pending"}, "ix_retrieval_cache_objects_cleanup", None),
-        ("tag", {"tag": "tag-004096"}, "ix_collection_tags_tag", None),
         ("protection", {"protection": "protected"}, None, "Aggregate"),
         (
             "expires_before",
@@ -932,7 +940,6 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         statement = _riverhog_plan_statement(
             _cache_list_statement(
                 q=str(kwargs["q"]) if "q" in kwargs else None,
-                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
                 collection_id=(int(kwargs["collection_id"]) if "collection_id" in kwargs else None),
                 source_store=(str(kwargs["source_store"]) if "source_store" in kwargs else None),
                 cache_store=(str(kwargs["cache_store"]) if "cache_store" in kwargs else None),
@@ -1127,7 +1134,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         ),
         (
             "resource",
-            {"resource": "tag:tag-000001"},
+            {"resource": "group:" + "c4ca4238a0b923820dcc509a6f75849b" * 2},
             frozenset({"ix_app_key_access_grants_resource"}),
         ),
         ("active", {"active": True}, frozenset({"ix_app_keys_active"})),

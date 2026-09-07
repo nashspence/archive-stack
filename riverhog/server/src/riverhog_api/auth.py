@@ -11,7 +11,7 @@ from riverhog_core.app_permissions import (
     ARCHIVES_MANAGE,
     ARCHIVES_READ,
     CATALOG_READ,
-    COLLECTION_TAGS_MANAGE,
+    COLLECTION_ACCESS_GROUPS_MANAGE,
     COLLECTION_TRANSFORMS_CONTROL,
     COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
@@ -22,8 +22,6 @@ from riverhog_core.app_permissions import (
     PROVENANCE_READ,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
-    TAGS_CREATE,
-    TAGS_DELETE,
     ApplicationAccess,
     ApplicationPrincipal,
 )
@@ -194,17 +192,14 @@ CollectionTransformLeaseManager = Annotated[
         )
     ),
 ]
-CollectionTagManager = Annotated[
+CollectionAccessGroupManager = Annotated[
     ApplicationPrincipal,
-    Depends(cast(Callable[..., object], require_permission(COLLECTION_TAGS_MANAGE))),
-]
-TagCreator = Annotated[
-    ApplicationPrincipal,
-    Depends(cast(Callable[..., object], require_permission(TAGS_CREATE))),
-]
-TagDeleter = Annotated[
-    ApplicationPrincipal,
-    Depends(cast(Callable[..., object], require_permission(TAGS_DELETE))),
+    Depends(
+        cast(
+            Callable[..., object],
+            require_permission(COLLECTION_ACCESS_GROUPS_MANAGE),
+        )
+    ),
 ]
 CollectionDeleter = Annotated[
     ApplicationPrincipal,
@@ -247,7 +242,7 @@ __all__ = [
     "CatalogReader",
     "CollectionCreator",
     "CollectionDeleter",
-    "CollectionTagManager",
+    "CollectionAccessGroupManager",
     "CollectionTransformController",
     "CollectionTransformExecutor",
     "CollectionTransformLeaseManager",
@@ -258,8 +253,6 @@ __all__ = [
     "ProvenanceExporter",
     "ProvenanceReader",
     "RetrievalManager",
-    "TagCreator",
-    "TagDeleter",
     "authenticate_token",
     "apply_openapi_permission_contract",
     "require_application",

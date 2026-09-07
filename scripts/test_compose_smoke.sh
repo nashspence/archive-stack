@@ -221,7 +221,6 @@ printf '%s\n' '{' \
   '      "id": "ftp-smoke",' \
   '      "root": "/intake/ftp",' \
   '      "ingest_source": "ftp:compose-smoke",' \
-  '      "tags": ["stove0-audio-archive"],' \
   '      "close_mode": "explicit-flush",' \
   '      "stable_seconds": 1,' \
   "      \"max_files\": ${smoke_claim_file_count}," \

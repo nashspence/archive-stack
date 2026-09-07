@@ -15,7 +15,7 @@ def test_riverhog_event_list_has_human_and_json_output(monkeypatch) -> None:  # 
                 "specversion": "1.0",
                 "id": "event-1",
                 "source": "urn:riverhog:riverhog",
-                "type": "io.riverhog.riverhog.collection.tags_changed",
+                "type": "io.riverhog.riverhog.collection.finalized",
                 "subject": "41",
                 "time": "2026-08-24T00:00:00Z",
                 "datacontenttype": "application/json",
@@ -24,7 +24,9 @@ def test_riverhog_event_list_has_human_and_json_output(monkeypatch) -> None:  # 
                     "initiator": {"app": "riverhog-client"},
                     "collection_id": 41,
                     "collection_created_at": "2026-08-24T00:00:00.000000Z",
-                    "collection_tag_count": 1,
+                    "files_total": 1,
+                    "bytes_total": 2,
+                    "archive_root_sha256": "a" * 64,
                 },
             }
         ],
@@ -46,7 +48,7 @@ def test_riverhog_event_list_has_human_and_json_output(monkeypatch) -> None:  # 
     machine = runner.invoke(app, [*args, "--json"])
 
     assert human.exit_code == 0
-    assert "io.riverhog.riverhog.collection.tags_changed" in human.stdout
+    assert "io.riverhog.riverhog.collection.finalized" in human.stdout
     assert "has more: yes" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout) == expected

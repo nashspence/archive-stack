@@ -44,7 +44,7 @@ PAGED_LIST_COMMANDS = (
     ("riverhog", "collection", "upload", "list", "--help"),
     ("riverhog", "collection", "provenance", "list", "--help"),
     ("riverhog", "find", "--help"),
-    ("riverhog", "tag", "list", "--help"),
+    ("riverhog", "access-group", "list", "--help"),
     ("riverhog", "archive", "copy", "list", "--help"),
     ("riverhog", "archive", "store", "list", "--help"),
     ("riverhog", "retrieval", "cache", "list", "--help"),
@@ -58,7 +58,7 @@ PAGED_LIST_COMMANDS = (
 )
 
 BOUNDED_LIST_COMMANDS = (
-    ("riverhog", "collection", "tag", "list", "--help"),
+    ("riverhog", "collection", "access-group", "list", "--help"),
     ("riverhog", "local", "provenance-observer", "list", "--help"),
     ("stove0", "recipe", "list", "--help"),
 )
@@ -153,7 +153,6 @@ def test_retrieval_cache_list_emits_actionable_composite_selectors() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "--selectors" in completed.stdout
     for option in (
-        "--tag",
         "--collection",
         "--source-store",
         "--state",

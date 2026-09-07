@@ -53,17 +53,6 @@ Table(
     CheckConstraint("remote_deleted IN (0, 1)", name="ck_desired_collections_remote_deleted"),
 )
 Table(
-    "desired_collection_tags",
-    LOCAL_STATE_METADATA,
-    Column(
-        "collection_id",
-        Integer,
-        ForeignKey("desired_collections.collection_id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column("tag", Text, primary_key=True),
-)
-Table(
     "desired_files",
     LOCAL_STATE_METADATA,
     Column(

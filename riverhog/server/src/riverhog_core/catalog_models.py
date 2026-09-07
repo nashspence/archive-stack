@@ -40,34 +40,74 @@ def _fixed_lowercase_integer_check(column: str, width: int) -> str:
     return f"length({column}) = {width} AND lower({column}) = {column} AND length({remainder}) = 0"
 
 
-class TagRecord(Base):
-    __tablename__ = "tags"
+class CollectionAccessGroupRecord(Base):
+    __tablename__ = "collection_access_groups"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    creation_idempotency_key: Mapped[str] = mapped_column(String)
     created_by_app: Mapped[str] = mapped_column(String)
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    display_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    display_label_sort: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(coalesce(display_label, ''))"),
+    )
+    status: Mapped[str] = mapped_column(
+        String,
+        default="active",
+        server_default=text("'active'"),
+    )
+    authorization_revision: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default=text("1")
+    )
     created_at: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
     collection_count: Mapped[int] = mapped_column(
         BigInteger,
         default=0,
         server_default=text("0"),
     )
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(id || ' ' || coalesce(display_label, ''))"),
+    )
 
-    assignments: Mapped[list[CollectionTagRecord]] = relationship(
-        back_populates="tag",
+    memberships: Mapped[list[CollectionAccessGroupMembershipRecord]] = relationship(
+        back_populates="group",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
     __table_args__ = (
-        CheckConstraint("collection_count >= 0", name="ck_tags_collection_count"),
-        Index("ix_tags_created_at_id", "created_at", "id"),
-        Index("ix_tags_collection_count_id", "collection_count", "id"),
+        UniqueConstraint(
+            "created_by_app",
+            "creation_idempotency_key",
+            name="uq_collection_access_groups_application_idempotency_key",
+        ),
+        CheckConstraint(
+            "collection_count >= 0", name="ck_collection_access_groups_collection_count"
+        ),
+        CheckConstraint(
+            "status IN ('active','disabled')", name="ck_collection_access_groups_status"
+        ),
+        CheckConstraint(
+            "authorization_revision >= 1",
+            name="ck_collection_access_groups_authorization_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("id", 64),
+            name="ck_collection_access_groups_id_hex",
+        ),
+        Index("ix_collection_access_groups_created_at_id", "created_at", "id"),
+        Index("ix_collection_access_groups_updated_at_id", "updated_at", "id"),
+        Index("ix_collection_access_groups_status_id", "status", "id"),
+        Index("ix_collection_access_groups_collection_count_id", "collection_count", "id"),
+        Index("ix_collection_access_groups_display_label_id", "display_label_sort", "id"),
         Index(
-            "ix_tags_id_trgm",
-            "id",
+            "ix_collection_access_groups_search_trgm",
+            "search_text",
             postgresql_using="gin",
-            postgresql_ops={"id": "gin_trgm_ops"},
+            postgresql_ops={"search_text": "gin_trgm_ops"},
         ),
     )
 
@@ -87,14 +127,11 @@ class CollectionRecord(Base):
         String(64), nullable=False, default=lambda: secrets.token_hex(32)
     )
     content_identity: Mapped[str] = mapped_column(String(64))
-    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     encryption_format: Mapped[str] = mapped_column(String, nullable=False)
     passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     inventory_identity: Mapped[str] = mapped_column(String(64))
-    metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
-    metadata_updated_at: Mapped[str] = mapped_column(String)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -116,7 +153,7 @@ class CollectionRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    tags: Mapped[list[CollectionTagRecord]] = relationship(
+    access_groups: Mapped[list[CollectionAccessGroupMembershipRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -146,7 +183,6 @@ class CollectionRecord(Base):
         ),
         CheckConstraint("file_count >= 0", name="ck_collections_file_count"),
         CheckConstraint("file_bytes >= 0", name="ck_collections_file_bytes"),
-        CheckConstraint("metadata_revision >= 1", name="ck_collections_metadata_revision"),
         CheckConstraint(
             "provenance_mode IN ('captured','mixed','omitted')",
             name="ck_collections_provenance_mode",
@@ -163,29 +199,23 @@ class CollectionRecord(Base):
     )
 
 
-class CollectionTagRecord(Base):
-    __tablename__ = "collection_tags"
+class CollectionAccessGroupMembershipRecord(Base):
+    __tablename__ = "collection_access_group_memberships"
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
-    assigned_by_app: Mapped[str] = mapped_column(String)
-    assigned_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    assigned_at: Mapped[str] = mapped_column(String)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    added_by_app: Mapped[str] = mapped_column(String)
+    added_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    added_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
-        ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
-        Index("ix_collection_tags_tag", "tag_id", "collection_id"),
-        Index(
-            "ix_collection_tags_tag_trgm",
-            "tag_id",
-            postgresql_using="gin",
-            postgresql_ops={"tag_id": "gin_trgm_ops"},
-        ),
+        ForeignKeyConstraint(["group_id"], ["collection_access_groups.id"], ondelete="CASCADE"),
+        Index("ix_collection_access_group_memberships_group", "group_id", "collection_id"),
     )
 
-    collection: Mapped[CollectionRecord] = relationship(back_populates="tags")
-    tag: Mapped[TagRecord] = relationship(back_populates="assignments")
+    collection: Mapped[CollectionRecord] = relationship(back_populates="access_groups")
+    group: Mapped[CollectionAccessGroupRecord] = relationship(back_populates="memberships")
 
 
 class CollectionDeletionRecord(Base):
@@ -656,57 +686,6 @@ class CollectionArchiveCopyRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="archive_copies")
-    metadata_publication: Mapped[CollectionMetadataPublicationRecord | None] = relationship(
-        back_populates="copy",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-
-
-class CollectionMetadataPublicationRecord(Base):
-    __tablename__ = "collection_metadata_publications"
-
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    store: Mapped[str] = mapped_column(String, primary_key=True)
-    desired_revision: Mapped[int] = mapped_column(BigInteger)
-    published_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    state: Mapped[str] = mapped_column(String)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
-    next_attempt_at: Mapped[str] = mapped_column(String)
-    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
-    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    revision: Mapped[str | None] = mapped_column(String, nullable=True)
-    stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["collection_id", "store"],
-            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
-            ondelete="CASCADE",
-        ),
-        Index(
-            "ix_collection_metadata_publications_due",
-            "state",
-            "next_attempt_at",
-            "collection_id",
-            "store",
-        ),
-        CheckConstraint("desired_revision >= 1", name="ck_metadata_publications_desired_revision"),
-        CheckConstraint(
-            "published_revision IS NULL OR published_revision >= 1",
-            name="ck_metadata_publications_published_revision",
-        ),
-        CheckConstraint("attempt_count >= 0", name="ck_metadata_publications_attempt_count"),
-        CheckConstraint(
-            "state IN ('pending','publishing','published','retry_wait')",
-            name="ck_metadata_publications_state",
-        ),
-    )
-
-    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="metadata_publication")
 
 
 class CollectionArchiveObjectRecord(Base):
@@ -959,17 +938,24 @@ class CatalogEventRecord(Base):
     )
 
 
-class CatalogEventTagRecord(Base):
-    __tablename__ = "catalog_event_tags"
+class CatalogEventAccessGroupRecord(Base):
+    __tablename__ = "catalog_event_access_groups"
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
     phase: Mapped[str] = mapped_column(String, primary_key=True)
-    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     __table_args__ = (
         ForeignKeyConstraint(["sequence"], ["catalog_events.sequence"], ondelete="CASCADE"),
-        CheckConstraint("phase IN ('before', 'after')", name="ck_catalog_event_tags_phase"),
-        Index("ix_catalog_event_tags_visibility", "phase", "tag_id", "sequence"),
+        CheckConstraint(
+            "phase IN ('before', 'after')", name="ck_catalog_event_access_groups_phase"
+        ),
+        Index(
+            "ix_catalog_event_access_groups_visibility",
+            "phase",
+            "group_id",
+            "sequence",
+        ),
     )
 
 
@@ -1627,7 +1613,6 @@ class CollectionUploadRecord(Base):
     archive_generation: Mapped[str] = mapped_column(
         String(64), nullable=False, default=lambda: secrets.token_hex(32)
     )
-    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1739,11 +1724,6 @@ class CollectionUploadRecord(Base):
         back_populates="upload",
         cascade="all, delete-orphan",
     )
-    tags: Mapped[list[CollectionUploadTagRecord]] = relationship(
-        back_populates="upload",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
     archive_objects: Mapped[list[CollectionArchiveObjectUploadRecord]] = relationship(
         back_populates="upload",
         cascade="all, delete-orphan",
@@ -1795,7 +1775,7 @@ class CollectionUploadRecord(Base):
         CheckConstraint(
             "catalog_phase IN ("
             "'content-identity','inventory-identity','collection','files','journals',"
-            "'provenance-relations','bindings','tags','archive-objects','file-objects',"
+            "'provenance-relations','bindings','archive-objects','file-objects',"
             "'terminal','complete')",
             name="ck_collection_uploads_catalog_phase",
         ),
@@ -1841,31 +1821,6 @@ class CollectionUploadRecord(Base):
         CheckConstraint("archive_attempt_count >= 0", name="ck_collection_uploads_attempt_count"),
         {"sqlite_autoincrement": True},
     )
-
-
-class CollectionUploadTagRecord(Base):
-    __tablename__ = "collection_upload_tags"
-
-    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    tag_id: Mapped[str] = mapped_column(String, primary_key=True)
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["collection_id"],
-            ["collection_uploads.collection_id"],
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
-        Index("ix_collection_upload_tags_tag", "tag_id", "collection_id"),
-        Index(
-            "ix_collection_upload_tags_tag_trgm",
-            "tag_id",
-            postgresql_using="gin",
-            postgresql_ops={"tag_id": "gin_trgm_ops"},
-        ),
-    )
-
-    upload: Mapped[CollectionUploadRecord] = relationship(back_populates="tags")
 
 
 class CollectionUploadFileRecord(Base):

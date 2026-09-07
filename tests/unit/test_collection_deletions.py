@@ -8,19 +8,18 @@ from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CatalogEventAccessGroupRecord,
     CatalogEventRecord,
-    CatalogEventTagRecord,
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
-    CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
     RetrievalPlanFileRecord,
     RetrievalPlanRecord,
-    TagRecord,
 )
 from riverhog_core.services.collection_deletions import (
     SqlAlchemyCollectionDeletionService,
@@ -119,28 +118,6 @@ def test_deletion_plan_uses_catalog_object_and_file_aggregates(tmp_path: Path) -
     CollectionDeletionPlanOut.model_validate(plan)
 
 
-def test_active_metadata_publication_blocks_collection_deletion(tmp_path: Path) -> None:
-    config, _archive_store, service = _service(tmp_path / "catalog.sqlite3")
-    with session_scope(make_session_factory(config.database_url)) as session:
-        session.add(
-            CollectionMetadataPublicationRecord(
-                collection_id=COLLECTION_ID,
-                store="deep",
-                desired_revision=1,
-                state="publishing",
-                attempt_count=1,
-                next_attempt_at=UPLOADED_AT,
-                last_attempt_at=UPLOADED_AT,
-            )
-        )
-
-    plan = service.plan(COLLECTION_ID)
-
-    assert plan["status"] == "blocked"
-    assert plan["challenge"] is None
-    assert plan["blockers"] == ["collection metadata publication is active: deep"]
-
-
 def test_confirmed_deletion_removes_archive_and_catalog_record(
     tmp_path: Path,
 ) -> None:
@@ -165,10 +142,7 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "deleted" and event.collection_id == COLLECTION_ID
-        snapshot = session.query(CatalogEventTagRecord).one()
-        assert (snapshot.phase, snapshot.tag_id) == ("before", "docs")
-        docs = session.get(TagRecord, "docs")
-        assert docs is not None and docs.collection_count == 0
+        assert session.query(CatalogEventAccessGroupRecord).count() == 0
 
 
 def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
@@ -232,7 +206,6 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
         "key_id": "client-key",
     }
     assert event.data["collection_created_at"] == UPLOADED_AT
-    assert event.data["collection_tag_count"] == 1
     assert event.data["context"] == {"workflow": "direct-delete"}
     assert events.page(owner_app="stove0", after=None, limit=100).events == []
 
@@ -249,21 +222,26 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         for index in range(205):
-            tag_id = f"bulk-{index:03d}"
+            group_id = f"{index:064x}"
             session.add(
-                TagRecord(
-                    id=tag_id,
+                CollectionAccessGroupRecord(
+                    id=group_id,
+                    creation_idempotency_key=f"bulk-{index:03d}",
                     created_by_app="fixture",
+                    display_label=f"bulk-{index:03d}",
+                    status="active",
+                    authorization_revision=1,
                     created_at=UPLOADED_AT,
+                    updated_at=UPLOADED_AT,
                     collection_count=1,
                 )
             )
             session.add(
-                CollectionTagRecord(
+                CollectionAccessGroupMembershipRecord(
                     collection_id=COLLECTION_ID,
-                    tag_id=tag_id,
-                    assigned_by_app="fixture",
-                    assigned_at=UPLOADED_AT,
+                    group_id=group_id,
+                    added_by_app="fixture",
+                    added_at=UPLOADED_AT,
                 )
             )
             session.add(
@@ -277,17 +255,17 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
 
     challenge = str(service.plan(COLLECTION_ID)["challenge"])
     service.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
-    previous_tags = 206
+    previous_groups = 205
     previous_files = 207
     steps = 0
     while service.process_due(limit=1):
         steps += 1
         with session_scope(factory) as session:
-            tag_count = session.query(CollectionTagRecord).count()
+            group_count = session.query(CollectionAccessGroupMembershipRecord).count()
             file_count = session.query(CollectionFileRecord).count()
-            assert 0 <= previous_tags - tag_count <= 100
+            assert 0 <= previous_groups - group_count <= 100
             assert 0 <= previous_files - file_count <= 100
-            previous_tags = tag_count
+            previous_groups = group_count
             previous_files = file_count
             collection = session.get(CollectionRecord, COLLECTION_ID)
             event = session.query(CatalogEventRecord).one_or_none()
@@ -299,13 +277,13 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
             assert changes == {"cursor": 0, "has_more": True, "changes": []}
 
     assert steps > 9
-    assert previous_tags == 0
+    assert previous_groups == 0
     assert previous_files == 0
     with session_scope(factory) as session:
         event = session.query(CatalogEventRecord).one()
         assert event.published is True
         event_sequence = event.sequence
-        assert session.query(CatalogEventTagRecord).count() == 206
+        assert session.query(CatalogEventAccessGroupRecord).count() == 205
     changes = retrieval.change_list(after=0)
     assert changes["cursor"] == event_sequence
     assert changes["has_more"] is False
@@ -324,15 +302,13 @@ def test_deletion_reclaims_a_multi_collection_retrieval_plan_as_one_authority(
                 id=other_collection_id,
                 creation_idempotency_key="other-collection",
                 creation_identity_sha256="1" * 64,
-                creation_custody_mode="transfer",
+                creation_custody_mode="producer-retained",
                 content_identity="2" * 64,
-                tag_set_identity="3" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="default",
                 provenance_mode="omitted",
                 provenance_identity=None,
                 inventory_identity="4" * 64,
-                metadata_updated_at=UPLOADED_AT,
                 created_at=UPLOADED_AT,
                 file_count=1,
                 file_bytes=1,

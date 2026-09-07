@@ -22,19 +22,18 @@ from riverhog_core.app_permissions import (
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyRecord,
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionTagRecord,
     KeyDownloadReservationRecord,
     RetrievalJobRecord,
     RetrievalPlanFileRecord,
     RetrievalPlanRecord,
-    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_protocol.errors import BadRequest, Forbidden, NotFound, Unauthorized
-from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -73,20 +72,26 @@ def create_key(
     )
 
 
-def seed_tag(
+def seed_group(
     config: RuntimeConfig,
-    tag: str,
+    label: str,
     *,
     collection_id: int | None = None,
-) -> None:
+) -> str:
+    group_id = hashlib.sha256(label.encode()).hexdigest()
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         session.add(
-            TagRecord(
-                id=tag,
+            CollectionAccessGroupRecord(
+                id=group_id,
+                creation_idempotency_key=label,
                 created_by_app="bootstrap",
                 created_by_key_id=None,
+                display_label=label,
+                status="active",
+                authorization_revision=1,
                 created_at="2026-07-24T00:00:00.000000Z",
+                updated_at="2026-07-24T00:00:00.000000Z",
                 collection_count=1 if collection_id is not None else 0,
             )
         )
@@ -98,12 +103,9 @@ def seed_tag(
                     creation_identity_sha256=f"{collection_id:064x}",
                     creation_custody_mode="producer-retained",
                     content_identity="0" * 64,
-                    tag_set_identity=tag_set_identity((tag,)),
                     encryption_format="age-v1-scrypt",
                     passphrase_id="fixture-archive-key-v1",
                     inventory_identity="1" * 64,
-                    metadata_revision=1,
-                    metadata_updated_at="2026-07-24T00:00:00.000000Z",
                     created_by_app="fixture",
                     created_at="2026-07-24T00:00:00.000000Z",
                     file_count=0,
@@ -111,13 +113,14 @@ def seed_tag(
                 )
             )
             session.add(
-                CollectionTagRecord(
+                CollectionAccessGroupMembershipRecord(
                     collection_id=collection_id,
-                    tag_id=tag,
-                    assigned_by_app="fixture",
-                    assigned_at="2026-07-24T00:00:00.000000Z",
+                    group_id=group_id,
+                    added_by_app="fixture",
+                    added_at="2026-07-24T00:00:00.000000Z",
                 )
             )
+    return group_id
 
 
 def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
@@ -157,19 +160,18 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
     assert listed["keys"] == [{key: created[key] for key in created if key != "token"}]
 
 
-def test_action_specific_tag_access_does_not_leak_between_operations(tmp_path: Path) -> None:
+def test_action_specific_group_access_does_not_leak_between_operations(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    seed_tag(config, "camera")
+    group_id = seed_group(config, "camera")
     created = create_key(
         service,
-        app="uploader",
-        access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:camera"),),
+        app="reader",
+        access=(ApplicationAccess(CATALOG_READ, f"group:{group_id}"),),
     )
     principal = service.authenticate(str(created["token"]))
     assert principal is not None
-    assert principal.allows_tag(COLLECTIONS_CREATE, "camera")
-    assert not principal.allows_tag(CATALOG_READ, "camera")
-    assert not principal.allows_tag(RETRIEVAL_MANAGE, "camera")
+    assert principal.allows_group(CATALOG_READ, group_id)
+    assert not principal.allows_group(RETRIEVAL_MANAGE, group_id)
 
 
 def test_app_keys_rotate_revoke_expire_and_authenticate_without_restart(tmp_path: Path) -> None:
@@ -250,15 +252,15 @@ def test_key_browsing_crosses_nullable_sort_positions_without_omission(
 def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
     collection_id = 1
-    seed_tag(config, "docs", collection_id=collection_id)
-    seed_tag(config, "other")
+    docs_group = seed_group(config, "docs", collection_id=collection_id)
+    other_group = seed_group(config, "other")
     manager = ApplicationPrincipal(
         app="manager",
         key_id="manager-key",
         access=frozenset(
             {
                 ApplicationAccess(KEYS_MANAGE),
-                ApplicationAccess(CATALOG_READ, "tag:docs"),
+                ApplicationAccess(CATALOG_READ, f"group:{docs_group}"),
             }
         ),
     )
@@ -267,27 +269,27 @@ def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> 
         create_key(
             service,
             app="uploader",
-            access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:docs"),),
+            access=(ApplicationAccess(COLLECTIONS_CREATE),),
             grantor=manager,
         )
     with pytest.raises(Forbidden, match="cannot grant"):
         create_key(
             service,
             app="other-reader",
-            access=(ApplicationAccess(CATALOG_READ, "tag:other"),),
+            access=(ApplicationAccess(CATALOG_READ, f"group:{other_group}"),),
             grantor=manager,
         )
 
 
 def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    seed_tag(config, "photos")
+    photos_group = seed_group(config, "photos")
     created = create_key(
         service,
         app="review",
         access=(
-            ApplicationAccess(CATALOG_READ, "tag:photos"),
-            ApplicationAccess(RETRIEVAL_MANAGE, "tag:photos"),
+            ApplicationAccess(CATALOG_READ, f"group:{photos_group}"),
+            ApplicationAccess(RETRIEVAL_MANAGE, f"group:{photos_group}"),
         ),
     )
     factory = make_session_factory(config.database_url)
@@ -315,16 +317,16 @@ def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path)
     assert listed[0]["app"] == "review"
     assert listed[0]["key_id"] == created["id"]
     assert listed[0]["permission"] == "retrieval:manage"
-    assert listed[0]["resource"] == "tag:photos"
+    assert listed[0]["resource"] == f"group:{photos_group}"
 
 
 def test_access_targets_must_exist(tmp_path: Path) -> None:
     service, _config = app_keys(tmp_path)
-    with pytest.raises(NotFound, match="tag not found"):
+    with pytest.raises(NotFound, match="collection access group not found"):
         create_key(
             service,
-            app="uploader",
-            access=(ApplicationAccess(COLLECTIONS_CREATE, "tag:missing"),),
+            app="reader",
+            access=(ApplicationAccess(CATALOG_READ, f"group:{'f' * 64}"),),
         )
 
 
@@ -342,12 +344,9 @@ def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
-                metadata_revision=1,
-                metadata_updated_at=str(created["created_at"]),
                 created_by_app="fixture",
                 created_at=str(created["created_at"]),
             )

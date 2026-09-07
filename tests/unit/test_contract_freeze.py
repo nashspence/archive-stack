@@ -95,13 +95,13 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
     }
     assert set(external["cli"]["riverhog"]["commands"]) == {
         "app",
+        "access-group",
         "archive",
         "collection",
         "event",
         "find",
         "local",
         "retrieval",
-        "tag",
     }
     assert "list" in external["cli"]["riverhog"]["commands"]["collection"]["commands"]
     assert set(external["http_openapi"]) == {
@@ -109,7 +109,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "riverhog-ftp-adapter",
         "stove0",
     }
-    assert len(external["operations"]) == 149
+    assert len(external["operations"]) == 145
     assert len(external["python"]) == 25
     assert len(external["durable_state"]["owners"]) == 8
     extents = external["extents"]

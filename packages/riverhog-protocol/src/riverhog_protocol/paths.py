@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import re
 import unicodedata
-from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Annotated
 
@@ -11,9 +8,7 @@ from pydantic import AfterValidator, BeforeValidator, Field
 
 __all__ = [
     "CANONICAL_RELPATH_PATTERN",
-    "MAX_TAG_LENGTH",
     "CanonicalRelPath",
-    "CanonicalTag",
     "CollectionId",
     "CollectionIdParameter",
     "PathNormalizationError",
@@ -22,11 +17,7 @@ __all__ = [
     "relpath_search_key",
     "relpath_sort_key",
     "text_search_key",
-    "TagSetIdentityBuilder",
-    "tag_set_identity",
-    "normalize_tag",
     "validate_canonical_relpath",
-    "validate_canonical_tag",
     "validate_collection_id",
 ]
 
@@ -35,9 +26,6 @@ class PathNormalizationError(ValueError):
     pass
 
 
-_TAG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
-MAX_TAG_LENGTH = 80
-TAG_SET_IDENTITY_FORMAT = "riverhog-tag-set/v1"
 CANONICAL_RELPATH_PATTERN = r"^[^/\\]+(?:/[^/\\]+)*$"
 
 
@@ -64,20 +52,6 @@ type CanonicalRelPath = Annotated[
         },
     ),
     AfterValidator(validate_canonical_relpath),
-]
-
-
-def validate_canonical_tag(value: str) -> str:
-    normalized = normalize_tag(value)
-    if normalized != value:
-        raise PathNormalizationError("tag must be canonical")
-    return normalized
-
-
-type CanonicalTag = Annotated[
-    str,
-    Field(max_length=MAX_TAG_LENGTH, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"),
-    AfterValidator(validate_canonical_tag),
 ]
 
 
@@ -123,55 +97,6 @@ def text_search_key(value: str) -> str:
     return normalized.translate(
         str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
     )
-
-
-def normalize_tag(raw: str) -> str:
-    ascii_text = (
-        unicodedata.normalize("NFKD", raw.strip().casefold())
-        .encode("ascii", "ignore")
-        .decode("ascii")
-    )
-    normalized = _TAG_SEPARATOR_RE.sub("-", ascii_text).strip("-")
-    normalized = re.sub(r"-{2,}", "-", normalized)
-    normalized = normalized[:MAX_TAG_LENGTH].strip("-")
-    if not normalized:
-        raise PathNormalizationError("tag must include at least one letter or digit")
-    return normalized
-
-
-class TagSetIdentityBuilder:
-    """Hash one canonically ordered tag membership without retaining it."""
-
-    def __init__(self) -> None:
-        self._digest = hashlib.sha256()
-        self._digest.update(b'{"format":"riverhog-tag-set/v1","tags":[')
-        self._previous: str | None = None
-        self._count = 0
-
-    def add(self, value: str) -> None:
-        tag = validate_canonical_tag(value)
-        if self._previous is not None and tag <= self._previous:
-            raise PathNormalizationError("tag set must be unique and canonically ordered")
-        if self._count:
-            self._digest.update(b",")
-        self._digest.update(b'"')
-        self._digest.update(tag.encode("ascii"))
-        self._digest.update(b'"')
-        self._previous = tag
-        self._count += 1
-
-    def finish(self) -> str:
-        self._digest.update(b"]}")
-        return self._digest.hexdigest()
-
-
-def tag_set_identity(values: Iterable[str]) -> str:
-    """Return the bounded-memory identity of one ordered tag iterable."""
-
-    builder = TagSetIdentityBuilder()
-    for value in values:
-        builder.add(value)
-    return builder.finish()
 
 
 def normalize_collection_id(raw: str | int) -> int:

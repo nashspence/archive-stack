@@ -5,7 +5,7 @@ import os
 import shutil
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -21,7 +21,7 @@ from riverhog_api_client.downloads import (
 )
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
-from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from riverhog_protocol.paths import normalize_collection_id, normalize_relpath
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 from riverhog_provenance import list_provenance_observers, resolve_provenance_observer
 from state_schema import StateSchemaError
@@ -51,7 +51,6 @@ LOCAL_LIST_SORT_FIELDS = {
     "files": "files",
     "status": "status",
 }
-PROJECTION_NAME_BYTES_MAX = 240
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
 RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS = 60 * 60
 
@@ -209,12 +208,6 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
-        "tag_count": int(
-            db.execute(
-                "SELECT COUNT(*) FROM desired_collection_tags WHERE collection_id = ?",
-                (collection_id,),
-            ).fetchone()[0]
-        ),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),
@@ -286,22 +279,6 @@ def _store_inventory_page(
     db.commit()
 
 
-def _replace_local_tags(
-    db: sqlite3.Connection,
-    collection_id: int,
-    tags: Iterator[dict[str, Any]],
-) -> None:
-    db.execute("DELETE FROM desired_collection_tags WHERE collection_id = ?", (collection_id,))
-    for item in tags:
-        tag = item.get("tag")
-        if not isinstance(tag, str) or normalize_tag(tag) != tag:
-            raise InvalidState("Riverhog returned an invalid collection tag")
-        db.execute(
-            "INSERT INTO desired_collection_tags (collection_id, tag) VALUES (?, ?)",
-            (collection_id, tag),
-        )
-
-
 def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: int) -> None:
     summary = api.get_collection(collection_id)
     if normalize_collection_id(summary["id"]) != collection_id:
@@ -355,37 +332,6 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
         int(summary["bytes"]),
     ):
         raise InvalidState("local collection inventory is incomplete")
-    page_token: str | None = None
-    authority: tuple[int, str, int] | None = None
-    tags: list[dict[str, Any]] = []
-    while True:
-        payload = api.get_collection_tags(
-            collection_id,
-            page_size=100,
-            page_token=page_token,
-        )
-        current = (
-            int(payload.get("metadata_revision") or 0),
-            str(payload.get("inventory_identity") or ""),
-            int(payload.get("tag_count") or 0),
-        )
-        if authority is None:
-            authority = current
-        elif authority != current:
-            raise InvalidState("collection tags changed during bounded traversal")
-        raw_tags = payload.get("tags")
-        if not isinstance(raw_tags, list):
-            raise InvalidState("Riverhog returned invalid collection tags")
-        tags.extend({"tag": str(tag)} for tag in raw_tags)
-        next_page_token = payload.get("next_page_token")
-        if next_page_token is None:
-            break
-        if not isinstance(next_page_token, str) or not next_page_token:
-            raise InvalidState("Riverhog returned an invalid collection-tag page token")
-        page_token = next_page_token
-    if authority is None or len(tags) != authority[2]:
-        raise InvalidState("collection tag traversal is incomplete")
-    _replace_local_tags(db, collection_id, iter(tags))
 
 
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
@@ -393,14 +339,6 @@ def _output_path(target: Path, collection_id: int, path: str) -> Path:
     if not output.is_relative_to(target):
         raise InvalidState("materialization path escapes RIVERHOG_LOCAL_ROOT")
     return output
-
-
-def _projection_name(
-    collection_id: int,
-    created_at: str,
-) -> str:
-    timestamp = parse_utc_timestamp(created_at).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}--{collection_id}"
 
 
 def _collection_is_materialized(
@@ -419,99 +357,6 @@ def _collection_is_materialized(
     if not paths:
         return collection_dir.is_dir()
     return all(_output_path(target, collection_id, path).is_file() for path in paths)
-
-
-def _expected_projection_links(
-    db: sqlite3.Connection,
-    target: Path,
-) -> dict[Path, str]:
-    expected: dict[Path, str] = {}
-    for row in db.execute(
-        """
-        SELECT collection_id, created_at
-        FROM desired_collections
-        WHERE inventory_complete = 1
-        ORDER BY collection_id
-        """
-    ):
-        collection_id = normalize_collection_id(row["collection_id"])
-        if not _collection_is_materialized(db, target, collection_id):
-            continue
-        normalized_tags = [
-            str(tag["tag"])
-            for tag in db.execute(
-                "SELECT tag FROM desired_collection_tags WHERE collection_id = ? ORDER BY tag",
-                (collection_id,),
-            )
-        ]
-        collection_dir = target / str(collection_id)
-        if not normalized_tags:
-            directory = target / "untagged"
-            link = directory / _projection_name(collection_id, str(row["created_at"]))
-            expected[link] = os.path.relpath(collection_dir, start=directory)
-            continue
-        for parent_tag in normalized_tags:
-            directory = target / "by-tag" / parent_tag
-            link = directory / _projection_name(
-                collection_id,
-                str(row["created_at"]),
-            )
-            expected[link] = os.path.relpath(collection_dir, start=directory)
-    return expected
-
-
-def _actual_projection_links(
-    target: Path,
-    *,
-    create_roots: bool,
-) -> dict[Path, str]:
-    actual: dict[Path, str] = {}
-    for root in (target / "by-tag", target / "untagged"):
-        if root.is_symlink():
-            raise InvalidState(f"local projection root must not be a symlink: {root}")
-        if root.exists() and not root.is_dir():
-            raise InvalidState(f"local projection root is not a directory: {root}")
-        if create_roots:
-            root.mkdir(parents=True, exist_ok=True)
-        if not root.exists():
-            continue
-        for current in sorted(root.rglob("*")):
-            if current.is_symlink():
-                actual[current] = os.readlink(current)
-            elif not current.is_dir():
-                raise InvalidState(f"local projection contains an unmanaged file: {current}")
-    return actual
-
-
-def _reconcile_projection(db: sqlite3.Connection, target: Path) -> None:
-    expected = _expected_projection_links(db, target)
-    actual = _actual_projection_links(target, create_roots=True)
-    for current, destination in actual.items():
-        if expected.get(current) != destination:
-            current.unlink()
-
-    for link, destination in sorted(expected.items()):
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() and os.readlink(link) == destination:
-            continue
-        if link.exists() or link.is_symlink():
-            raise InvalidState(f"local projection path is occupied: {link}")
-        link.symlink_to(destination, target_is_directory=True)
-
-    for root in (target / "by-tag", target / "untagged"):
-        for directory in sorted(
-            (
-                current
-                for current in root.rglob("*")
-                if current.is_dir() and not current.is_symlink()
-            ),
-            key=lambda current: len(current.parts),
-            reverse=True,
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
 
 
 def _sha256(path: Path) -> str:
@@ -779,7 +624,6 @@ def _sync(
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
-        _reconcile_projection(db, target)
         materialized_files = 0
         unavailable: set[tuple[int, str]] = set()
         last_retrieval_id: str | None = None
@@ -890,7 +734,6 @@ def _sync(
 
             materialized_files += _download_job(db, target, api, job)
             last_retrieval_id = str(job["id"])
-            _reconcile_projection(db, target)
             db.commit()
 
 
@@ -937,7 +780,6 @@ def remove_collection(
     with closing(_connect(target)) as db, ApiClient() as api:
         canceled = _cancel_active_retrievals(db, api)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
-        _reconcile_projection(db, target)
         db.commit()
     payload = {
         "status": "removed",
@@ -962,7 +804,7 @@ def list_collections(
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Search collection id, tag, or status"),
+        typer.Option("--query", "-q", help="Search collection id or status"),
     ] = None,
     ids: Annotated[
         bool,
@@ -1008,20 +850,12 @@ def list_collections(
         filters = ""
         params: list[object] = []
         if normalized_query:
-            filters = (
-                "WHERE CAST(collection_id AS TEXT) LIKE ? "
-                "OR EXISTS (SELECT 1 FROM desired_collection_tags AS t "
-                "           WHERE t.collection_id = local_collections.collection_id "
-                "             AND t.tag LIKE lower(?)) "
-                "OR status LIKE lower(?)"
-            )
+            filters = "WHERE CAST(collection_id AS TEXT) LIKE ? OR status LIKE lower(?)"
             pattern = f"%{normalized_query}%"
-            params.extend((pattern, pattern, pattern))
+            params.extend((pattern, pattern))
         base_query = f"""
                 WITH local_collections AS (
                 SELECT c.collection_id, c.created_at, c.remote_deleted,
-                       (SELECT COUNT(*) FROM desired_collection_tags AS t
-                        WHERE t.collection_id = c.collection_id) AS tag_count,
                        CASE c.remote_deleted
                            WHEN 1 THEN 'remote-deleted'
                            ELSE 'desired'
@@ -1092,7 +926,6 @@ def _local_collection_list_item(row: sqlite3.Row) -> dict[str, object]:
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
-        "tag_count": int(row["tag_count"]),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),
@@ -1177,16 +1010,6 @@ def audit(
                 record(f"missing: {row['collection_id']}/{row['path']}")
             elif not _matches(output, byte_count=row["bytes"], sha256=row["sha256"]):
                 record(f"mismatch: {row['collection_id']}/{row['path']}")
-        expected_links = _expected_projection_links(db, target)
-        actual_links = _actual_projection_links(target, create_roots=False)
-        for link in sorted(set(expected_links) | set(actual_links)):
-            relative = link.relative_to(target)
-            if link not in actual_links:
-                record(f"projection missing: {relative}")
-            elif link not in expected_links:
-                record(f"projection stale: {relative}")
-            elif actual_links[link] != expected_links[link]:
-                record(f"projection mismatch: {relative}")
     payload = {
         "status": "ok" if not problems else "issues",
         "problems": problems,
@@ -1231,7 +1054,6 @@ def evict(
         if collection_dir.exists():
             shutil.rmtree(collection_dir)
         db.execute("DELETE FROM desired_collections WHERE collection_id = ?", (normalized,))
-        _reconcile_projection(db, target)
         db.commit()
     payload = {
         "status": "evicted",

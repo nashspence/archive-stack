@@ -84,8 +84,6 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
             "upload",
             "start",
             str(root),
-            "--tag",
-            "my-trip",
             "--idempotency-key",
             "test-upload",
             "--archive-store",
@@ -98,7 +96,6 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["collection_id"] is None
-    assert payload["tags"] == ["my-trip"]
     assert payload["archive_store"] == "b2"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
     human = RUNNER.invoke(
@@ -108,8 +105,6 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
             "upload",
             "start",
             str(root),
-            "--tag",
-            "my-trip",
             "--idempotency-key",
             "test-upload",
             "--archive-store",
@@ -275,11 +270,9 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
         def create_or_resume_collection_upload_session(
             self,
             idempotency_key: str,
-            tags: list[str],
             **_kwargs: object,
         ) -> dict[str, object]:
             assert idempotency_key == "test-upload"
-            assert tags == []
             return {
                 "collection_id": COLLECTION_ID,
                 "state": "open",
@@ -412,7 +405,6 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
     payload = riverhog_main._upload_collection_via_session(
         Api(),  # type: ignore[arg-type]
         "test-upload",
-        [],
         root,
         ingest_source=str(root),
         file_concurrency=1,
@@ -459,7 +451,6 @@ def test_upload_retry_returns_an_already_finalized_collection(
         riverhog_main._upload_collection_via_session(
             Api(),  # type: ignore[arg-type]
             "test-upload",
-            ["collection"],
             root,
             ingest_source=str(root),
             file_concurrency=2,
@@ -528,7 +519,6 @@ def test_collection_upload_control_commands_have_human_json_parity(
             "files_total": 2,
             "bytes_total": 10,
             "custody": {"state": "complete"},
-            "tags": ["my-trip"],
             "encryption_format": "age-v1-scrypt",
             "passphrase_id": "fixture-archive-key-v1",
             "created_at": "2026-08-13T00:00:00Z",

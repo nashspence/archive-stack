@@ -31,6 +31,7 @@ from state_schema import StateSchemaError
 from riverhog_api.auth import apply_openapi_permission_contract
 from riverhog_api.deps import ServiceContainer, default_container, get_container
 from riverhog_api.error_contracts import RIVERHOG_OPERATION_ERROR_CODES
+from riverhog_api.routers.access_groups import router as access_groups_router
 from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
 from riverhog_api.routers.collections import router as collections_router
@@ -40,7 +41,6 @@ from riverhog_api.routers.quotas import router as quotas_router
 from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
-from riverhog_api.routers.tags import router as tags_router
 from riverhog_api.routers.workflows import router as workflows_router
 from riverhog_api.schemas.common import ErrorResponse, HealthResponse
 
@@ -124,15 +124,6 @@ def _process_archive_maintenance(
         progressed += requeued_copies
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
-        requeued_metadata = (
-            container.archive_maintenance.requeue_interrupted_metadata_publications_for_startup()
-        )
-        progressed += requeued_metadata
-        if requeued_metadata:
-            _LOG.info(
-                "startup requeued interrupted metadata-manifest publications: count=%s",
-                requeued_metadata,
-            )
         requeued_verifications = (
             container.provenance.requeue_interrupted_verifications_for_startup()
         )
@@ -169,7 +160,6 @@ def _process_archive_maintenance(
     progressed += container.collection_deletions.process_due(limit=1)
     progressed += container.retrieval.process_cache_accounting_reconciliation(limit=100)
     progressed += container.archive_copies.process_due(limit=1)
-    progressed += container.archive_maintenance.process_due_metadata_publications(limit=10)
     progressed += container.provenance.process_due_verifications(limit=1)
     progressed += container.lifecycle_events.reap_expired_contexts()
     return progressed > 0
@@ -418,7 +408,7 @@ def create_app(
     app.include_router(collections_router, prefix="/v1")
     app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")
-    app.include_router(tags_router, prefix="/v1")
+    app.include_router(access_groups_router, prefix="/v1")
     app.include_router(archive_router, prefix="/v1")
     app.include_router(apps_router, prefix="/v1")
     app.include_router(quotas_router, prefix="/v1")

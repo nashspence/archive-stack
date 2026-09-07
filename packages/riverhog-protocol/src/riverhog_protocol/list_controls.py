@@ -30,7 +30,10 @@ type ArchiveStoreSort = Literal[
 type ApplicationSort = Literal["name", "keys", "active_keys", "last_used_at"]
 type ApplicationKeySort = Literal["id", "created_at", "expires_at", "last_used_at"]
 type ApplicationAccessSort = Literal["app", "key_id", "permission", "resource", "created_at"]
-type TagSort = Literal["id", "created_at", "collections"]
+type CollectionAccessGroupStatus = Literal["active", "disabled"]
+type CollectionAccessGroupSort = Literal[
+    "id", "display_label", "created_at", "updated_at", "status", "collections"
+]
 type DownloadQuotaSort = Literal[
     "app",
     "key_id",
@@ -66,6 +69,8 @@ __all__ = [
     "ArchiveStoreSort",
     "ClaimState",
     "CollectionSort",
+    "CollectionAccessGroupSort",
+    "CollectionAccessGroupStatus",
     "CollectionUploadSort",
     "CollectionUploadState",
     "DownloadQuotaSort",
@@ -77,5 +82,4 @@ __all__ = [
     "RetrievalCacheState",
     "SearchSort",
     "SortOrder",
-    "TagSort",
 ]

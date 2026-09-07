@@ -169,7 +169,6 @@ class DerivedCollectionWriter:
             adapter_id="riverhog-derived-collection/v1",
             adapter_version=self.producer_version,
             ingest_source=f"transform:{self.execution_id}",
-            tags=(),
             source_event_id=self.execution_id,
             source_context={
                 **dict(source_context or {}),
@@ -259,7 +258,6 @@ class IncrementalDerivedCollectionWriter:
             adapter_id="riverhog-derived-collection/v1",
             adapter_version=producer_version,
             ingest_source=f"transform:{self.execution_id}",
-            tags=(),
             source_event_id=self.execution_id,
             source_context={
                 **dict(source_context or {}),

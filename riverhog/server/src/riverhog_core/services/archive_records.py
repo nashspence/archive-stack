@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import func, literal, select, union_all
+from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
-    CollectionMetadataPublicationRecord,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
@@ -41,25 +40,7 @@ def archive_copy_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiv
 
 
 def archive_copy_owned_identity(copy: CollectionArchiveCopyRecord) -> CollectionArchiveIdentity:
-    immutable = archive_copy_identity(copy)
-    publication = copy.metadata_publication
-    if publication is None or publication.object_path is None:
-        return immutable
-    return CollectionArchiveIdentity(
-        objects=(
-            *immutable.objects,
-            ArchiveObjectIdentity(
-                object_id="metadata",
-                kind="metadata",
-                object_path=publication.object_path,
-                plaintext_bytes=0,
-                stored_bytes=publication.stored_bytes or 0,
-                sha256=publication.stored_sha256 or "0" * 64,
-                stored_sha256=publication.stored_sha256 or "0" * 64,
-                revision=publication.revision,
-            ),
-        )
-    )
+    return archive_copy_identity(copy)
 
 
 ArchiveCopyAggregate = tuple[int, int]
@@ -76,13 +57,7 @@ def archive_copy_aggregates(
         literal(1).label("object_count"),
         CollectionArchiveObjectRecord.stored_bytes.label("stored_bytes"),
     )
-    metadata_rows = select(
-        CollectionMetadataPublicationRecord.collection_id.label("collection_id"),
-        CollectionMetadataPublicationRecord.store.label("store"),
-        literal(1).label("object_count"),
-        func.coalesce(CollectionMetadataPublicationRecord.stored_bytes, 0).label("stored_bytes"),
-    ).where(CollectionMetadataPublicationRecord.object_path.is_not(None))
-    combined = union_all(object_rows, metadata_rows).subquery()
+    combined = object_rows.subquery()
     stmt = (
         select(
             combined.c.collection_id,

@@ -19,7 +19,6 @@ from riverhog_protocol.errors import (
     ServiceUnavailable,
     Unauthorized,
 )
-from riverhog_protocol.paths import tag_set_identity
 
 UPLOAD_REGISTRATION_CONSTRAINTS = {
     "pack_member_bytes": 1024,
@@ -213,7 +212,6 @@ def test_collection_upload_custody_transfer_and_operator_controls_use_exact_rout
 
     client.create_or_resume_collection_upload_session(
         "execution-1",
-        ("derived",),
         provenance_mode="omitted",
         provenance_omission_reason="fixture",
         custody_mode="custody-transfer",
@@ -229,8 +227,6 @@ def test_collection_upload_custody_transfer_and_operator_controls_use_exact_rout
             {
                 "json": {
                     "idempotency_key": "execution-1",
-                    "tag_set_identity": tag_set_identity(("derived",)),
-                    "initial_tag": "derived",
                     "provenance_mode": "omitted",
                     "custody_mode": "custody-transfer",
                     "provenance_omission_reason": "fixture",
@@ -255,7 +251,6 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
     client.create_or_resume_collection_upload_session(
         "upload-one",
-        [],
         archive_store="b2",
         provenance_mode="omitted",
         provenance_omission_reason="fixture source has no provenance",
@@ -283,7 +278,6 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
-        "tag_set_identity": tag_set_identity(()),
         "archive_store": "b2",
         "provenance_mode": "omitted",
         "provenance_omission_reason": "fixture source has no provenance",
@@ -356,13 +350,12 @@ def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(
             "upload-one",
-            [],
             provenance_mode="captured",
             provenance_omission_reason="not omitted",
         )
 
     with pytest.raises(BadRequest):
-        client.create_or_resume_collection_upload_session(" padded ", [])
+        client.create_or_resume_collection_upload_session(" padded ")
     with pytest.raises(BadRequest):
         client.register_collection_upload_session_files(
             1,
@@ -382,13 +375,11 @@ def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(
             "upload-one",
-            [],
             provenance_mode="omitted",
         )
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(
             "upload-one",
-            [],
             provenance_mode="obsolete",  # type: ignore[arg-type]
         )
 
@@ -559,7 +550,6 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
     client.retrieval_cache_status()
     client.list_retrieval_cache_objects(
         q="pack",
-        tag="docs",
         collection_id=42,
         source_store="deep",
         cache_store="local",
@@ -583,7 +573,6 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
                     "sort": "stored_bytes",
                     "order": "asc",
                     "q": "pack",
-                    "tag": "docs",
                     "collection_id": 42,
                     "source_store": "deep",
                     "cache_store": "local",
@@ -729,13 +718,14 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
 
 def test_client_manages_application_keys_with_explicit_access() -> None:
     client = RecordingClient()
+    group_resource = f"group:{'a' * 64}"
 
     client.list_apps(q="local", active=True)
     client.create_app_key(
         "local",
         access=[
-            {"permission": "catalog:read", "resource": "tag:photos"},
-            {"permission": "retrieval:manage", "resource": "tag:photos"},
+            {"permission": "catalog:read", "resource": group_resource},
+            {"permission": "retrieval:manage", "resource": group_resource},
         ],
         expires_in_seconds=3600,
     )
@@ -762,8 +752,8 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
             {
                 "json": {
                     "access": [
-                        {"permission": "catalog:read", "resource": "tag:photos"},
-                        {"permission": "retrieval:manage", "resource": "tag:photos"},
+                        {"permission": "catalog:read", "resource": group_resource},
+                        {"permission": "retrieval:manage", "resource": group_resource},
                     ],
                     "expires_in_seconds": 3600,
                 }
@@ -789,17 +779,24 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
     ]
 
 
-def test_client_manages_explicit_tags() -> None:
+def test_client_manages_collection_access_groups() -> None:
     client = RecordingClient()
-    client.create_tag("photos")
-    client.get_tag("photos")
-    client.list_tags(q="photo")
+    group_id = "a" * 64
+    client.create_collection_access_group(idempotency_key="photos", display_label="Photos")
+    client.get_collection_access_group(group_id)
+    client.list_collection_access_groups(q="photo")
+    client.add_collection_access_group_member(group_id, 42)
+    client.remove_collection_access_group_member(group_id, 42)
     assert client.calls == [
-        ("POST", "/v1/tags", {"json": {"id": "photos"}}),
-        ("GET", "/v1/tags/photos", {}),
+        (
+            "POST",
+            "/v1/collection-access-groups",
+            {"json": {"idempotency_key": "photos", "display_label": "Photos"}},
+        ),
+        ("GET", f"/v1/collection-access-groups/{group_id}", {}),
         (
             "GET",
-            "/v1/tags",
+            "/v1/collection-access-groups",
             {
                 "params": {
                     "page_size": 25,
@@ -809,6 +806,8 @@ def test_client_manages_explicit_tags() -> None:
                 }
             },
         ),
+        ("PUT", f"/v1/collection-access-groups/{group_id}/collections/42", {}),
+        ("DELETE", f"/v1/collection-access-groups/{group_id}/collections/42", {}),
     ]
 
 

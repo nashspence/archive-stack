@@ -23,7 +23,6 @@ from riverhog_protocol import (
     SortOrder,
 )
 from riverhog_protocol.errors import BadRequest, InvalidRange, PreconditionFailed
-from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
 from riverhog_api.browse import (
@@ -74,7 +73,6 @@ def list_retrieval_cache_objects(
     page_size: int = Query(25, ge=1, le=100),
     page_token: BrowsePageTokenQuery = None,
     q: BrowseQueryParameter = None,
-    tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
     source_store: Annotated[ArchiveStoreName | None, Query()] = None,
     cache_store: Annotated[RetrievalCacheStoreName | None, Query()] = None,
@@ -87,7 +85,6 @@ def list_retrieval_cache_objects(
 ) -> RetrievalCacheObjectListOut:
     selectors = canonical_selectors(
         q=q,
-        tag=tag,
         collection_id=collection_id,
         source_store=source_store,
         cache_store=cache_store,
@@ -111,7 +108,6 @@ def list_retrieval_cache_objects(
                 page_size=page_size,
                 position=position,
                 q=q,
-                tag=tag,
                 collection_id=collection_id,
                 source_store=source_store,
                 cache_store=cache_store,
