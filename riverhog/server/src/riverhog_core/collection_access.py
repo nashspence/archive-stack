@@ -118,9 +118,13 @@ def collection_access_filter(
     column: ColumnElement[int] | InstrumentedAttribute[int],
     principal: ApplicationPrincipal | None,
     permission: str,
+    *,
+    published_filter: ColumnElement[bool] | None = None,
 ) -> ColumnElement[bool]:
-    published = column.in_(
-        select(CollectionRecord.id).where(CollectionRecord.is_published.is_(True))
+    published = (
+        published_filter
+        if published_filter is not None
+        else column.in_(select(CollectionRecord.id).where(CollectionRecord.is_published.is_(True)))
     )
     if principal is None:
         return published

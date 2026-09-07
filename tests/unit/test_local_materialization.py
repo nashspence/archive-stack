@@ -9,6 +9,11 @@ from typing import Any
 
 from riverhog_cli import local as local_materialization
 from riverhog_protocol import (
+    CatalogSyncChangePage,
+    CatalogSyncCheckpoint,
+    CatalogSyncCollectionPage,
+    CatalogSyncDelete,
+    CatalogSyncDescriptor,
     ImmutableFileIdentityDocument,
     PortableCollectionFile,
     PortableCollectionHeader,
@@ -82,6 +87,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
     assert imports == {
         ("riverhog_api_client.client", "ApiClient"),
         ("riverhog_api_client.client", "RestorePolicy"),
+        ("riverhog_api_client.catalog_sync", "CatalogReplica"),
         ("riverhog_api_client.downloads", "RetrievalDownload"),
         ("riverhog_api_client.downloads", "configured_download_concurrency"),
         ("riverhog_api_client.downloads", "configured_download_window"),
@@ -144,7 +150,6 @@ class FakeApi:
         self.job_state = "ready"
         self.selection = [(COLLECTION_ID, "notes/one.txt")]
         self.restore_paths: set[str] = set()
-        self.catalog_revision = 0
 
     def __enter__(self) -> FakeApi:
         return self
@@ -187,30 +192,52 @@ class FakeApi:
             "bytes": sum(file.bytes for file in files),
         }
 
-    def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
-        if self.deleted and after < self.catalog_revision + 1:
-            return {
-                "cursor": self.catalog_revision + 1,
-                "changes": [
-                    {
-                        "collection_id": COLLECTION_ID,
-                        "change": "deleted",
-                        "etag": hashlib.sha256(b"deleted").hexdigest(),
-                    }
-                ],
-            }
-        if after < self.catalog_revision:
-            return {
-                "cursor": self.catalog_revision,
-                "changes": [
-                    {
-                        "collection_id": COLLECTION_ID,
-                        "change": "updated",
-                        "etag": hashlib.sha256(b"updated").hexdigest(),
-                    }
-                ],
-            }
-        return {"cursor": after, "changes": []}
+    def create_catalog_sync_checkpoint(self) -> CatalogSyncCheckpoint:
+        return CatalogSyncCheckpoint(
+            source_identity="c" * 64,
+            authorization_view_identity="d" * 64,
+            catalog_cursor="catalog-1",
+        )
+
+    def list_catalog_sync_collections(
+        self, cursor: str, *, limit: int = 100
+    ) -> CatalogSyncCollectionPage:
+        assert cursor == "catalog-1"
+        assert limit == 100
+        return CatalogSyncCollectionPage(
+            source_identity="c" * 64,
+            authorization_view_identity="d" * 64,
+            collections=[
+                CatalogSyncDescriptor(
+                    collection_id=COLLECTION_ID,
+                    archive_root_sha256="e" * 64,
+                    content_identity=str(MANIFEST["content_identity"]),
+                    revision="1",
+                )
+            ],
+            changes_cursor="changes-1",
+        )
+
+    def list_catalog_sync_changes(self, cursor: str, *, limit: int = 100) -> CatalogSyncChangePage:
+        assert limit == 100
+        if self.deleted:
+            return CatalogSyncChangePage(
+                source_identity="c" * 64,
+                authorization_view_identity="d" * 64,
+                changes=[CatalogSyncDelete(collection_id=COLLECTION_ID, revision="2")],
+                next_cursor="follow-2",
+                caught_up=True,
+                through_revision="2",
+            )
+        assert cursor in {"changes-1", "follow-1"}
+        return CatalogSyncChangePage(
+            source_identity="c" * 64,
+            authorization_view_identity="d" * 64,
+            changes=[],
+            next_cursor="follow-1",
+            caught_up=True,
+            through_revision="1",
+        )
 
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)

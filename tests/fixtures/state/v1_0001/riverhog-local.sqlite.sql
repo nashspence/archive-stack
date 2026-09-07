@@ -4,7 +4,7 @@ CREATE TABLE settings (
     key TEXT NOT NULL PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT INTO settings VALUES('catalog_cursor', '19');
+INSERT INTO settings VALUES('catalog_reconcile_after', '1');
 CREATE TABLE desired_collections (
     collection_id INTEGER NOT NULL PRIMARY KEY,
     inventory_identity TEXT NOT NULL,

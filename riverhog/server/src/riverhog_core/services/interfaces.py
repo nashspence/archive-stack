@@ -5,6 +5,9 @@ from datetime import timedelta
 from typing import Protocol
 
 from riverhog_protocol import (
+    CatalogSyncChangePage,
+    CatalogSyncCheckpoint,
+    CatalogSyncCollectionPage,
     CollectionAccessGroupStatus,
     PortableCollectionFile,
     PortableCollectionHeader,
@@ -263,6 +266,25 @@ class CollectionDeletionService(Protocol):
     def process_due(self, *, limit: int = 10) -> int: ...
 
 
+class CatalogSyncService(Protocol):
+    def checkpoint(self, *, principal: ApplicationPrincipal) -> CatalogSyncCheckpoint: ...
+    def collections(
+        self,
+        *,
+        cursor: str,
+        limit: int,
+        principal: ApplicationPrincipal,
+    ) -> CatalogSyncCollectionPage: ...
+    def changes(
+        self,
+        *,
+        cursor: str,
+        limit: int,
+        principal: ApplicationPrincipal,
+    ) -> CatalogSyncChangePage: ...
+    def reap_expired_history(self, *, limit: int | None = None) -> int: ...
+
+
 class RetrievalService(Protocol):
     def request_cache_accounting_reconciliation_for_startup(self) -> int: ...
     def process_cache_accounting_reconciliation(self, *, limit: int = 100) -> int: ...
@@ -288,26 +310,6 @@ class RetrievalService(Protocol):
         expected_identity: str | None,
         principal: ApplicationPrincipal | None = None,
     ) -> PortableCollectionInventoryPage: ...
-    def resource_list_page(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        principal: ApplicationPrincipal | None = None,
-    ) -> JsonObject: ...
-    def resource_list_pages(
-        self,
-        *,
-        per_page: int,
-        principal: ApplicationPrincipal | None = None,
-    ) -> int: ...
-    def change_list(
-        self,
-        *,
-        after: int = 0,
-        limit: int = 1000,
-        principal: ApplicationPrincipal | None = None,
-    ) -> JsonObject: ...
     def cache_status(
         self,
         *,

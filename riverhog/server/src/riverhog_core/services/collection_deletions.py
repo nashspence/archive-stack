@@ -20,6 +20,7 @@ from riverhog_core.catalog_base import Base
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
+    publish_catalog_event,
     snapshot_catalog_event_collection_access_groups,
 )
 from riverhog_core.catalog_models import (
@@ -383,7 +384,6 @@ class SqlAlchemyCollectionDeletionService:
                     collection_id=collection_id,
                     occurred_at=active.started_at,
                     inventory_identity=str(plan["inventory_identity"]),
-                    published=False,
                 )
                 snapshot_catalog_event_collection_access_groups(
                     session,
@@ -657,7 +657,7 @@ class SqlAlchemyCollectionDeletionService:
                 event = session.get(CatalogEventRecord, _catalog_event_sequence(plan))
                 if event is None or event.published:
                     raise RuntimeError("collection deletion catalog event is unavailable")
-                event.published = True
+                publish_catalog_event(session, event=event)
                 session.delete(collection)
             session.delete(active)
         return _deletion_result(plan, status="deleted")

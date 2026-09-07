@@ -50,10 +50,8 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.artifact_access import require_artifact_scope
 from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
-    CatalogEventRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
@@ -355,111 +353,6 @@ class SqlAlchemyRetrievalService:
             next_cursor=next_cursor,
             complete=not has_more,
         )
-
-    def resource_list_page(
-        self,
-        *,
-        page: int,
-        per_page: int,
-        principal: ApplicationPrincipal | None = None,
-    ) -> dict[str, object]:
-        if page < 1:
-            raise BadRequest("resource-list page must be positive")
-        if per_page < 1 or per_page > 10_000:
-            raise BadRequest("resource-list page size must be between 1 and 10000")
-        visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
-        with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
-                or 0
-            )
-            rows = session.execute(
-                select(CollectionRecord.id, CollectionRecord.inventory_identity)
-                .where(visible)
-                .order_by(CollectionRecord.id)
-                .offset((page - 1) * per_page)
-                .limit(per_page)
-            ).all()
-            return {
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page if total else 0,
-                "resources": [
-                    {"collection_id": row.id, "etag": str(row.inventory_identity)} for row in rows
-                ],
-            }
-
-    def resource_list_pages(
-        self,
-        *,
-        per_page: int,
-        principal: ApplicationPrincipal | None = None,
-    ) -> int:
-        if per_page < 1 or per_page > 10_000:
-            raise BadRequest("resource-list page size must be between 1 and 10000")
-        visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
-        with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
-                or 0
-            )
-        return (total + per_page - 1) // per_page if total else 0
-
-    def change_list(
-        self,
-        *,
-        after: int = 0,
-        limit: int = 1000,
-        principal: ApplicationPrincipal | None = None,
-    ) -> dict[str, object]:
-        if after < 0:
-            raise BadRequest("catalog cursor must be non-negative")
-        if limit < 1 or limit > 10_000:
-            raise BadRequest("catalog change limit must be between 1 and 10000")
-        with read_snapshot(self._session_factory) as session:
-            scanned = list(
-                session.execute(
-                    select(CatalogEventRecord.sequence, CatalogEventRecord.published)
-                    .where(CatalogEventRecord.sequence > after)
-                    .order_by(CatalogEventRecord.sequence)
-                    .limit(limit + 1)
-                )
-            )
-            published_prefix: list[int] = []
-            for sequence, published in scanned:
-                if not published:
-                    break
-                published_prefix.append(int(sequence))
-            page_sequences = published_prefix[:limit]
-            has_more = len(scanned) > len(page_sequences)
-            cursor = int(page_sequences[-1]) if page_sequences else after
-            if not page_sequences:
-                return {"cursor": cursor, "has_more": has_more, "changes": []}
-            visibility, projected_change = catalog_event_projection(principal, CATALOG_READ)
-            rows = session.execute(
-                select(CatalogEventRecord, projected_change.label("projected_change"))
-                .where(
-                    CatalogEventRecord.sequence.in_(page_sequences),
-                    CatalogEventRecord.published.is_(True),
-                    visibility,
-                )
-                .order_by(CatalogEventRecord.sequence)
-            ).all()
-            return {
-                "cursor": cursor,
-                "has_more": has_more,
-                "changes": [
-                    {
-                        "sequence": event.sequence,
-                        "change": projected,
-                        "collection_id": event.collection_id,
-                        "occurred_at": event.occurred_at,
-                        "etag": event.inventory_identity,
-                    }
-                    for event, projected in rows
-                ],
-            }
 
     def cache_status(
         self,

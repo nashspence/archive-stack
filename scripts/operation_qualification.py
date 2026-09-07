@@ -656,10 +656,6 @@ def operation_matrix() -> tuple[Operation, ...]:
                 classification = "standard-tool/protocol"
             elif path.startswith("/internal/"):
                 classification = "service-internal"
-            elif surface.name == "riverhog" and path.startswith(
-                ("/.well-known/resourcesync", "/resourcesync/")
-            ):
-                classification = "standard-tool/protocol"
             elif path.startswith("/v1") and operation_commands:
                 classification = "human-cli+json"
             else:

@@ -17,6 +17,8 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.browse import keyset_statement
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
+from riverhog_core.catalog_models import CollectionRecord
+from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.services.access_groups import _group_list_statement
 from riverhog_core.services.app_keys import (
     _access_list_statement,
@@ -24,6 +26,10 @@ from riverhog_core.services.app_keys import (
     _key_list_statement,
 )
 from riverhog_core.services.archive_copies import _archive_copy_list_statement
+from riverhog_core.services.catalog_sync import (
+    _catalog_change_revision_statement,
+    _catalog_collection_page_statement,
+)
 from riverhog_core.services.collection_uploads import _upload_list_statement
 from riverhog_core.services.collection_workflows import _claim_list_statement
 from riverhog_core.services.collections import _collection_list_statement
@@ -192,7 +198,8 @@ _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "list_lifecycle_events"): {"after", "limit"},
     ("riverhog", "list_retrieval_plan_files"): {"page_size", "start_ordinal"},
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
-    ("riverhog", "resourcesync_change_list"): {"after"},
+    ("riverhog", "list_catalog_sync_changes"): {"cursor", "limit"},
+    ("riverhog", "list_catalog_sync_collections"): {"cursor", "limit"},
     ("riverhog", "trace_collection_file_provenance"): {"page_size", "page_token"},
     ("stove0", "get_artifact_selection"): {"continuation"},
     ("stove0", "get_recipe"): {"revision"},
@@ -278,17 +285,30 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 id, creation_idempotency_key, creation_identity_sha256,
                 creation_custody_mode, content_identity, encryption_format,
                 passphrase_id, provenance_mode, provenance_identity, inventory_identity,
-                archive_generation, ingest_source,
+                archive_generation, archive_root_sha256, catalog_revision, ingest_source,
                 created_by_app, created_at, file_count, file_bytes
             )
             SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha},
                    CASE WHEN g = {rows} THEN 'age-v1-scrypt' ELSE 'age-v1-other' END,
                    CASE WHEN g = {rows} THEN 'qualification-key-v1'
                         ELSE 'qualification-key-v2' END,
-                   'omitted', NULL, {sha}, {sha},
+                   'omitted', NULL, {sha}, {sha}, {sha}, g,
                    'fixture-' || lpad(g::text, 6, '0'), 'qualification', {timestamp},
                    1, g
             FROM generate_series(1, {rows}) AS g
+            """,
+            f"""
+            INSERT INTO catalog_events (
+                revision, change, collection_id, occurred_at, inventory_identity,
+                archive_root_sha256, content_identity, committed_at, published
+            )
+            SELECT g, 'created', g, {timestamp}, {sha}, {sha}, {sha}, {timestamp}, true
+            FROM generate_series(1, {rows}) AS g
+            """,
+            f"""
+            UPDATE catalog_sync_state
+            SET committed_revision = {rows}
+            WHERE singleton = 1
             """,
             f"""
             INSERT INTO collection_files (
@@ -1423,6 +1443,36 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     )
 
 
+def _catalog_sync_plan_cases() -> tuple[_PlanCase, ...]:
+    visible = collection_access_filter(
+        CollectionRecord.id,
+        _READER,
+        CATALOG_READ,
+        published_filter=CollectionRecord.is_published.is_(True),
+    )
+    return (
+        _PlanCase(
+            "catalog-sync.collections",
+            _catalog_collection_page_statement(
+                visible=visible,
+                after=_ROWS // 2,
+                upper=_ROWS,
+                limit=100,
+            ),
+            frozenset({"collections_pkey"}),
+        ),
+        _PlanCase(
+            "catalog-sync.changes",
+            _catalog_change_revision_statement(
+                after=_ROWS // 2,
+                through=_ROWS,
+                limit=100,
+            ),
+            frozenset({"catalog_events_revision_key", "ix_catalog_events_revision"}),
+        ),
+    )
+
+
 def _index_names(plan: object) -> set[str]:
     names: set[str] = set()
     if isinstance(plan, dict):
@@ -1560,7 +1610,11 @@ def test_every_repo_query_selector_is_classified_and_every_database_selector_is_
     assert case_ids == expected_case_ids
 
 
-@pytest.mark.parametrize("case", _plan_cases(), ids=lambda case: case.id)
+@pytest.mark.parametrize(
+    "case",
+    (*_plan_cases(), *_catalog_sync_plan_cases()),
+    ids=lambda case: case.id,
+)
 def test_every_public_database_selector_has_its_declared_postgres_operator(
     qualified_engines: _QualifiedEngines,
     case: _PlanCase,

@@ -6,6 +6,23 @@ from collections.abc import Mapping
 # validation, and internal-error contract. Operation IDs are the stable join
 # between FastAPI routes and their generated OpenAPI operations.
 RIVERHOG_OPERATION_ERROR_CODES: Mapping[str, frozenset[str]] = {
+    "create_catalog_sync_checkpoint": frozenset(),
+    "list_catalog_sync_collections": frozenset(
+        {
+            "catalog_sync_cursor_expired",
+            "catalog_sync_history_expired",
+            "catalog_sync_source_changed",
+            "catalog_sync_view_changed",
+        }
+    ),
+    "list_catalog_sync_changes": frozenset(
+        {
+            "catalog_sync_cursor_expired",
+            "catalog_sync_history_expired",
+            "catalog_sync_source_changed",
+            "catalog_sync_view_changed",
+        }
+    ),
     "create_or_resume_collection_upload_session": frozenset({"conflict"}),
     "register_collection_upload_session_files": frozenset({"conflict", "not_found"}),
     "create_collection_upload_session_provenance_journal": frozenset({"conflict", "not_found"}),

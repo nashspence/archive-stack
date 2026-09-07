@@ -4816,6 +4816,162 @@
             "name": "archive",
             "parameters": []
           },
+          "catalog-sync": {
+            "commands": {
+              "changes": {
+                "name": "changes",
+                "parameters": [
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "cursor",
+                    "nargs": 1,
+                    "options": [
+                      "--cursor"
+                    ],
+                    "required": true,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": 100,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "limit",
+                    "nargs": 1,
+                    "options": [
+                      "--limit"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.IntRange",
+                      "maximum": 100,
+                      "minimum": 1,
+                      "name": "integer range"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": false,
+                    "envvar": null,
+                    "is_flag": true,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "json_mode",
+                    "nargs": 1,
+                    "options": [
+                      "--json"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.BoolParamType",
+                      "name": "boolean"
+                    }
+                  }
+                ]
+              },
+              "checkpoint": {
+                "name": "checkpoint",
+                "parameters": [
+                  {
+                    "count": false,
+                    "default": false,
+                    "envvar": null,
+                    "is_flag": true,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "json_mode",
+                    "nargs": 1,
+                    "options": [
+                      "--json"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.BoolParamType",
+                      "name": "boolean"
+                    }
+                  }
+                ]
+              },
+              "collections": {
+                "name": "collections",
+                "parameters": [
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "cursor",
+                    "nargs": 1,
+                    "options": [
+                      "--cursor"
+                    ],
+                    "required": true,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": 100,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "limit",
+                    "nargs": 1,
+                    "options": [
+                      "--limit"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.IntRange",
+                      "maximum": 100,
+                      "minimum": 1,
+                      "name": "integer range"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": false,
+                    "envvar": null,
+                    "is_flag": true,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "json_mode",
+                    "nargs": 1,
+                    "options": [
+                      "--json"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.BoolParamType",
+                      "name": "boolean"
+                    }
+                  }
+                ]
+              }
+            },
+            "name": "catalog-sync",
+            "parameters": []
+          },
           "collection": {
             "commands": {
               "access-group": {
@@ -10565,6 +10721,36 @@
       },
       {
         "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION"
+      },
+      {
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX"
+      },
+      {
+        "consumers": [
           "riverhog-client"
         ],
         "name": "RIVERHOG_CLI_PLAIN"
@@ -11152,7 +11338,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "7c2050b8dd81d80735ca9afea56e4755de05b6857f950459a3391bd68f2fbc1f"
+            "e79ed5e11d23e9b5c4e88d22225cf392cd7f4acce9754702c3c81ba10bccf493"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11161,7 +11347,7 @@
         {
           "distribution": "riverhog-client",
           "fixture_sha256s": [
-            "268bf023de53a19a4b159b0b3267835ef87879f635a18968788bfd32d5076f37"
+            "1e6bc4011ee6199927ebb4fea2c4c3ad7643ecd7fb33ae08fdc8826bfc6fc462"
           ],
           "format": "state-schema/sqlite",
           "head": "v1_0001",
@@ -11230,8 +11416,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1794,
-        "discovered": 1794,
+        "classified": 1831,
+        "discovered": 1831,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11266,13 +11452,13 @@
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json": 7,
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json": 2,
           "mango-fish": 2,
-          "riverhog": 724,
+          "riverhog": 758,
           "riverhog-api-client": 7,
           "riverhog-client": 3,
           "riverhog-ftp-adapter": 20,
           "riverhog-ftp-adapter-api-client": 1,
           "riverhog-recover": 1,
-          "riverhog-server": 31,
+          "riverhog-server": 34,
           "riverhog-storage-adapter-protocol": 61,
           "stove0": 361,
           "stove0-api-client": 1,
@@ -11286,11 +11472,11 @@
           "stove0-target-support": 1
         },
         "policies": {
-          "contract_max": 369,
+          "contract_max": 383,
           "extension_owned": 55,
-          "fixed": 827,
-          "operational_policy": 468,
-          "segmented_no_total_max": 75
+          "fixed": 844,
+          "operational_policy": 471,
+          "segmented_no_total_max": 78
         },
         "stale": 0,
         "undecided": 0
@@ -14191,6 +14377,141 @@
             "field": "nargs"
           },
           "source_pointer": "/external_contract/cli/riverhog/commands/archive/commands/store/commands/show/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:changes:parameter:cursor:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/changes/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:changes:parameter:json_mode:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/changes/parameters/2",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "value",
+          "id": "cli:riverhog:riverhog:catalog-sync:changes:parameter:limit:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "type.maximum"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/changes/parameters/1",
+          "unit": "cli-value"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:changes:parameter:limit:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/changes/parameters/1",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:checkpoint:parameter:json_mode:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/checkpoint/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:collections:parameter:cursor:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/collections/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:collections:parameter:json_mode:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/collections/parameters/2",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "value",
+          "id": "cli:riverhog:riverhog:catalog-sync:collections:parameter:limit:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "type.maximum"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/collections/parameters/1",
+          "unit": "cli-value"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:riverhog:riverhog:catalog-sync:collections:parameter:limit:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/riverhog/commands/catalog-sync/commands/collections/parameters/1",
           "unit": "values-per-occurrence"
         },
         {
@@ -17518,6 +17839,42 @@
           "unit": "configured-value"
         },
         {
+          "configuration": "RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE",
+          "dimension": "value",
+          "id": "configuration-environment:RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE:value",
+          "maximum": null,
+          "owner": "riverhog-server",
+          "policy": "operational_policy",
+          "reason": "operator-configured-capacity",
+          "rule": "configured-capacity/v1",
+          "source_pointer": "/external_contract/configuration_environment/24",
+          "unit": "configured-value"
+        },
+        {
+          "configuration": "RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION",
+          "dimension": "value",
+          "id": "configuration-environment:RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION:value",
+          "maximum": null,
+          "owner": "riverhog-server",
+          "policy": "operational_policy",
+          "reason": "operator-configured-capacity",
+          "rule": "configured-capacity/v1",
+          "source_pointer": "/external_contract/configuration_environment/25",
+          "unit": "configured-value"
+        },
+        {
+          "configuration": "RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX",
+          "dimension": "value",
+          "id": "configuration-environment:RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX:value",
+          "maximum": null,
+          "owner": "riverhog-server",
+          "policy": "operational_policy",
+          "reason": "operator-configured-capacity",
+          "rule": "configured-capacity/v1",
+          "source_pointer": "/external_contract/configuration_environment/26",
+          "unit": "configured-value"
+        },
+        {
           "configuration": "RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE",
           "dimension": "value",
           "id": "configuration-environment:RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE:value",
@@ -17526,7 +17883,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/23",
+          "source_pointer": "/external_contract/configuration_environment/28",
           "unit": "configured-value"
         },
         {
@@ -17538,7 +17895,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/25",
+          "source_pointer": "/external_contract/configuration_environment/30",
           "unit": "configured-value"
         },
         {
@@ -17550,7 +17907,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/26",
+          "source_pointer": "/external_contract/configuration_environment/31",
           "unit": "configured-value"
         },
         {
@@ -17562,7 +17919,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/27",
+          "source_pointer": "/external_contract/configuration_environment/32",
           "unit": "configured-value"
         },
         {
@@ -17574,7 +17931,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/28",
+          "source_pointer": "/external_contract/configuration_environment/33",
           "unit": "configured-value"
         },
         {
@@ -17586,7 +17943,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/29",
+          "source_pointer": "/external_contract/configuration_environment/34",
           "unit": "configured-value"
         },
         {
@@ -17598,7 +17955,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/35",
+          "source_pointer": "/external_contract/configuration_environment/40",
           "unit": "configured-value"
         },
         {
@@ -17610,7 +17967,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/39",
+          "source_pointer": "/external_contract/configuration_environment/44",
           "unit": "configured-value"
         },
         {
@@ -17622,7 +17979,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/40",
+          "source_pointer": "/external_contract/configuration_environment/45",
           "unit": "configured-value"
         },
         {
@@ -17634,7 +17991,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/41",
+          "source_pointer": "/external_contract/configuration_environment/46",
           "unit": "configured-value"
         },
         {
@@ -17646,7 +18003,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/46",
+          "source_pointer": "/external_contract/configuration_environment/51",
           "unit": "configured-value"
         },
         {
@@ -17658,7 +18015,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/47",
+          "source_pointer": "/external_contract/configuration_environment/52",
           "unit": "configured-value"
         },
         {
@@ -17670,7 +18027,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/51",
+          "source_pointer": "/external_contract/configuration_environment/56",
           "unit": "configured-value"
         },
         {
@@ -17682,7 +18039,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/53",
+          "source_pointer": "/external_contract/configuration_environment/58",
           "unit": "configured-value"
         },
         {
@@ -17694,7 +18051,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/55",
+          "source_pointer": "/external_contract/configuration_environment/60",
           "unit": "configured-value"
         },
         {
@@ -17706,7 +18063,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/56",
+          "source_pointer": "/external_contract/configuration_environment/61",
           "unit": "configured-value"
         },
         {
@@ -17718,7 +18075,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/57",
+          "source_pointer": "/external_contract/configuration_environment/62",
           "unit": "configured-value"
         },
         {
@@ -17730,7 +18087,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/59",
+          "source_pointer": "/external_contract/configuration_environment/64",
           "unit": "configured-value"
         },
         {
@@ -17742,7 +18099,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/60",
+          "source_pointer": "/external_contract/configuration_environment/65",
           "unit": "configured-value"
         },
         {
@@ -17754,7 +18111,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/61",
+          "source_pointer": "/external_contract/configuration_environment/66",
           "unit": "configured-value"
         },
         {
@@ -17766,7 +18123,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/62",
+          "source_pointer": "/external_contract/configuration_environment/67",
           "unit": "configured-value"
         },
         {
@@ -17778,7 +18135,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/64",
+          "source_pointer": "/external_contract/configuration_environment/69",
           "unit": "configured-value"
         },
         {
@@ -17790,7 +18147,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/65",
+          "source_pointer": "/external_contract/configuration_environment/70",
           "unit": "configured-value"
         },
         {
@@ -17802,7 +18159,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/66",
+          "source_pointer": "/external_contract/configuration_environment/71",
           "unit": "configured-value"
         },
         {
@@ -17814,7 +18171,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/67",
+          "source_pointer": "/external_contract/configuration_environment/72",
           "unit": "configured-value"
         },
         {
@@ -17826,7 +18183,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/69",
+          "source_pointer": "/external_contract/configuration_environment/74",
           "unit": "configured-value"
         },
         {
@@ -17838,7 +18195,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/70",
+          "source_pointer": "/external_contract/configuration_environment/75",
           "unit": "configured-value"
         },
         {
@@ -17850,7 +18207,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/71",
+          "source_pointer": "/external_contract/configuration_environment/76",
           "unit": "configured-value"
         },
         {
@@ -17862,7 +18219,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/72",
+          "source_pointer": "/external_contract/configuration_environment/77",
           "unit": "configured-value"
         },
         {
@@ -17874,7 +18231,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/73",
+          "source_pointer": "/external_contract/configuration_environment/78",
           "unit": "configured-value"
         },
         {
@@ -17886,7 +18243,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/74",
+          "source_pointer": "/external_contract/configuration_environment/79",
           "unit": "configured-value"
         },
         {
@@ -17898,7 +18255,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/78",
+          "source_pointer": "/external_contract/configuration_environment/83",
           "unit": "configured-value"
         },
         {
@@ -17910,7 +18267,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/80",
+          "source_pointer": "/external_contract/configuration_environment/85",
           "unit": "configured-value"
         },
         {
@@ -17922,7 +18279,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/81",
+          "source_pointer": "/external_contract/configuration_environment/86",
           "unit": "configured-value"
         },
         {
@@ -17934,7 +18291,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/101",
+          "source_pointer": "/external_contract/configuration_environment/106",
           "unit": "configured-value"
         },
         {
@@ -17946,7 +18303,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/104",
+          "source_pointer": "/external_contract/configuration_environment/109",
           "unit": "configured-value"
         },
         {
@@ -17958,7 +18315,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/106",
+          "source_pointer": "/external_contract/configuration_environment/111",
           "unit": "configured-value"
         },
         {
@@ -17970,7 +18327,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/108",
+          "source_pointer": "/external_contract/configuration_environment/113",
           "unit": "configured-value"
         },
         {
@@ -17982,7 +18339,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/112",
+          "source_pointer": "/external_contract/configuration_environment/117",
           "unit": "configured-value"
         },
         {
@@ -19876,6 +20233,255 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CapturedCollectionProvenanceVerification/properties/provenance_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/authorization_view_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/authorization_view_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/changes:cardinality",
+          "maximum": 100,
+          "owner": "riverhog",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "cursor_parameter": "cursor",
+            "kind": "cursor-feed",
+            "limit_parameter": "limit"
+          },
+          "reason": "bounded-route-page",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/changes",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/next_cursor:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/next_cursor",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/source_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/source_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/through_revision:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/through_revision",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCheckpoint/properties/authorization_view_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCheckpoint/properties/authorization_view_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCheckpoint/properties/catalog_cursor:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCheckpoint/properties/catalog_cursor",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCheckpoint/properties/source_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCheckpoint/properties/source_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/authorization_view_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/authorization_view_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/changes_cursor/anyOf/0:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/changes_cursor/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/collections:cardinality",
+          "maximum": 100,
+          "owner": "riverhog",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "authority": "catalog-sync-bootstrap",
+            "cursor_parameter": "cursor",
+            "kind": "exact-authority-page",
+            "limit_parameter": "limit"
+          },
+          "reason": "bounded-route-page",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/collections",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/next_cursor/anyOf/0:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/next_cursor/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/source_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/source_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncDelete/properties/revision:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncDelete/properties/revision",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncDescriptor/properties/archive_root_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncDescriptor/properties/archive_root_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncDescriptor/properties/content_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncDescriptor/properties/content_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncDescriptor/properties/revision:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncDescriptor/properties/revision",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncUpsert/properties/archive_root_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncUpsert/properties/archive_root_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncUpsert/properties/content_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncUpsert/properties/content_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:components:/schemas/CatalogSyncUpsert/properties/revision:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncUpsert/properties/revision",
           "unit": "characters"
         },
         {
@@ -24303,6 +24909,85 @@
         },
         {
           "dimension": "logical-result-cardinality",
+          "id": "http:riverhog:operation:list_catalog_sync_changes:logical-result",
+          "owner": "riverhog",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "cursor_parameter": "cursor",
+            "kind": "cursor-feed",
+            "limit_parameter": "limit"
+          },
+          "reason": "bounded-route-progression",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1changes/get",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:operation:list_catalog_sync_changes:parameter:query:cursor:/:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1changes/get/parameters/0/schema",
+          "unit": "characters"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:operation:list_catalog_sync_changes:parameter:query:limit:/:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1changes/get/parameters/1/schema",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "logical-result-cardinality",
+          "id": "http:riverhog:operation:list_catalog_sync_collections:logical-result",
+          "owner": "riverhog",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "authority": "catalog-sync-bootstrap",
+            "cursor_parameter": "cursor",
+            "kind": "exact-authority-page",
+            "limit_parameter": "limit"
+          },
+          "reason": "bounded-route-progression",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1collections/get",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:riverhog:operation:list_catalog_sync_collections:parameter:query:cursor:/:length",
+          "maximum": 4096,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1collections/get/parameters/0/schema",
+          "unit": "characters"
+        },
+        {
+          "dimension": "value",
+          "id": "http:riverhog:operation:list_catalog_sync_collections:parameter:query:limit:/:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "riverhog",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1collections/get/parameters/1/schema",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "logical-result-cardinality",
           "id": "http:riverhog:operation:list_collection_access_group_members:logical-result",
           "owner": "riverhog",
           "policy": "segmented_no_total_max",
@@ -25067,21 +25752,6 @@
           },
           "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1apps~1{app}~1keys~1{key_id}~1access/put/parameters/1/schema",
           "unit": "characters"
-        },
-        {
-          "dimension": "logical-result-cardinality",
-          "id": "http:riverhog:operation:resourcesync_change_list:logical-result",
-          "owner": "riverhog",
-          "policy": "segmented_no_total_max",
-          "progression": {
-            "cursor_parameter": "after",
-            "fixed_limit": 1000,
-            "kind": "cursor-feed"
-          },
-          "reason": "bounded-route-progression",
-          "rule": "route-progression/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1resourcesync~1changelist.xml/get",
-          "unit": "items"
         },
         {
           "dimension": "length",
@@ -37498,7 +38168,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "54031b3e28aadd6ed28101af55394634cf00904e2973bd69330e6611114538e3"
+      "sha256": "b40bdcd34b396b6cac26096c6109112dea4faa7baed4dc641dc8a710361e65f0"
     },
     "http_openapi": {
       "riverhog": {
@@ -40372,6 +41042,291 @@
                 "status"
               ],
               "title": "CapturedFileProvenanceBinding",
+              "type": "object"
+            },
+            "CatalogSyncChangePage": {
+              "additionalProperties": false,
+              "properties": {
+                "authorization_view_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Authorization View Identity",
+                  "type": "string"
+                },
+                "caught_up": {
+                  "title": "Caught Up",
+                  "type": "boolean"
+                },
+                "changes": {
+                  "items": {
+                    "discriminator": {
+                      "mapping": {
+                        "delete": "#/components/schemas/CatalogSyncDelete",
+                        "upsert": "#/components/schemas/CatalogSyncUpsert"
+                      },
+                      "propertyName": "operation"
+                    },
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/CatalogSyncUpsert"
+                      },
+                      {
+                        "$ref": "#/components/schemas/CatalogSyncDelete"
+                      }
+                    ]
+                  },
+                  "maxItems": 100,
+                  "title": "Changes",
+                  "type": "array"
+                },
+                "format": {
+                  "const": "riverhog-catalog-sync/v1",
+                  "default": "riverhog-catalog-sync/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "next_cursor": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "title": "Next Cursor",
+                  "type": "string"
+                },
+                "source_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Source Identity",
+                  "type": "string"
+                },
+                "through_revision": {
+                  "maxLength": 19,
+                  "minLength": 1,
+                  "pattern": "^(?:0|[1-9][0-9]{0,17}|[1-8][0-9]{18})$",
+                  "title": "Through Revision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source_identity",
+                "authorization_view_identity",
+                "changes",
+                "next_cursor",
+                "caught_up",
+                "through_revision"
+              ],
+              "title": "CatalogSyncChangePage",
+              "type": "object"
+            },
+            "CatalogSyncCheckpoint": {
+              "additionalProperties": false,
+              "properties": {
+                "authorization_view_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Authorization View Identity",
+                  "type": "string"
+                },
+                "catalog_cursor": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "title": "Catalog Cursor",
+                  "type": "string"
+                },
+                "format": {
+                  "const": "riverhog-catalog-sync/v1",
+                  "default": "riverhog-catalog-sync/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "source_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Source Identity",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source_identity",
+                "authorization_view_identity",
+                "catalog_cursor"
+              ],
+              "title": "CatalogSyncCheckpoint",
+              "type": "object"
+            },
+            "CatalogSyncCollectionPage": {
+              "additionalProperties": false,
+              "properties": {
+                "authorization_view_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Authorization View Identity",
+                  "type": "string"
+                },
+                "changes_cursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Changes Cursor"
+                },
+                "collections": {
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogSyncDescriptor"
+                  },
+                  "maxItems": 100,
+                  "title": "Collections",
+                  "type": "array"
+                },
+                "format": {
+                  "const": "riverhog-catalog-sync/v1",
+                  "default": "riverhog-catalog-sync/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "next_cursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Cursor"
+                },
+                "source_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Source Identity",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source_identity",
+                "authorization_view_identity",
+                "collections"
+              ],
+              "title": "CatalogSyncCollectionPage",
+              "type": "object"
+            },
+            "CatalogSyncDelete": {
+              "additionalProperties": false,
+              "properties": {
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "operation": {
+                  "const": "delete",
+                  "default": "delete",
+                  "title": "Operation",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 19,
+                  "minLength": 1,
+                  "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$",
+                  "title": "Revision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection_id",
+                "revision"
+              ],
+              "title": "CatalogSyncDelete",
+              "type": "object"
+            },
+            "CatalogSyncDescriptor": {
+              "additionalProperties": false,
+              "properties": {
+                "archive_root_sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Archive Root Sha256",
+                  "type": "string"
+                },
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "content_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Content Identity",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 19,
+                  "minLength": 1,
+                  "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$",
+                  "title": "Revision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection_id",
+                "archive_root_sha256",
+                "content_identity",
+                "revision"
+              ],
+              "title": "CatalogSyncDescriptor",
+              "type": "object"
+            },
+            "CatalogSyncUpsert": {
+              "additionalProperties": false,
+              "properties": {
+                "archive_root_sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Archive Root Sha256",
+                  "type": "string"
+                },
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "content_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Content Identity",
+                  "type": "string"
+                },
+                "operation": {
+                  "const": "upsert",
+                  "default": "upsert",
+                  "title": "Operation",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 19,
+                  "minLength": 1,
+                  "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$",
+                  "title": "Revision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection_id",
+                "archive_root_sha256",
+                "content_identity",
+                "revision"
+              ],
+              "title": "CatalogSyncUpsert",
               "type": "object"
             },
             "ClaimFenceDocument": {
@@ -50543,85 +51498,6 @@
         },
         "openapi": "3.1.0",
         "paths": {
-          "/.well-known/resourcesync": {
-            "get": {
-              "operationId": "well_known_resourcesync",
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/xml": {
-                      "schema": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "description": "OK"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Well Known Resourcesync",
-              "tags": [
-                "catalog"
-              ],
-              "x-riverhog-interface": "standard-tool/protocol"
-            }
-          },
           "/health/live": {
             "get": {
               "operationId": "health_live",
@@ -50672,352 +51548,6 @@
               "tags": [
                 "health"
               ]
-            }
-          },
-          "/resourcesync/capabilitylist.xml": {
-            "get": {
-              "operationId": "resourcesync_capability_list",
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/xml": {
-                      "schema": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "description": "OK"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Resourcesync Capability List",
-              "tags": [
-                "catalog"
-              ],
-              "x-riverhog-interface": "standard-tool/protocol"
-            }
-          },
-          "/resourcesync/changelist.xml": {
-            "get": {
-              "operationId": "resourcesync_change_list",
-              "parameters": [
-                {
-                  "in": "query",
-                  "name": "after",
-                  "required": false,
-                  "schema": {
-                    "default": 0,
-                    "minimum": 0,
-                    "title": "After",
-                    "type": "integer"
-                  }
-                }
-              ],
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/xml": {
-                      "schema": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "description": "OK"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Resourcesync Change List",
-              "tags": [
-                "catalog"
-              ],
-              "x-riverhog-interface": "standard-tool/protocol",
-              "x-riverhog-read-collection": {
-                "cursor_parameter": "after",
-                "fixed_limit": 1000,
-                "kind": "cursor-feed"
-              }
-            }
-          },
-          "/resourcesync/resourcelist.xml": {
-            "get": {
-              "operationId": "resourcesync_resource_list",
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/xml": {
-                      "schema": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "description": "OK"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Resourcesync Resource List",
-              "tags": [
-                "catalog"
-              ],
-              "x-riverhog-interface": "standard-tool/protocol"
-            }
-          },
-          "/resourcesync/resourcelist/{page}.xml": {
-            "get": {
-              "operationId": "resourcesync_resource_list_page",
-              "parameters": [
-                {
-                  "in": "path",
-                  "name": "page",
-                  "required": true,
-                  "schema": {
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                }
-              ],
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/xml": {
-                      "schema": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "description": "OK"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Resourcesync Resource List Page",
-              "tags": [
-                "catalog"
-              ],
-              "x-riverhog-interface": "standard-tool/protocol"
             }
           },
           "/v1/app-key-access": {
@@ -53578,6 +54108,379 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/catalog-sync/changes": {
+            "get": {
+              "operationId": "list_catalog_sync_changes",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "cursor",
+                  "required": true,
+                  "schema": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "title": "Cursor",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "limit",
+                  "required": false,
+                  "schema": {
+                    "default": 100,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CatalogSyncChangePage"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "409": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Conflict",
+                  "x-riverhog-error-codes": [
+                    "catalog_sync_source_changed",
+                    "catalog_sync_view_changed"
+                  ]
+                },
+                "410": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Gone",
+                  "x-riverhog-error-codes": [
+                    "catalog_sync_cursor_expired",
+                    "catalog_sync_history_expired"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "List Catalog Sync Changes",
+              "tags": [
+                "catalog synchronization"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "cursor_parameter": "cursor",
+                "kind": "cursor-feed",
+                "limit_parameter": "limit"
+              }
+            }
+          },
+          "/v1/catalog-sync/checkpoint": {
+            "get": {
+              "operationId": "create_catalog_sync_checkpoint",
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CatalogSyncCheckpoint"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Create Catalog Sync Checkpoint",
+              "tags": [
+                "catalog synchronization"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ]
+            }
+          },
+          "/v1/catalog-sync/collections": {
+            "get": {
+              "operationId": "list_catalog_sync_collections",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "cursor",
+                  "required": true,
+                  "schema": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "title": "Cursor",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "limit",
+                  "required": false,
+                  "schema": {
+                    "default": 100,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Limit",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CatalogSyncCollectionPage"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "409": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Conflict",
+                  "x-riverhog-error-codes": [
+                    "catalog_sync_source_changed",
+                    "catalog_sync_view_changed"
+                  ]
+                },
+                "410": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Gone",
+                  "x-riverhog-error-codes": [
+                    "catalog_sync_cursor_expired",
+                    "catalog_sync_history_expired"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "List Catalog Sync Collections",
+              "tags": [
+                "catalog synchronization"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "authority": "catalog-sync-bootstrap",
+                "cursor_parameter": "cursor",
+                "kind": "exact-authority-page",
+                "limit_parameter": "limit"
+              }
             }
           },
           "/v1/catalog/collections/{collection_id}/inventory": {
@@ -74481,18 +75384,6 @@
         "cli_commands": [],
         "client": null,
         "method": "GET",
-        "operation_id": "well_known_resourcesync",
-        "path": "/.well-known/resourcesync",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "stream-or-empty"
-      },
-      {
-        "application": "riverhog",
-        "classification": "standard-tool/protocol",
-        "cli_commands": [],
-        "client": null,
-        "method": "GET",
         "operation_id": "health_live",
         "path": "/health/live",
         "provider_evidence": null,
@@ -74510,58 +75401,6 @@
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "http-json"
-      },
-      {
-        "application": "riverhog",
-        "classification": "standard-tool/protocol",
-        "cli_commands": [],
-        "client": null,
-        "method": "GET",
-        "operation_id": "resourcesync_capability_list",
-        "path": "/resourcesync/capabilitylist.xml",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "stream-or-empty"
-      },
-      {
-        "application": "riverhog",
-        "classification": "standard-tool/protocol",
-        "cli_commands": [],
-        "client": null,
-        "method": "GET",
-        "operation_id": "resourcesync_change_list",
-        "path": "/resourcesync/changelist.xml",
-        "provider_evidence": null,
-        "read_collection": {
-          "cursor_parameter": "after",
-          "fixed_limit": 1000,
-          "kind": "cursor-feed"
-        },
-        "response_authority": "stream-or-empty"
-      },
-      {
-        "application": "riverhog",
-        "classification": "standard-tool/protocol",
-        "cli_commands": [],
-        "client": null,
-        "method": "GET",
-        "operation_id": "resourcesync_resource_list",
-        "path": "/resourcesync/resourcelist.xml",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "stream-or-empty"
-      },
-      {
-        "application": "riverhog",
-        "classification": "standard-tool/protocol",
-        "cli_commands": [],
-        "client": null,
-        "method": "GET",
-        "operation_id": "resourcesync_resource_list_page",
-        "path": "/resourcesync/resourcelist/{page}.xml",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -74853,11 +75692,60 @@
       },
       {
         "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "catalog-sync changes"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_catalog_sync_changes",
+        "path": "/v1/catalog-sync/changes",
+        "provider_evidence": null,
+        "read_collection": {
+          "cursor_parameter": "cursor",
+          "kind": "cursor-feed",
+          "limit_parameter": "limit"
+        },
+        "response_authority": "canonical-document"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "catalog-sync checkpoint"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "create_catalog_sync_checkpoint",
+        "path": "/v1/catalog-sync/checkpoint",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "canonical-document"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "catalog-sync collections"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_catalog_sync_collections",
+        "path": "/v1/catalog-sync/collections",
+        "provider_evidence": null,
+        "read_collection": {
+          "authority": "catalog-sync-bootstrap",
+          "cursor_parameter": "cursor",
+          "kind": "exact-authority-page",
+          "limit_parameter": "limit"
+        },
+        "response_authority": "canonical-document"
+      },
+      {
+        "application": "riverhog",
         "classification": "standard-tool/protocol",
         "cli_commands": [
-          "local add",
-          "local repair",
-          "local sync"
+          "local add"
         ],
         "client": "ApiClient",
         "method": "GET",
@@ -75630,9 +76518,7 @@
         "classification": "human-cli+json",
         "cli_commands": [
           "collection show",
-          "local add",
-          "local repair",
-          "local sync"
+          "local add"
         ],
         "client": "ApiClient",
         "method": "GET",
@@ -95391,6 +96277,10 @@
             "kind": "constant",
             "value": {
               "bad_request": 400,
+              "catalog_sync_cursor_expired": 410,
+              "catalog_sync_history_expired": 410,
+              "catalog_sync_source_changed": 409,
+              "catalog_sync_view_changed": 409,
               "conflict": 409,
               "download_allowance_exceeded": 429,
               "forbidden": 403,
@@ -95599,6 +96489,10 @@
             "kind": "constant",
             "value": [
               "bad_request",
+              "catalog_sync_cursor_expired",
+              "catalog_sync_history_expired",
+              "catalog_sync_source_changed",
+              "catalog_sync_view_changed",
               "conflict",
               "download_allowance_exceeded",
               "forbidden",
@@ -96103,10 +96997,6 @@
                 "kind": "method",
                 "signature": "(self, job_id: 'str') -> 'dict[str, Any]'"
               },
-              "catalog_changes": {
-                "kind": "method",
-                "signature": "(self, *, after: 'int' = 0) -> 'dict[str, Any]'"
-              },
               "collection_provenance_journal_metadata": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'tuple[int, str]'"
@@ -96118,6 +97008,10 @@
               "create_app_key": {
                 "kind": "method",
                 "signature": "(self, app: 'ApplicationName', *, access: 'Sequence[Mapping[str, str]]', expires_in_seconds: 'int | None' = None) -> 'dict[str, Any]'"
+              },
+              "create_catalog_sync_checkpoint": {
+                "kind": "method",
+                "signature": "(self) -> 'CatalogSyncCheckpoint'"
               },
               "create_collection_access_group": {
                 "kind": "method",
@@ -96235,6 +97129,14 @@
                 "kind": "method",
                 "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
+              "list_catalog_sync_changes": {
+                "kind": "method",
+                "signature": "(self, cursor: 'str', *, limit: 'int' = 100) -> 'CatalogSyncChangePage'"
+              },
+              "list_catalog_sync_collections": {
+                "kind": "method",
+                "signature": "(self, cursor: 'str', *, limit: 'int' = 100) -> 'CatalogSyncCollectionPage'"
+              },
               "list_collection_access_group_members": {
                 "kind": "method",
                 "signature": "(self, group_id: 'str', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
@@ -96335,22 +97237,6 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
               },
-              "resourcesync_capabilities": {
-                "kind": "method",
-                "signature": "(self) -> 'dict[str, object]'"
-              },
-              "resourcesync_discovery": {
-                "kind": "method",
-                "signature": "(self) -> 'dict[str, object]'"
-              },
-              "resourcesync_resource_pages": {
-                "kind": "method",
-                "signature": "(self) -> 'dict[str, object]'"
-              },
-              "resourcesync_resources": {
-                "kind": "method",
-                "signature": "(self, *, page: 'int' = 1) -> 'dict[str, object]'"
-              },
               "retire_archive_copy": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, store: 'ArchiveStoreName', challenge: 'str') -> 'dict[str, Any]'"
@@ -96421,6 +97307,70 @@
           "COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES": {
             "kind": "constant",
             "value": 16
+          },
+          "CatalogReplica": {
+            "kind": "class",
+            "members": {
+              "get": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'int') -> 'CatalogSyncDescriptor | None'"
+              },
+              "page": {
+                "kind": "method",
+                "signature": "(self, *, after: 'int' = 0, limit: 'int' = 100) -> 'list[CatalogSyncDescriptor]'"
+              },
+              "reclaim": {
+                "kind": "method",
+                "signature": "(self, *, limit: 'int' = 100) -> 'int'"
+              },
+              "start": {
+                "kind": "method",
+                "signature": "(self, api: 'CatalogSyncApi') -> 'dict[str, object]'"
+              },
+              "status": {
+                "kind": "method",
+                "signature": "(self) -> 'dict[str, object]'"
+              },
+              "step": {
+                "kind": "method",
+                "signature": "(self, api: 'CatalogSyncApi', *, limit: 'int' = 100) -> 'dict[str, object]'"
+              }
+            },
+            "signature": "(database: 'str | Path') -> 'None'"
+          },
+          "CatalogSyncApi": {
+            "kind": "class",
+            "members": {
+              "create_catalog_sync_checkpoint": {
+                "kind": "method",
+                "signature": "(self) -> 'CatalogSyncCheckpoint'"
+              },
+              "list_catalog_sync_changes": {
+                "kind": "method",
+                "signature": "(self, cursor: 'str', *, limit: 'int' = 100) -> 'CatalogSyncChangePage'"
+              },
+              "list_catalog_sync_collections": {
+                "kind": "method",
+                "signature": "(self, cursor: 'str', *, limit: 'int' = 100) -> 'CatalogSyncCollectionPage'"
+              }
+            },
+            "signature": "(*args, **kwargs)"
+          },
+          "CatalogSyncCursorExpired": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncHistoryExpired": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncSourceChanged": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncViewChanged": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
           "CollectionProducer": {
             "kind": "class",
@@ -97734,6 +98684,18 @@
             "kind": "class",
             "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
+          "CATALOG_SYNC_CURSOR_BYTES_MAX": {
+            "kind": "constant",
+            "value": 4096
+          },
+          "CATALOG_SYNC_FORMAT": {
+            "kind": "constant",
+            "value": "riverhog-catalog-sync/v1"
+          },
+          "CATALOG_SYNC_PAGE_SIZE_MAX": {
+            "kind": "constant",
+            "value": 100
+          },
           "COLLECTION_FINALIZED": {
             "kind": "constant",
             "value": "io.riverhog.riverhog.collection.finalized"
@@ -97768,6 +98730,78 @@
             "kind": "class",
             "schema_sha256": "373a03b50758a99eed348b2b9a11439bdca4263639c942bbf223f46510326b64",
             "signature": "(*, journal_id: ProvenanceJournalId, current_state_id: ProvenanceStateId, status: Literal['captured']) -> None"
+          },
+          "CatalogSyncChange": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "CatalogSyncChangePage": {
+            "kind": "class",
+            "schema_sha256": "d7d22c71c5d44a89bed63d24f9c4aaf2a7b884ce8ec85c6f3b4274ee4d52c224",
+            "signature": "(*, format: Literal['riverhog-catalog-sync/v1'] = 'riverhog-catalog-sync/v1', source_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], authorization_view_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], changes: Annotated[list[Annotated[riverhog_protocol.catalog_sync.CatalogSyncUpsert | riverhog_protocol.catalog_sync.CatalogSyncDelete, FieldInfo(annotation=NoneType, required=True, discriminator='operation')]], MaxLen(max_length=100)], next_cursor: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=4096, pattern=None, ascii_only=None)], caught_up: bool, through_revision: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:0|[1-9][0-9]{0,17}|[1-8][0-9]{18})$', ascii_only=None)]) -> None"
+          },
+          "CatalogSyncCheckpoint": {
+            "kind": "class",
+            "schema_sha256": "23f1a9cd803ee925c19334eab9c8b6024bbbee97eb6be8c601b45924f2bf8d9e",
+            "signature": "(*, format: Literal['riverhog-catalog-sync/v1'] = 'riverhog-catalog-sync/v1', source_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], authorization_view_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], catalog_cursor: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=4096, pattern=None, ascii_only=None)]) -> None"
+          },
+          "CatalogSyncCollectionPage": {
+            "kind": "class",
+            "members": {
+              "validate_continuation": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "28b3323b4b374b8c4fc16fbe97886e104c095edb81685dd8df47b5f5ca1eb96c",
+            "signature": "(*, format: Literal['riverhog-catalog-sync/v1'] = 'riverhog-catalog-sync/v1', source_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], authorization_view_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], collections: Annotated[list[riverhog_protocol.catalog_sync.CatalogSyncDescriptor], MaxLen(max_length=100)], next_cursor: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=4096, pattern=None, ascii_only=None)]] = None, changes_cursor: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=4096, pattern=None, ascii_only=None)]] = None) -> None"
+          },
+          "CatalogSyncCursor": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "CatalogSyncCursorExpired": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncDelete": {
+            "kind": "class",
+            "schema_sha256": "157cdc75cb1f1a98f27527f0afef0cbf357b327e6096118a624d7e2a4c011b7c",
+            "signature": "(*, operation: Literal['delete'] = 'delete', collection_id: CollectionId, revision: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$', ascii_only=None)]) -> None"
+          },
+          "CatalogSyncDescriptor": {
+            "kind": "class",
+            "schema_sha256": "cf7b9537b4b918fa0f046b2d0b1a2e6fad36ee06cb8e78136297c1b443cfebb9",
+            "signature": "(*, collection_id: CollectionId, archive_root_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], content_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], revision: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$', ascii_only=None)]) -> None"
+          },
+          "CatalogSyncHistoryExpired": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncIdentity": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "CatalogSyncPosition": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "CatalogSyncRevision": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "CatalogSyncSourceChanged": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
+          },
+          "CatalogSyncUpsert": {
+            "kind": "class",
+            "schema_sha256": "b58872f68cd387323f4d6d4bf772d6b5e4bbfb1ca151c278de73eb08bc1e9c6d",
+            "signature": "(*, collection_id: CollectionId, archive_root_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], content_identity: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$', ascii_only=None)], revision: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$', ascii_only=None)], operation: Literal['upsert'] = 'upsert') -> None"
+          },
+          "CatalogSyncViewChanged": {
+            "kind": "class",
+            "signature": "(message: 'str', *, code: 'str | None' = None, observed_status: 'int | None' = None, details: 'dict[str, Any] | None' = None) -> 'None'"
           },
           "ClaimState": {
             "kind": "object",
@@ -98270,6 +99304,10 @@
           "LifecycleEventCursor": {
             "kind": "type-alias",
             "value": "typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=19, pattern='^(?:0|[1-9][0-9]*)$', ascii_only=None), AfterValidator(func=<function validate_lifecycle_event_cursor>)]"
+          },
+          "MAX_CATALOG_SYNC_REVISION": {
+            "kind": "constant",
+            "value": 8999999999999999999
           },
           "MAX_LIFECYCLE_EVENT_SEQUENCE": {
             "kind": "constant",

@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote
-from xml.etree import ElementTree
 
 import httpx
 from file_download import verified_download
@@ -45,6 +44,9 @@ from riverhog_protocol import (
     ArchiveCopyStoreSelectionDocument,
     ArchiveStoreName,
     ArchiveStoreSort,
+    CatalogSyncChangePage,
+    CatalogSyncCheckpoint,
+    CatalogSyncCollectionPage,
     CollectionAccessGroupSort,
     CollectionAccessGroupStatus,
     CollectionId,
@@ -92,7 +94,6 @@ from riverhog_protocol.errors import (
 from riverhog_protocol.lifecycle_events import LifecycleEventCursor, RiverhogEventPage
 from riverhog_protocol.paths import (
     CanonicalRelPath,
-    normalize_collection_id,
 )
 from riverhog_provenance_contracts import ProvenanceJournalId
 
@@ -694,108 +695,38 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         )
         return RiverhogEventPage.model_validate(payload)
 
-    def resourcesync_discovery(self) -> dict[str, object]:
-        response = self._request("GET", "/.well-known/resourcesync")
-        root = ElementTree.fromstring(response.content)
-        capabilities: list[dict[str, str]] = []
-        for url in root:
-            location = next((child.text for child in url if child.tag.endswith("loc")), None)
-            metadata = next((child for child in url if child.tag.endswith("md")), None)
-            if location and metadata is not None:
-                capabilities.append(
-                    {
-                        "capability": str(metadata.attrib.get("capability", "")),
-                        "location": location,
-                    }
-                )
-        return {"capabilities": capabilities}
-
-    def resourcesync_capabilities(self) -> dict[str, object]:
-        response = self._request("GET", "/resourcesync/capabilitylist.xml")
-        root = ElementTree.fromstring(response.content)
-        capabilities: list[dict[str, str]] = []
-        for url in root:
-            location = next((child.text for child in url if child.tag.endswith("loc")), None)
-            metadata = next((child for child in url if child.tag.endswith("md")), None)
-            if location and metadata is not None:
-                capabilities.append(
-                    {
-                        "capability": str(metadata.attrib.get("capability", "")),
-                        "location": location,
-                    }
-                )
-        return {"capabilities": capabilities}
-
-    def resourcesync_resource_pages(self) -> dict[str, object]:
-        response = self._request("GET", "/resourcesync/resourcelist.xml")
-        root = ElementTree.fromstring(response.content)
-        pages = [
-            location
-            for sitemap in root
-            if sitemap.tag.endswith("sitemap")
-            if (
-                location := next(
-                    (child.text for child in sitemap if child.tag.endswith("loc")),
-                    None,
-                )
-            )
-        ]
-        return {"pages": pages}
-
-    def resourcesync_resources(self, *, page: int = 1) -> dict[str, object]:
-        if page < 1:
-            raise ValueError("ResourceSync resource-list page must be positive")
-        response = self._request("GET", f"/resourcesync/resourcelist/{page}.xml")
-        root = ElementTree.fromstring(response.content)
-        resources: list[dict[str, object]] = []
-        for url in root:
-            if not url.tag.endswith("url"):
-                continue
-            location = next((child.text for child in url if child.tag.endswith("loc")), None)
-            metadata = next((child for child in url if child.tag.endswith("md")), None)
-            if location is None or metadata is None:
-                continue
-            collection_id = normalize_collection_id(
-                location.split("/v1/catalog/collections/", 1)[-1].rsplit("/inventory", 1)[0]
-            )
-            resources.append(
-                {
-                    "collection_id": collection_id,
-                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
-                    "location": location,
-                }
-            )
-        return {"page": page, "resources": resources}
-
-    def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
-        response = self._request(
-            "GET",
-            "/resourcesync/changelist.xml",
-            params={"after": after},
+    def create_catalog_sync_checkpoint(self) -> CatalogSyncCheckpoint:
+        return CatalogSyncCheckpoint.model_validate(
+            self._json("GET", "/v1/catalog-sync/checkpoint")
         )
-        root = ElementTree.fromstring(response.content)
-        changes: list[dict[str, Any]] = []
-        for url in root:
-            loc = next((child.text for child in url if child.tag.endswith("loc")), None)
-            metadata = next((child for child in url if child.tag.endswith("md")), None)
-            if loc is None or metadata is None:
-                continue
-            collection_id = normalize_collection_id(
-                loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/inventory", 1)[0]
+
+    def list_catalog_sync_collections(
+        self,
+        cursor: str,
+        *,
+        limit: int = 100,
+    ) -> CatalogSyncCollectionPage:
+        return CatalogSyncCollectionPage.model_validate(
+            self._json(
+                "GET",
+                "/v1/catalog-sync/collections",
+                params={"cursor": cursor, "limit": limit},
             )
-            changes.append(
-                {
-                    "collection_id": collection_id,
-                    "change": metadata.attrib.get("change"),
-                    "datetime": metadata.attrib.get("datetime"),
-                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
-                }
+        )
+
+    def list_catalog_sync_changes(
+        self,
+        cursor: str,
+        *,
+        limit: int = 100,
+    ) -> CatalogSyncChangePage:
+        return CatalogSyncChangePage.model_validate(
+            self._json(
+                "GET",
+                "/v1/catalog-sync/changes",
+                params={"cursor": cursor, "limit": limit},
             )
-        return {
-            "cursor": int(root.attrib.get("data-cursor", after)),
-            "has_more": root.attrib.get("data-has-more", "false") == "true",
-            "changes": changes,
-        }
+        )
 
     def get_portable_collection_inventory(
         self,

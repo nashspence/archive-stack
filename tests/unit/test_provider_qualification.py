@@ -1460,7 +1460,7 @@ def test_operator_advances_across_short_restore_invocations(
     )
     for name in (
         "_wait_archive_copy",
-        "_assert_resourcesync",
+        "_assert_catalog_sync",
         "_assert_retrieval_cache_surface",
         "_ready_retrieval",
         "_cancel_retrieval",

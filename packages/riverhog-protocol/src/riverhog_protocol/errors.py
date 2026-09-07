@@ -47,6 +47,22 @@ class Conflict(RiverhogError):
     code = "conflict"
 
 
+class CatalogSyncSourceChanged(RiverhogError):
+    code = "catalog_sync_source_changed"
+
+
+class CatalogSyncViewChanged(RiverhogError):
+    code = "catalog_sync_view_changed"
+
+
+class CatalogSyncCursorExpired(RiverhogError):
+    code = "catalog_sync_cursor_expired"
+
+
+class CatalogSyncHistoryExpired(RiverhogError):
+    code = "catalog_sync_history_expired"
+
+
 class PreconditionFailed(RiverhogError):
     code = "precondition_failed"
 
@@ -84,6 +100,10 @@ RIVERHOG_ERROR_TYPES_BY_CODE: dict[str, type[RiverhogError]] = {
         InvalidPath,
         NotFound,
         Conflict,
+        CatalogSyncSourceChanged,
+        CatalogSyncViewChanged,
+        CatalogSyncCursorExpired,
+        CatalogSyncHistoryExpired,
         PreconditionFailed,
         PreconditionRequired,
         InvalidRange,

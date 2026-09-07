@@ -97,6 +97,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "app",
         "access-group",
         "archive",
+        "catalog-sync",
         "collection",
         "event",
         "find",
@@ -109,7 +110,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "riverhog-ftp-adapter",
         "stove0",
     }
-    assert len(external["operations"]) == 145
+    assert len(external["operations"]) == 143
     assert len(external["python"]) == 25
     assert len(external["durable_state"]["owners"]) == 8
     extents = external["extents"]
@@ -125,7 +126,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
     assert trace["coverage"]["source_kinds"] == {
         "cli": 5,
         "configuration": 6,
-        "configuration-environment": 115,
+        "configuration-environment": 120,
         "openapi": 3,
         "protocol": 34,
         "python": 25,

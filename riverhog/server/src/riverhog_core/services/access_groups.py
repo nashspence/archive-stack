@@ -16,6 +16,7 @@ from riverhog_core.browse import bounded_page, keyset_statement, validate_page_s
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
+    publish_catalog_event,
     snapshot_catalog_event_collection_access_groups,
 )
 from riverhog_core.catalog_models import (
@@ -381,6 +382,7 @@ class SqlAlchemyCollectionAccessGroupService:
                 phase="after",
                 collection_id=collection_id,
             )
+            publish_catalog_event(session, event=event)
             session.flush()
             return _membership_payload(group, collection_id, present=present, changed=True)
 

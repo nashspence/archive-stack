@@ -25,9 +25,9 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
     paths = create_app().openapi()["paths"]
 
     assert {
-        "/.well-known/resourcesync",
-        "/resourcesync/resourcelist.xml",
-        "/resourcesync/changelist.xml",
+        "/v1/catalog-sync/checkpoint",
+        "/v1/catalog-sync/collections",
+        "/v1/catalog-sync/changes",
         "/v1/archive/stores",
         "/v1/archive/stores/{store}",
         "/v1/archive/copies",

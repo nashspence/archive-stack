@@ -121,6 +121,7 @@ from riverhog_core.browse import bounded_page, keyset_statement, validate_page_s
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
+    publish_catalog_event,
     snapshot_catalog_event_collection_access_groups,
 )
 from riverhog_core.catalog_models import (
@@ -2075,6 +2076,7 @@ class SqlAlchemyCollectionUploadService:
             raise RuntimeError("catalog identities are incomplete")
         if session.get(CollectionRecord, upload.collection_id) is None:
             now = utc_timestamp_now()
+            authority = _final_authority(upload)
             provenance_mode = _final_provenance_mode(
                 session,
                 upload.collection_id,
@@ -2093,6 +2095,7 @@ class SqlAlchemyCollectionUploadService:
                     provenance_mode=provenance_mode,
                     provenance_identity=upload.provenance_identity,
                     inventory_identity=upload.catalog_inventory_identity,
+                    archive_root_sha256=str(authority["root"]["plaintext_sha256"]),
                     ingest_source=upload.ingest_source,
                     created_by_app=upload.initiated_by_app,
                     created_by_key_id=upload.initiated_by_key_id,
@@ -2355,6 +2358,7 @@ class SqlAlchemyCollectionUploadService:
             phase="after",
             collection_id=upload.collection_id,
         )
+        publish_catalog_event(session, event=catalog_event)
         authority = _final_authority(upload)
         self._events.emit_collection(
             type="collection.finalized",

@@ -229,6 +229,33 @@ def test_load_runtime_config_parses_lifecycle_event_settings(
     assert config.event_context_reap_batch_size == 37
 
 
+def test_load_runtime_config_connects_catalog_sync_extents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME", "6d")
+    monkeypatch.setenv("RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME", "12h")
+    monkeypatch.setenv("RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION", "21d")
+    monkeypatch.setenv("RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX", "37")
+    monkeypatch.setenv("RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE", "41")
+
+    config = load_runtime_config()
+
+    assert config.catalog_sync_bootstrap_lifetime == timedelta(days=6)
+    assert config.catalog_sync_cursor_lifetime == timedelta(hours=12)
+    assert config.catalog_sync_history_retention == timedelta(days=21)
+    assert config.catalog_sync_page_size_max == 37
+    assert config.catalog_sync_history_reap_batch_size == 41
+
+
+def test_catalog_sync_cursor_lifetimes_fit_the_retained_history(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must not exceed"):
+        _config(
+            tmp_path,
+            catalog_sync_cursor_lifetime=timedelta(days=2),
+            catalog_sync_history_retention=timedelta(days=1),
+        )
+
+
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RIVERHOG_DATABASE_URL", raising=False)
     config = load_runtime_config()
