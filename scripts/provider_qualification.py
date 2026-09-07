@@ -93,7 +93,7 @@ _REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
             "unit-readback",
             "b2-immediate-client-retrieval",
             "b2-independent-recovery",
-            "resourcesync-complete",
+            "native-catalog-sync-complete",
             "lifecycle-cursor-monotonic",
             "download-quota-bounded",
             "opportunistic-immediate-retrieval",
@@ -3085,47 +3085,47 @@ def _cancel_retrieval(
         raise QualificationError("retrieval cancellation did not converge")
 
 
-def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None:
-    public_prefix = f"{base_url.rstrip('/')}/"
-    discovery = api.resourcesync_discovery()
-    discovered = _page_items(discovery, "capabilities")
-    if {item.get("capability") for item in discovered} != {"capabilitylist"}:
-        raise QualificationError("ResourceSync discovery is incomplete")
-    if not all(str(item.get("location", "")).startswith(public_prefix) for item in discovered):
-        raise QualificationError("ResourceSync discovery published an unusable URL authority")
-    capabilities = api.resourcesync_capabilities()
-    advertised = _page_items(capabilities, "capabilities")
-    if {item.get("capability") for item in advertised} != {
-        "resourcelist",
-        "changelist",
-    }:
-        raise QualificationError("ResourceSync capability list is incomplete")
-    if not all(str(item.get("location", "")).startswith(public_prefix) for item in advertised):
-        raise QualificationError("ResourceSync capability list published an unusable URL authority")
-    pages = api.resourcesync_resource_pages().get("pages")
-    if not isinstance(pages, list) or not pages:
-        raise QualificationError("ResourceSync resource list has no pages")
-    if not all(str(location).startswith(public_prefix) for location in pages):
-        raise QualificationError("ResourceSync resource list published an unusable URL authority")
-    resources: list[dict[str, Any]] = []
-    for page in range(1, len(pages) + 1):
-        resources.extend(_page_items(api.resourcesync_resources(page=page), "resources"))
-    resource = next(
-        (item for item in resources if int(item.get("collection_id", 0)) == collection_id),
-        None,
-    )
-    if resource is None:
-        raise QualificationError("ResourceSync omitted the qualification collection")
-    if not str(resource.get("location", "")).startswith(public_prefix):
-        raise QualificationError("ResourceSync resource published an unusable URL authority")
-    cursor: str | None = None
+def _assert_catalog_sync(api: Any, collection_id: int) -> None:
+    checkpoint = api.create_catalog_sync_checkpoint()
+    cursor = checkpoint.catalog_cursor
+    observed = None
+    changes_cursor = None
+    while cursor is not None:
+        page = api.list_catalog_sync_collections(cursor, limit=100)
+        if page.source_identity != checkpoint.source_identity:
+            raise QualificationError("native catalog source identity changed during bootstrap")
+        if page.authorization_view_identity != checkpoint.authorization_view_identity:
+            raise QualificationError("native catalog authorization view changed during bootstrap")
+        observed = next(
+            (item for item in page.collections if item.collection_id == collection_id),
+            observed,
+        )
+        cursor = page.next_cursor
+        changes_cursor = page.changes_cursor
+    if observed is None:
+        raise QualificationError("native catalog synchronization omitted the collection")
+    if len(observed.archive_root_sha256) != 64 or len(observed.content_identity) != 64:
+        raise QualificationError("native catalog synchronization returned an invalid identity")
+    if changes_cursor is None:
+        raise QualificationError("native catalog bootstrap omitted its replay cursor")
+    while True:
+        changes = api.list_catalog_sync_changes(changes_cursor, limit=100)
+        if changes.source_identity != checkpoint.source_identity:
+            raise QualificationError("native catalog source identity changed during replay")
+        if changes.authorization_view_identity != checkpoint.authorization_view_identity:
+            raise QualificationError("native catalog authorization view changed during replay")
+        changes_cursor = changes.next_cursor
+        if changes.caught_up:
+            break
+
+    inventory_cursor: str | None = None
     inventory_identity: str | None = None
     observed_files = 0
     expected_files: int | None = None
     while True:
         portable = api.get_portable_collection_inventory(
             collection_id,
-            cursor=cursor,
+            cursor=inventory_cursor,
             limit=1000,
             inventory_identity=inventory_identity,
         )
@@ -3139,15 +3139,9 @@ def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None
         observed_files += len(portable.files)
         if portable.complete:
             break
-        cursor = portable.next_cursor
+        inventory_cursor = portable.next_cursor
     if observed_files != expected_files:
         raise QualificationError("portable collection inventory count differs")
-    changes = api.catalog_changes(after=0)
-    if not any(
-        int(item.get("collection_id", 0)) == collection_id
-        for item in _page_items(changes, "changes")
-    ):
-        raise QualificationError("ResourceSync change cursor omitted the collection")
 
 
 def _assert_lifecycle_events(api: Any, required: set[str]) -> None:
@@ -3618,7 +3612,7 @@ def operate_qualification(
                 raise QualificationError("qualification upload did not retain its encryption key")
             if int(session.get("files_total", -1)) != len(corpus.files):
                 raise QualificationError("finalized collection file count is invalid")
-            _assert_resourcesync(api, collection_id, base_url=base_url)
+            _assert_catalog_sync(api, collection_id)
             with tempfile.TemporaryDirectory(prefix="riverhog-qualification-immediate-") as raw:
                 scratch = Path(raw)
                 _ready_retrieval(
@@ -3662,7 +3656,7 @@ def operate_qualification(
                     *observations,
                     "b2-immediate-client-retrieval",
                     "b2-independent-recovery",
-                    "resourcesync-complete",
+                    "native-catalog-sync-complete",
                     "lifecycle-cursor-monotonic",
                     "download-quota-bounded",
                     "opportunistic-immediate-retrieval",

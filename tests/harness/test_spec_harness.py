@@ -3,19 +3,18 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from riverhog_api.routers.resourcesync import resourcesync_resource_list
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
-from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
+from riverhog_core.catalog_events import record_catalog_event
+from riverhog_core.catalog_models import CollectionRecord
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
-from starlette.requests import Request
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -30,6 +29,7 @@ class Harness:
     collections: SqlAlchemyCollectionService
     search: SqlAlchemySearchService
     archive_stores: SqlAlchemyArchiveStoreService
+    catalog_sync: SqlAlchemyCatalogSyncService
     retrieval: SqlAlchemyRetrievalService
 
 
@@ -44,13 +44,14 @@ def harness(tmp_path: Path) -> Harness:
     with session_scope(factory) as session:
         collection = session.get(CollectionRecord, COLLECTION_ID)
         assert collection is not None
-        session.add(
-            CatalogEventRecord(
-                change="created",
-                collection_id=COLLECTION_ID,
-                occurred_at="2026-07-18T00:00:00.000000Z",
-                inventory_identity=collection.inventory_identity,
-            )
+        record_catalog_event(
+            session,
+            change="created",
+            collection_id=COLLECTION_ID,
+            occurred_at="2026-07-18T00:00:00.000000Z",
+            inventory_identity=collection.inventory_identity,
+            before_groups=(),
+            after_groups=(),
         )
     memory_store = MemoryArchiveStore(archive)
     archive_stores = ArchiveStoreRegistry({"deep": archive_store_binding(memory_store)})
@@ -58,26 +59,12 @@ def harness(tmp_path: Path) -> Harness:
         collections=SqlAlchemyCollectionService(config),
         search=SqlAlchemySearchService(config),
         archive_stores=SqlAlchemyArchiveStoreService(config, archive_stores),
+        catalog_sync=SqlAlchemyCatalogSyncService(config),
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
             None,
         ),
-    )
-
-
-def _request() -> Request:
-    return Request(
-        {
-            "type": "http",
-            "method": "GET",
-            "scheme": "https",
-            "server": ("riverhog.example.test", 443),
-            "path": "/resourcesync/resourcelist.xml",
-            "root_path": "",
-            "query_string": b"",
-            "headers": [],
-        }
     )
 
 
@@ -96,14 +83,16 @@ def test_catalog_search_and_archive_store_share_current_identity(harness: Harnes
         order="asc",
     )
     archive = harness.archive_stores.get("deep")
-    resources = resourcesync_resource_list(
-        _request(),
-        ApplicationPrincipal(
-            app="local",
-            key_id="local-key",
-            access=frozenset({ApplicationAccess(CATALOG_READ)}),
-        ),
-        SimpleNamespace(retrieval=harness.retrieval),
+    principal = ApplicationPrincipal(
+        app="local",
+        key_id="local-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ)}),
+    )
+    checkpoint = harness.catalog_sync.checkpoint(principal=principal)
+    catalog = harness.catalog_sync.collections(
+        cursor=checkpoint.catalog_cursor,
+        limit=100,
+        principal=principal,
     )
 
     assert collection.id == COLLECTION_ID
@@ -113,7 +102,7 @@ def test_catalog_search_and_archive_store_share_current_identity(harness: Harnes
     assert [(copy["store"], copy["state"]) for copy in copy_rows] == [("deep", "uploaded")]
     assert search["files"][0]["file_ref"] == f"{COLLECTION_ID}/readme.txt"
     assert archive.collections == 1
-    assert str(COLLECTION_ID).encode() in resources.body
+    assert [item.collection_id for item in catalog.collections] == [COLLECTION_ID]
 
 
 def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> None:
@@ -130,8 +119,24 @@ def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> N
             hashlib.sha256(b"current archive contract\n").hexdigest(),
         )
     ]
-    changes = harness.retrieval.change_list()
-    assert changes["changes"][0]["etag"] == etag
+    checkpoint = harness.catalog_sync.checkpoint(
+        principal=ApplicationPrincipal(
+            app="local",
+            key_id="local-key",
+            access=frozenset({ApplicationAccess(CATALOG_READ)}),
+        )
+    )
+    catalog = harness.catalog_sync.collections(
+        cursor=checkpoint.catalog_cursor,
+        limit=100,
+        principal=ApplicationPrincipal(
+            app="local",
+            key_id="local-key",
+            access=frozenset({ApplicationAccess(CATALOG_READ)}),
+        ),
+    )
+    assert catalog.collections[0].content_identity == header.content_identity
+    assert len(etag) == 64
 
     files = [(COLLECTION_ID, "readme.txt")]
     plan = harness.retrieval.plan(files)

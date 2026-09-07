@@ -69,6 +69,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             retrieval=retrieval,
             provenance=provenance,
             lifecycle_events=lifecycle_events,
+            catalog_sync=SimpleNamespace(reap_expired_history=Mock(return_value=0)),
         ),
     )
 
@@ -127,6 +128,7 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
                     process_due_verifications=zero,
                 ),
                 lifecycle_events=SimpleNamespace(reap_expired_contexts=zero),
+                catalog_sync=SimpleNamespace(reap_expired_history=zero),
             ),
         )
         task = asyncio.create_task(

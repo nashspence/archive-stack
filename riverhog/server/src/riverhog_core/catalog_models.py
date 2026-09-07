@@ -133,6 +133,8 @@ class CollectionRecord(Base):
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     inventory_identity: Mapped[str] = mapped_column(String(64))
+    archive_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    catalog_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -196,6 +198,14 @@ class CollectionRecord(Base):
         CheckConstraint("length(content_identity) = 64", name="ck_collections_content_identity"),
         CheckConstraint(
             "length(inventory_identity) = 64", name="ck_collections_inventory_identity"
+        ),
+        CheckConstraint(
+            "archive_root_sha256 IS NULL OR length(archive_root_sha256) = 64",
+            name="ck_collections_archive_root_sha256",
+        ),
+        CheckConstraint(
+            "catalog_revision IS NULL OR catalog_revision > 0",
+            name="ck_collections_catalog_revision",
         ),
     )
 
@@ -744,7 +754,7 @@ class CollectionArchiveFileObjectRecord(Base):
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     store: Mapped[str] = mapped_column(String, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
-    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sequence: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     object_id: Mapped[str] = mapped_column(String)
     file_offset: Mapped[int] = mapped_column(BigInteger)
     object_offset: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -922,11 +932,15 @@ class ArchiveCopyObjectUploadRecord(Base):
 class CatalogEventRecord(Base):
     __tablename__ = "catalog_events"
 
-    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sequence: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True, autoincrement=True)
+    revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
     change: Mapped[str] = mapped_column(String)
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
     occurred_at: Mapped[str] = mapped_column(String)
     inventory_identity: Mapped[str] = mapped_column(String(64))
+    archive_root_sha256: Mapped[str] = mapped_column(String(64))
+    content_identity: Mapped[str] = mapped_column(String(64))
+    committed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     published: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
@@ -936,13 +950,37 @@ class CatalogEventRecord(Base):
     __table_args__ = (
         Index("ix_catalog_events_collection", "collection_id", "sequence"),
         Index("ix_catalog_events_published", "published", "sequence"),
+        Index("ix_catalog_events_revision", "revision"),
+        Index("ix_catalog_events_committed", "committed_at", "revision"),
+        CheckConstraint(
+            "revision IS NULL OR revision > 0",
+            name="ck_catalog_events_revision",
+        ),
+    )
+
+
+class CatalogSyncStateRecord(Base):
+    __tablename__ = "catalog_sync_state"
+
+    singleton: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_identity: Mapped[str] = mapped_column(String(64))
+    committed_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    retained_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+
+    __table_args__ = (
+        CheckConstraint("singleton = 1", name="ck_catalog_sync_state_singleton"),
+        CheckConstraint("committed_revision >= 0", name="ck_catalog_sync_state_committed_revision"),
+        CheckConstraint(
+            "retained_revision >= 0 AND retained_revision <= committed_revision",
+            name="ck_catalog_sync_state_retained_revision",
+        ),
     )
 
 
 class CatalogEventAccessGroupRecord(Base):
     __tablename__ = "catalog_event_access_groups"
 
-    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sequence: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     phase: Mapped[str] = mapped_column(String, primary_key=True)
     group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
 

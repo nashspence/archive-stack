@@ -4,12 +4,14 @@ from pathlib import Path
 
 import pytest
 from riverhog_api.schemas.collections import CollectionDeletionPlanOut
+from riverhog_application_access import ALL_RESOURCES, CATALOG_READ, ApplicationAccess
 from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CatalogEventAccessGroupRecord,
     CatalogEventRecord,
+    CatalogSyncStateRecord,
     CollectionAccessGroupMembershipRecord,
     CollectionAccessGroupRecord,
     CollectionArchiveObjectRecord,
@@ -21,12 +23,12 @@ from riverhog_core.catalog_models import (
     RetrievalPlanFileRecord,
     RetrievalPlanRecord,
 )
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collection_deletions import (
     SqlAlchemyCollectionDeletionService,
     _bounded_blocker_sample,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
-from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.transport import (
     COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX,
     COLLECTION_DELETION_BLOCKERS_MAX,
@@ -45,6 +47,11 @@ DELETER = ApplicationPrincipal(
     app="riverhog-client",
     key_id="client-key",
     access=frozenset(),
+)
+READER = ApplicationPrincipal(
+    app="indexer",
+    key_id="indexer-key",
+    access=frozenset({ApplicationAccess(CATALOG_READ, ALL_RESOURCES)}),
 )
 
 
@@ -214,11 +221,8 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
     tmp_path: Path,
 ) -> None:
     config, archive_store, service = _service(tmp_path / "catalog.sqlite3")
-    retrieval = SqlAlchemyRetrievalService(
-        config,
-        ArchiveStoreRegistry({"deep": archive_store_binding(archive_store)}),
-        None,
-    )
+    catalog_sync = SqlAlchemyCatalogSyncService(config)
+    checkpoint = catalog_sync.checkpoint(principal=READER)
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         for index in range(205):
@@ -255,6 +259,19 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
 
     challenge = str(service.plan(COLLECTION_ID)["challenge"])
     service.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
+    bootstrap = catalog_sync.collections(
+        cursor=checkpoint.catalog_cursor,
+        limit=100,
+        principal=READER,
+    )
+    assert bootstrap.collections == []
+    assert bootstrap.changes_cursor is not None
+    initial = catalog_sync.changes(
+        cursor=bootstrap.changes_cursor,
+        limit=100,
+        principal=READER,
+    )
+    assert initial.changes == [] and initial.caught_up is True
     previous_groups = 205
     previous_files = 207
     steps = 0
@@ -272,9 +289,10 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
             event_unpublished = event is not None and not event.published
             if event is not None:
                 assert event.published is (collection is None)
-        changes = retrieval.change_list(after=0)
         if event_unpublished:
-            assert changes == {"cursor": 0, "has_more": True, "changes": []}
+            with session_scope(factory) as session:
+                state = session.get(CatalogSyncStateRecord, 1)
+                assert state is not None and state.committed_revision == 0
 
     assert steps > 9
     assert previous_groups == 0
@@ -282,12 +300,12 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
     with session_scope(factory) as session:
         event = session.query(CatalogEventRecord).one()
         assert event.published is True
-        event_sequence = event.sequence
+        event_revision = event.revision
         assert session.query(CatalogEventAccessGroupRecord).count() == 205
-    changes = retrieval.change_list(after=0)
-    assert changes["cursor"] == event_sequence
-    assert changes["has_more"] is False
-    assert [current["change"] for current in changes["changes"]] == ["deleted"]
+    changes = catalog_sync.changes(cursor=initial.next_cursor, limit=100, principal=READER)
+    assert changes.caught_up is True
+    assert changes.through_revision == str(event_revision)
+    assert [current.operation for current in changes.changes] == ["delete"]
 
 
 def test_deletion_reclaims_a_multi_collection_retrieval_plan_as_one_authority(

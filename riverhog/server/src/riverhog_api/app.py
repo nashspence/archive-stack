@@ -34,11 +34,12 @@ from riverhog_api.error_contracts import RIVERHOG_OPERATION_ERROR_CODES
 from riverhog_api.routers.access_groups import router as access_groups_router
 from riverhog_api.routers.apps import router as apps_router
 from riverhog_api.routers.archive import router as archive_router
+from riverhog_api.routers.catalog_sync import router as catalog_sync_router
 from riverhog_api.routers.collections import router as collections_router
 from riverhog_api.routers.events import router as events_router
+from riverhog_api.routers.portable_collections import router as portable_collections_router
 from riverhog_api.routers.provenance import router as provenance_router
 from riverhog_api.routers.quotas import router as quotas_router
-from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
 from riverhog_api.routers.workflows import router as workflows_router
@@ -152,6 +153,7 @@ def _process_archive_maintenance(
                 requested_cache_reconciliations,
             )
     progressed += container.collection_uploads.process_due_provenance_journal_validations(limit=1)
+    progressed += container.catalog_sync.reap_expired_history()
     progressed += container.collection_uploads.process_due_finalizations(limit=1)
     progressed += container.collection_uploads.reap_expired_custody_transfers(limit=100)
     progressed += container.collection_workflows.reap_expired_claims(limit=100)
@@ -406,6 +408,7 @@ def create_app(
         return {"service": "riverhog", "status": "ok"}
 
     app.include_router(collections_router, prefix="/v1")
+    app.include_router(catalog_sync_router, prefix="/v1")
     app.include_router(events_router, prefix="/v1")
     app.include_router(search_router, prefix="/v1")
     app.include_router(access_groups_router, prefix="/v1")
@@ -413,8 +416,8 @@ def create_app(
     app.include_router(apps_router, prefix="/v1")
     app.include_router(quotas_router, prefix="/v1")
     app.include_router(provenance_router, prefix="/v1")
+    app.include_router(portable_collections_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
-    app.include_router(resourcesync_router)
     app.include_router(workflows_router, prefix="/v1")
     schema = apply_openapi_error_contract(
         app.openapi(),

@@ -1,6 +1,10 @@
 from riverhog_protocol.errors import (
     RIVERHOG_ERROR_TYPES_BY_CODE,
     BadRequest,
+    CatalogSyncCursorExpired,
+    CatalogSyncHistoryExpired,
+    CatalogSyncSourceChanged,
+    CatalogSyncViewChanged,
     Conflict,
     DownloadAllowanceExceeded,
     Forbidden,
@@ -19,6 +23,10 @@ from riverhog_protocol.errors import (
 
 __all__ = [
     "BadRequest",
+    "CatalogSyncCursorExpired",
+    "CatalogSyncHistoryExpired",
+    "CatalogSyncSourceChanged",
+    "CatalogSyncViewChanged",
     "Conflict",
     "DownloadAllowanceExceeded",
     "Forbidden",
@@ -36,6 +44,23 @@ __all__ = [
     "error_type_for_code",
 ]
 
+from riverhog_protocol.catalog_sync import (
+    CATALOG_SYNC_CURSOR_BYTES_MAX,
+    CATALOG_SYNC_FORMAT,
+    CATALOG_SYNC_PAGE_SIZE_MAX,
+    MAX_CATALOG_SYNC_REVISION,
+    CatalogSyncChange,
+    CatalogSyncChangePage,
+    CatalogSyncCheckpoint,
+    CatalogSyncCollectionPage,
+    CatalogSyncCursor,
+    CatalogSyncDelete,
+    CatalogSyncDescriptor,
+    CatalogSyncIdentity,
+    CatalogSyncPosition,
+    CatalogSyncRevision,
+    CatalogSyncUpsert,
+)
 from riverhog_protocol.collection_upload_transport import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
@@ -179,6 +204,21 @@ from riverhog_protocol.transport import (
 )
 
 __all__ += [
+    "CATALOG_SYNC_CURSOR_BYTES_MAX",
+    "CATALOG_SYNC_FORMAT",
+    "CATALOG_SYNC_PAGE_SIZE_MAX",
+    "MAX_CATALOG_SYNC_REVISION",
+    "CatalogSyncChange",
+    "CatalogSyncChangePage",
+    "CatalogSyncCheckpoint",
+    "CatalogSyncCollectionPage",
+    "CatalogSyncCursor",
+    "CatalogSyncDelete",
+    "CatalogSyncDescriptor",
+    "CatalogSyncIdentity",
+    "CatalogSyncPosition",
+    "CatalogSyncRevision",
+    "CatalogSyncUpsert",
     "ArtifactDisposition",
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",

@@ -229,7 +229,7 @@ dependency-readiness:
 	$(call UV_CMD,python scripts/check_dependency_readiness.py $(args))
 
 operation-qualification:
-	$(call UV_CMD,python scripts/operation_qualification.py $(args))
+	$(call UV_CMD,python scripts/operation_qualification.py $(if $(strip $(args)),$(args),check))
 
 database-qualification:
 	@DATABASE_QUALIFICATION_OUTPUT="$(DATABASE_QUALIFICATION_OUTPUT)" \

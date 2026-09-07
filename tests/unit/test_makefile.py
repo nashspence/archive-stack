@@ -340,6 +340,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
         "RIVERHOG_EVENT_CONTEXT_REAP_BATCH_SIZE",
+        "RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME",
+        "RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME",
+        "RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION",
+        "RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX",
+        "RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
@@ -403,6 +408,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         (
             "operation-qualification",
             ("args=check",),
+            "python scripts/operation_qualification.py check",
+        ),
+        (
+            "operation-qualification",
+            (),
             "python scripts/operation_qualification.py check",
         ),
         (

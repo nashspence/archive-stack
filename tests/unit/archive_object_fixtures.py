@@ -753,6 +753,7 @@ def seed_archive_copy(
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
             inventory_identity=inventory_identity,
+            archive_root_sha256=current.archive_root_sha256,
             created_by_app="fixture",
             created_at=UPLOADED_AT,
             file_count=len(file_rows),

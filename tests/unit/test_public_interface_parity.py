@@ -120,14 +120,9 @@ OPERATION_ERROR_CODES = {
 }
 SUPPORTED_CLIENT_HELPERS = {
     "riverhog": {
-        "catalog_changes",
         "close",
         "collection_provenance_journal_metadata",
         "download_collection_provenance_journal",
-        "resourcesync_capabilities",
-        "resourcesync_discovery",
-        "resourcesync_resource_pages",
-        "resourcesync_resources",
         "spawn",
         "stream_retrieval_file",
         "upload_collection_upload_session_provenance_journal",
@@ -404,7 +399,7 @@ READ_COLLECTION_OPERATIONS = {
             "search",
             "trace_collection_file_provenance",
         },
-        "cursor-feed": {"list_lifecycle_events", "resourcesync_change_list"},
+        "cursor-feed": {"list_catalog_sync_changes", "list_lifecycle_events"},
         "exact-set-page": {"get_portable_collection_inventory"},
         "exact-authority-page": {
             "list_retrieval_plan_files",
@@ -413,6 +408,7 @@ READ_COLLECTION_OPERATIONS = {
             "list_processing_claim_dispositions",
             "list_processing_claim_inputs",
             "list_processing_claim_outcomes",
+            "list_catalog_sync_collections",
         },
     },
     "stove0": {
@@ -534,7 +530,8 @@ PUBLIC_QUERY_SELECTORS = {
         },
         "list_retrieval_plan_files": {"page_size", "start_ordinal"},
         "plan_collection_deletion": {"retirement_claim_id"},
-        "resourcesync_change_list": {"after"},
+        "list_catalog_sync_changes": {"cursor", "limit"},
+        "list_catalog_sync_collections": {"cursor", "limit"},
         "search": {"collection", "order", "page_size", "page_token", "q", "sort"},
         "trace_collection_file_provenance": {"page_size", "page_token"},
     },
@@ -762,7 +759,7 @@ def test_official_client_never_drops_a_supplied_query_by_truthiness() -> None:
     assert offenders == []
 
 
-def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
+def test_public_read_services_do_not_use_sql_offsets() -> None:
     modules = (
         access_group_service_module,
         app_key_service_module,
@@ -795,9 +792,7 @@ def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
                 ):
                     observed.add((module.__name__, f"{class_node.name}.{function.name}"))
 
-    assert observed == {
-        ("riverhog_core.services.retrieval", "SqlAlchemyRetrievalService.resource_list_page")
-    }
+    assert observed == set()
 
 
 @pytest.mark.parametrize(

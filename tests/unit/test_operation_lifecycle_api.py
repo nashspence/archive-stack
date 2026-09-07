@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from pathlib import Path
-from xml.etree import ElementTree
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +21,7 @@ from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collection_workflows import (
@@ -101,6 +101,7 @@ def _container(tmp_path: Path) -> ServiceContainer:
             config, session_factory=session_factory
         ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
+        catalog_sync=SqlAlchemyCatalogSyncService(config, session_factory=session_factory),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             stores,
@@ -497,32 +498,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert verification["result"]["valid"] is True
     assert operator.cancel_collection_provenance_verification(collection_id)["state"] == "succeeded"
 
-    resourcesync_documents = [
-        transport.get(path, headers=operator_headers)
-        for path in (
-            "/.well-known/resourcesync",
-            "/resourcesync/capabilitylist.xml",
-            "/resourcesync/resourcelist.xml",
-            "/resourcesync/resourcelist/1.xml",
-            "/resourcesync/changelist.xml",
-        )
-    ]
-    assert all(response.status_code == 200 for response in resourcesync_documents)
-    roots = [ElementTree.fromstring(response.content) for response in resourcesync_documents]
-    assert [root.tag.rsplit("}", 1)[-1] for root in roots] == [
-        "urlset",
-        "urlset",
-        "sitemapindex",
-        "urlset",
-        "urlset",
-    ]
-    referenced_locations = [
-        str(node.text) for node in roots[3].iter() if node.tag.rsplit("}", 1)[-1] == "loc"
-    ]
-    assert referenced_locations == [
-        f"http://testserver/v1/catalog/collections/{collection_id}/inventory"
-    ]
-    assert int(roots[4].attrib["data-cursor"]) > 0
+    checkpoint = operator.create_catalog_sync_checkpoint()
+    catalog = operator.list_catalog_sync_collections(checkpoint.catalog_cursor, limit=100)
+    assert [item.collection_id for item in catalog.collections] == [collection_id]
+    assert catalog.changes_cursor is not None
+    changes = operator.list_catalog_sync_changes(catalog.changes_cursor, limit=100)
+    assert changes.caught_up is True
     inventory = operator.get_portable_collection_inventory(collection_id)
     assert inventory.authority.header.collection == collection_id
     assert len(inventory.files) == 1

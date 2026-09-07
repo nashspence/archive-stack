@@ -23,12 +23,20 @@ import uvicorn
 from http_api_contracts import BrowseTokenCodec
 from riverhog_api.app import create_app
 from riverhog_api_client import ApiClient
-from riverhog_core.app_permissions import ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    ALL_RESOURCES,
+    CATALOG_READ,
+    COLLECTION_ACCESS_GROUPS_MANAGE,
+    PROVENANCE_READ,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import PortableCollectionIdentityBuilder
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
@@ -39,7 +47,7 @@ from stove0_core.persistence import stove0_state_schema
 
 from tests.integration.test_public_selector_plans_postgres import (
     _DATABASE_PLAN_OPERATIONS,
-    _READER,
+    _catalog_sync_plan_cases,
     _index_names,
     _node_types,
     _plan_cases,
@@ -505,7 +513,19 @@ def _database_semantics(engine: Engine, *, unicode_paths: Sequence[str]) -> dict
 
 class _QualificationAppKeys:
     def authenticate(self, token: str) -> ApplicationPrincipal | None:
-        return _READER if token == "qualification-token" else None
+        if token != "qualification-token":
+            return None
+        return ApplicationPrincipal(
+            app="database-qualification",
+            key_id="database-qualification-key",
+            access=frozenset(
+                {
+                    ApplicationAccess(CATALOG_READ, ALL_RESOURCES),
+                    ApplicationAccess(COLLECTION_ACCESS_GROUPS_MANAGE, ALL_RESOURCES),
+                    ApplicationAccess(PROVENANCE_READ, ALL_RESOURCES),
+                }
+            ),
+        )
 
 
 def _start_http_server(application: object) -> tuple[uvicorn.Server, threading.Thread, str]:
@@ -569,10 +589,12 @@ def _measure_http_path(
 ) -> dict[str, object]:
     config = RuntimeConfig(database_url=database_url)
     access_groups = SqlAlchemyCollectionAccessGroupService(config)
+    catalog_sync = SqlAlchemyCatalogSyncService(config)
     retrieval = SqlAlchemyRetrievalService(config, _qualification_archive_stores(), None)
     container = SimpleNamespace(
         app_keys=_QualificationAppKeys(),
         access_groups=access_groups,
+        catalog_sync=catalog_sync,
         retrieval=retrieval,
         browse_tokens=BrowseTokenCodec(
             signing_key=b"riverhog-database-qualification-browse-key-v1",
@@ -614,6 +636,35 @@ def _measure_http_path(
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
+        catalog_rows = 0
+        catalog_pages = 0
+        checkpoint = api.create_catalog_sync_checkpoint()
+        catalog_cursor: str | None = checkpoint.catalog_cursor
+        changes_cursor: str | None = None
+        while catalog_cursor is not None:
+            catalog_page = api.list_catalog_sync_collections(catalog_cursor, limit=100)
+            catalog_pages += 1
+            catalog_rows += len(catalog_page.collections)
+            catalog_cursor = catalog_page.next_cursor
+            changes_cursor = catalog_page.changes_cursor
+        if changes_cursor is None:
+            raise QualificationError("catalog synchronization omitted its replay cursor")
+        replay_pages = 0
+        while True:
+            change_page = api.list_catalog_sync_changes(changes_cursor, limit=100)
+            replay_pages += 1
+            changes_cursor = change_page.next_cursor
+            if change_page.caught_up:
+                break
+        catalog_ms = (time.perf_counter() - started) * 1000
+        _current, catalog_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        if catalog_rows != group_rows:
+            raise QualificationError("catalog synchronization lost a collection")
+
+        gc.collect()
+        tracemalloc.start()
+        started = time.perf_counter()
         inventory_rows = 0
         cursor: str | None = None
         inventory_identity: str | None = None
@@ -633,7 +684,7 @@ def _measure_http_path(
         inventory_ms = (time.perf_counter() - started) * 1000
         _current, inventory_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        if max(groups_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
+        if max(groups_peak, catalog_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
             raise QualificationError("full HTTP path exceeded its application-memory budget")
 
         headers = {"Authorization": "Bearer qualification-token"}
@@ -663,6 +714,7 @@ def _measure_http_path(
         restart_token = first.get("next_page_token")
         if not isinstance(restart_token, str) or not restart_token:
             raise QualificationError("access-group browse did not issue a restart token")
+        catalog_restart_cursor = api.create_catalog_sync_checkpoint().catalog_cursor
     finally:
         api.close()
         _stop_http_server(server, thread)
@@ -687,6 +739,13 @@ def _measure_http_path(
             restarted_payload = restart_response.json()
             if not restarted_payload.get("groups"):
                 raise QualificationError("restart browse token omitted its next row")
+            catalog_restart_response = client.get(
+                "/v1/catalog-sync/collections",
+                params={"cursor": catalog_restart_cursor, "limit": 1},
+            )
+            catalog_restart_response.raise_for_status()
+            if not catalog_restart_response.json().get("collections"):
+                raise QualificationError("restart catalog cursor omitted its next row")
     finally:
         _stop_http_server(restarted, restarted_thread)
     return {
@@ -700,6 +759,14 @@ def _measure_http_path(
             "total_ms": round(inventory_ms, 3),
             "peak_application_bytes": inventory_peak,
         },
+        "official_client_catalog_sync": {
+            "rows": catalog_rows,
+            "catalog_pages": catalog_pages,
+            "replay_pages": replay_pages,
+            "total_ms": round(catalog_ms, 3),
+            "peak_application_bytes": catalog_peak,
+            "page_rows": 100,
+        },
         "slow_consumer": {
             "pause_ms": 100,
             "open_transactions_while_paused": transactions_while_consumer_paused,
@@ -707,7 +774,10 @@ def _measure_http_path(
         "disconnect": {
             "open_transactions_after_disconnect": transactions_after_disconnect,
         },
-        "restart": {"bounded_read_succeeded": True},
+        "restart": {
+            "bounded_read_succeeded": True,
+            "catalog_cursor_succeeded": True,
+        },
     }
 
 
@@ -868,7 +938,11 @@ def _compare_cardinalities(
 
     low_http = cast(dict[str, dict[str, object]], low["http"])
     high_http = cast(dict[str, dict[str, object]], high["http"])
-    for key in ("official_client_bounded_pages", "official_client_inventory"):
+    for key in (
+        "official_client_bounded_pages",
+        "official_client_catalog_sync",
+        "official_client_inventory",
+    ):
         low_peak = int(low_http[key]["peak_application_bytes"])
         high_peak = int(high_http[key]["peak_application_bytes"])
         if high_peak > low_peak * 4 + 8 * 1024 * 1024:
@@ -880,7 +954,7 @@ def _fixture_sha256(path: Path) -> str:
 
 
 def build_evidence(database_url: str, *, source_sha: str) -> dict[str, object]:
-    cases = _plan_cases()
+    cases = (*_plan_cases(), *_catalog_sync_plan_cases())
     if len({case.id for case in cases}) != len(cases):
         raise QualificationError("database selector plan identities are not unique")
     measurements = [

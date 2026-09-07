@@ -1,5 +1,9 @@
 from riverhog_protocol import (
     BadRequest,
+    CatalogSyncCursorExpired,
+    CatalogSyncHistoryExpired,
+    CatalogSyncSourceChanged,
+    CatalogSyncViewChanged,
     Conflict,
     DownloadAllowanceExceeded,
     Forbidden,
@@ -13,6 +17,7 @@ from riverhog_protocol import (
     Unauthorized,
 )
 
+from riverhog_api_client.catalog_sync import CatalogReplica, CatalogSyncApi
 from riverhog_api_client.client import (
     ApiClient,
     ApplicationPermission,
@@ -37,10 +42,16 @@ from riverhog_api_client.uploads import (
 
 __all__ = [
     "ApiClient",
+    "CatalogReplica",
+    "CatalogSyncApi",
     "ApplicationPermission",
     "ApplicationResource",
     "CollectionUploadIdempotencyKey",
     "BadRequest",
+    "CatalogSyncCursorExpired",
+    "CatalogSyncHistoryExpired",
+    "CatalogSyncSourceChanged",
+    "CatalogSyncViewChanged",
     "Conflict",
     "DownloadAllowanceExceeded",
     "Forbidden",

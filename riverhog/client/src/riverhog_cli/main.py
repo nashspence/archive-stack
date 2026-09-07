@@ -117,6 +117,7 @@ app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
 access_group_app = typer.Typer(help="Collection authorization groups.")
 event_app = typer.Typer(help="Lifecycle event inspection.")
+catalog_sync_app = typer.Typer(help="Bounded native catalog synchronization steps.")
 retrieval_app = typer.Typer(help="Retrieval operations.")
 retrieval_cache_app = typer.Typer(help="Retrieval-cache inspection.")
 app_key_app.add_typer(app_key_access_app, name="access")
@@ -132,6 +133,7 @@ archive_app.add_typer(archive_copy_app, name="copy")
 app.add_typer(application_app, name="app")
 app.add_typer(access_group_app, name="access-group")
 app.add_typer(event_app, name="event")
+app.add_typer(catalog_sync_app, name="catalog-sync")
 app.add_typer(retrieval_app, name="retrieval")
 retrieval_app.add_typer(retrieval_cache_app, name="cache")
 app.add_typer(local_app, name="local")
@@ -220,6 +222,67 @@ def event_list_cmd(
         .model_dump(mode="json", exclude_none=True)
     )
     emit(payload if json_mode else format_lifecycle_events(payload), json_mode=json_mode)
+
+
+@catalog_sync_app.command("checkpoint")
+def catalog_sync_checkpoint_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Capture one exact authorized synchronization checkpoint."""
+
+    payload = client().create_catalog_sync_checkpoint().model_dump(mode="json")
+    human = "\n".join(
+        (
+            f"source: {payload['source_identity']}",
+            f"authorization view: {payload['authorization_view_identity']}",
+            f"catalog cursor: {payload['catalog_cursor']}",
+        )
+    )
+    emit(payload if json_mode else human, json_mode=json_mode)
+
+
+@catalog_sync_app.command("collections")
+def catalog_sync_collections_cmd(
+    cursor: Annotated[str, typer.Option("--cursor", help="Exact catalog continuation")],
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Apply one bounded collection-frontier read step."""
+
+    result = client().list_catalog_sync_collections(cursor, limit=limit)
+    payload = result.model_dump(mode="json")
+    lines = [f"collections: {len(result.collections)}"]
+    lines.extend(
+        f"- {item.collection_id}  revision={item.revision}  "
+        f"archive_root_sha256={item.archive_root_sha256}  content_identity={item.content_identity}"
+        for item in result.collections
+    )
+    lines.append(f"next cursor: {result.next_cursor or '-'}")
+    lines.append(f"changes cursor: {result.changes_cursor or '-'}")
+    emit(payload if json_mode else "\n".join(lines), json_mode=json_mode)
+
+
+@catalog_sync_app.command("changes")
+def catalog_sync_changes_cmd(
+    cursor: Annotated[str, typer.Option("--cursor", help="Exact change continuation")],
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Apply one bounded fixed-horizon change step."""
+
+    result = client().list_catalog_sync_changes(cursor, limit=limit)
+    payload = result.model_dump(mode="json")
+    lines = [
+        f"changes: {len(result.changes)}",
+        f"through revision: {result.through_revision}",
+        f"caught up: {'yes' if result.caught_up else 'no'}",
+    ]
+    lines.extend(
+        f"- {item.operation} collection={item.collection_id} revision={item.revision}"
+        for item in result.changes
+    )
+    lines.append(f"next cursor: {result.next_cursor}")
+    emit(payload if json_mode else "\n".join(lines), json_mode=json_mode)
 
 
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}

@@ -12,6 +12,7 @@ from typing import Annotated, Any, cast
 
 import typer
 from http_api_contracts import BrowseTokenCodec, BrowseTokenError
+from riverhog_api_client.catalog_sync import CatalogReplica
 from riverhog_api_client.client import ApiClient, RestorePolicy
 from riverhog_api_client.downloads import (
     RetrievalDownload,
@@ -52,6 +53,7 @@ LOCAL_LIST_SORT_FIELDS = {
     "status": "status",
 }
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
+LOCAL_CATALOG_RECONCILE_BATCH = 100
 RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS = 60 * 60
 
 
@@ -122,6 +124,11 @@ def _target(*, create: bool = True) -> Path:
 def _database(target: Path) -> Path:
     raw = os.getenv("RIVERHOG_LOCAL_DATABASE", "").strip()
     return Path(raw).expanduser().resolve() if raw else target / ".riverhog-local.sqlite3"
+
+
+def _catalog_database(target: Path) -> Path:
+    database = _database(target)
+    return database.with_name(database.name + ".catalog")
 
 
 def _connect(target: Path) -> sqlite3.Connection:
@@ -371,39 +378,52 @@ def _matches(path: Path, *, byte_count: int, sha256: str) -> bool:
     return path.is_file() and path.stat().st_size == byte_count and _sha256(path) == sha256
 
 
-def _refresh_catalog(db: sqlite3.Connection, api: ApiClient) -> None:
-    row = db.execute("SELECT value FROM settings WHERE key = 'catalog_cursor'").fetchone()
-    after = int(row["value"]) if row is not None else 0
-    while True:
-        changes = api.catalog_changes(after=after)
-        for change in changes["changes"]:
-            collection_id = normalize_collection_id(change["collection_id"])
-            desired = db.execute(
-                "SELECT 1 FROM desired_collections WHERE collection_id = ?",
-                (collection_id,),
-            ).fetchone()
-            if desired is None:
-                continue
-            if change["change"] == "deleted":
-                db.execute(
-                    "UPDATE desired_collections SET remote_deleted = 1 WHERE collection_id = ?",
-                    (collection_id,),
+def _refresh_catalog(db: sqlite3.Connection, api: ApiClient, target: Path) -> None:
+    """Advance one native catalog page and one bounded local reconciliation slice."""
+
+    replica = CatalogReplica(_catalog_database(target))
+    status = replica.status()
+    if status["phase"] in {"new", "reset_required"}:
+        status = replica.start(api)
+    else:
+        status = replica.step(api, limit=LOCAL_CATALOG_RECONCILE_BATCH)
+    if status["usable"]:
+        row = db.execute(
+            "SELECT value FROM settings WHERE key = 'catalog_reconcile_after'"
+        ).fetchone()
+        after = int(row["value"]) if row is not None else 0
+        collection_ids = [
+            int(current["collection_id"])
+            for current in db.execute(
+                "SELECT collection_id FROM desired_collections "
+                "WHERE collection_id > ? ORDER BY collection_id LIMIT ?",
+                (after, LOCAL_CATALOG_RECONCILE_BATCH),
+            )
+        ]
+        if not collection_ids and after:
+            after = 0
+            collection_ids = [
+                int(current["collection_id"])
+                for current in db.execute(
+                    "SELECT collection_id FROM desired_collections ORDER BY collection_id LIMIT ?",
+                    (LOCAL_CATALOG_RECONCILE_BATCH,),
                 )
-            elif change["change"] in {"created", "updated"}:
-                _refresh_collection(db, api, collection_id)
-        cursor = int(changes["cursor"])
+            ]
+        for collection_id in collection_ids:
+            present = replica.get(collection_id) is not None
+            db.execute(
+                "UPDATE desired_collections SET remote_deleted = ? WHERE collection_id = ?",
+                (int(not present), collection_id),
+            )
         db.execute(
             """
-            INSERT INTO settings (key, value) VALUES ('catalog_cursor', ?)
+            INSERT INTO settings (key, value) VALUES ('catalog_reconcile_after', ?)
             ON CONFLICT (key) DO UPDATE SET value = excluded.value
             """,
-            (str(cursor),),
+            (str(collection_ids[-1] if collection_ids else after),),
         )
-        if not changes.get("has_more"):
-            return
-        if cursor <= after:
-            raise InvalidState("ResourceSync cursor did not advance while changes remained")
-        after = cursor
+    replica.reclaim(limit=LOCAL_CATALOG_RECONCILE_BATCH)
+    db.commit()
 
 
 def _missing_files(
@@ -623,7 +643,7 @@ def _sync(
     policy = cast(RestorePolicy, restore_policy)
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
-        _refresh_catalog(db, api)
+        _refresh_catalog(db, api, target)
         materialized_files = 0
         unavailable: set[tuple[int, str]] = set()
         last_retrieval_id: str | None = None

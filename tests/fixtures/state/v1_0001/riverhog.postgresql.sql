@@ -53,19 +53,46 @@ CREATE TABLE archive_download_usage (
 );
 
 CREATE TABLE catalog_events (
-	sequence SERIAL NOT NULL,
+	sequence BIGSERIAL NOT NULL,
+	revision BIGINT,
 	change VARCHAR NOT NULL,
 	collection_id BIGINT NOT NULL,
 	occurred_at VARCHAR NOT NULL,
 	inventory_identity VARCHAR(64) NOT NULL,
+	archive_root_sha256 VARCHAR(64) NOT NULL,
+	content_identity VARCHAR(64) NOT NULL,
+	committed_at VARCHAR,
 	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
-	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_catalog_events_revision CHECK (revision IS NULL OR revision > 0),
+	UNIQUE (revision),
+	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_catalog_events_archive_root_sha256_hex CHECK (length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_catalog_events_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence);
 
 CREATE INDEX ix_catalog_events_published ON catalog_events (published, sequence);
+
+CREATE INDEX ix_catalog_events_revision ON catalog_events (revision);
+
+CREATE INDEX ix_catalog_events_committed ON catalog_events (committed_at, revision);
+
+CREATE TABLE catalog_sync_state (
+	singleton SERIAL NOT NULL,
+	source_identity VARCHAR(64) NOT NULL,
+	committed_revision BIGINT DEFAULT 0 NOT NULL,
+	retained_revision BIGINT DEFAULT 0 NOT NULL,
+	PRIMARY KEY (singleton),
+	CONSTRAINT ck_catalog_sync_state_singleton CHECK (singleton = 1),
+	CONSTRAINT ck_catalog_sync_state_committed_revision CHECK (committed_revision >= 0),
+	CONSTRAINT ck_catalog_sync_state_retained_revision CHECK (retained_revision >= 0 AND retained_revision <= committed_revision),
+	CONSTRAINT ck_catalog_sync_state_source_identity_hex CHECK (length(source_identity) = 64 AND lower(source_identity) = source_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(source_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+);
+
+INSERT INTO catalog_sync_state (singleton, source_identity, committed_revision, retained_revision)
+VALUES (1, md5(random()::text || clock_timestamp()::text) || md5(random()::text || clock_timestamp()::text), 0, 0);
 
 CREATE TABLE collection_deletions (
 	collection_id BIGSERIAL NOT NULL,
@@ -189,6 +216,8 @@ CREATE TABLE collections (
 	provenance_mode VARCHAR NOT NULL,
 	provenance_identity VARCHAR(64),
 	inventory_identity VARCHAR(64) NOT NULL,
+	archive_root_sha256 VARCHAR(64),
+	catalog_revision BIGINT,
 	ingest_source VARCHAR,
 	created_by_app VARCHAR NOT NULL,
 	created_by_key_id VARCHAR,
@@ -204,11 +233,14 @@ CREATE TABLE collections (
 	CONSTRAINT ck_collections_provenance_identity CHECK (provenance_mode IN ('captured','mixed') AND provenance_identity IS NOT NULL OR provenance_mode = 'omitted' AND provenance_identity IS NULL),
 	CONSTRAINT ck_collections_content_identity CHECK (length(content_identity) = 64),
 	CONSTRAINT ck_collections_inventory_identity CHECK (length(inventory_identity) = 64),
+	CONSTRAINT ck_collections_archive_root_sha256 CHECK (archive_root_sha256 IS NULL OR length(archive_root_sha256) = 64),
+	CONSTRAINT ck_collections_catalog_revision CHECK (catalog_revision IS NULL OR catalog_revision > 0),
 	CONSTRAINT ck_collections_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_archive_generation_hex CHECK (length(archive_generation) = 64 AND lower(archive_generation) = archive_generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_provenance_identity_hex CHECK (provenance_identity IS NULL OR length(provenance_identity) = 64 AND lower(provenance_identity) = provenance_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(provenance_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collections_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_collections_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_archive_root_sha256_hex CHECK (archive_root_sha256 IS NULL OR length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
 CREATE INDEX ix_collections_created_at_id ON collections (created_at, id);
@@ -1195,7 +1227,7 @@ CREATE TABLE collection_archive_file_objects (
 	collection_id BIGINT NOT NULL,
 	store VARCHAR NOT NULL,
 	path VARCHAR NOT NULL,
-	sequence INTEGER NOT NULL,
+	sequence BIGINT NOT NULL,
 	object_id VARCHAR NOT NULL,
 	file_offset BIGINT NOT NULL,
 	object_offset BIGINT NOT NULL,
@@ -1430,7 +1462,7 @@ CREATE INDEX ix_collection_access_groups_status_id ON collection_access_groups (
 CREATE INDEX ix_collection_access_groups_updated_at_id ON collection_access_groups (updated_at, id);
 
 CREATE TABLE catalog_event_access_groups (
-	sequence INTEGER NOT NULL,
+	sequence BIGINT NOT NULL,
 	phase VARCHAR NOT NULL,
 	group_id VARCHAR(64) NOT NULL,
 	PRIMARY KEY (sequence, phase, group_id),

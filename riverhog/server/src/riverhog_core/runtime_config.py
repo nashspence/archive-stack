@@ -16,6 +16,7 @@ from riverhog_archive_contracts import (
     CollectionEncryptionBinding,
     normalize_passphrase_id,
 )
+from riverhog_protocol import CATALOG_SYNC_PAGE_SIZE_MAX
 from time_formats import parse_duration
 
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
@@ -191,6 +192,11 @@ class RuntimeConfig:
     browse_token_signing_key: str = DEFAULT_BROWSE_TOKEN_SIGNING_KEY
     browse_require_explicit_signing_key: bool = False
     browse_token_lifetime: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    catalog_sync_bootstrap_lifetime: timedelta = field(default_factory=lambda: timedelta(days=7))
+    catalog_sync_cursor_lifetime: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    catalog_sync_history_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
+    catalog_sync_page_size_max: int = CATALOG_SYNC_PAGE_SIZE_MAX
+    catalog_sync_history_reap_batch_size: int = 100
 
     def __post_init__(self) -> None:
         if len(self.browse_token_signing_key.encode("utf-8")) < 32:
@@ -204,6 +210,20 @@ class RuntimeConfig:
             )
         if self.browse_token_lifetime.total_seconds() < 1:
             raise ValueError("RIVERHOG_BROWSE_TOKEN_LIFETIME must be positive")
+        if self.catalog_sync_history_retention.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION must be positive")
+        for name, lifetime in (
+            ("RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME", self.catalog_sync_bootstrap_lifetime),
+            ("RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME", self.catalog_sync_cursor_lifetime),
+        ):
+            if lifetime.total_seconds() <= 0:
+                raise ValueError(f"{name} must be positive")
+            if lifetime > self.catalog_sync_history_retention:
+                raise ValueError(f"{name} must not exceed catalog synchronization retention")
+        if not 1 <= self.catalog_sync_page_size_max <= CATALOG_SYNC_PAGE_SIZE_MAX:
+            raise ValueError("RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX must be within the v1 wire bound")
+        if self.catalog_sync_history_reap_batch_size < 1:
+            raise ValueError("RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE must be positive")
         if not self.event_source.strip():
             raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
         if self.event_context_retention.total_seconds() <= 0:
@@ -657,6 +677,25 @@ def load_runtime_config() -> RuntimeConfig:
             os.getenv("RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY", "false")
         ),
         browse_token_lifetime=parse_duration(os.getenv("RIVERHOG_BROWSE_TOKEN_LIFETIME", "24h")),
+        catalog_sync_bootstrap_lifetime=parse_duration(
+            os.getenv("RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME", "7d")
+        ),
+        catalog_sync_cursor_lifetime=parse_duration(
+            os.getenv("RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME", "24h")
+        ),
+        catalog_sync_history_retention=parse_duration(
+            os.getenv("RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION", "30d")
+        ),
+        catalog_sync_page_size_max=_parse_int(
+            os.getenv("RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX", str(CATALOG_SYNC_PAGE_SIZE_MAX)),
+            name="RIVERHOG_CATALOG_SYNC_PAGE_SIZE_MAX",
+            minimum=1,
+        ),
+        catalog_sync_history_reap_batch_size=_parse_int(
+            os.getenv("RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE", "100"),
+            name="RIVERHOG_CATALOG_SYNC_HISTORY_REAP_BATCH_SIZE",
+            minimum=1,
+        ),
         database_url=database_url,
         log_level=log_level,
         archive_write_store=archive_write_store,

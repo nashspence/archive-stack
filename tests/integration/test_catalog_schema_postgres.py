@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from riverhog_age import CHUNK_SIZE
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
+    CATALOG_READ,
     COLLECTIONS_CREATE,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -23,14 +25,19 @@ from riverhog_core.catalog_db import (
     session_scope,
     validate_db,
 )
+from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
+    CatalogEventRecord,
+    CatalogSyncStateRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadRecord,
     RetrievalPlanObjectRecord,
     RetrievalPlanPlacementRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from sqlalchemy import inspect, select, text
@@ -192,6 +199,90 @@ def test_postgres_upload_idempotency_is_independent_per_application(
     assert idempotency_index["column_names"] == ["initiated_by_app", "idempotency_key"]
     assert idempotency_index["unique"] is True
     engine.dispose()
+
+
+def test_postgres_catalog_revisions_serialize_commit_and_restart(
+    isolated_database_url: str,
+) -> None:
+    initialize_db(isolated_database_url)
+    factory = make_session_factory(isolated_database_url)
+    with session_scope(factory) as session:
+        for collection_id in (1, 2):
+            identity = f"{collection_id:064x}"
+            session.add(
+                CollectionRecord(
+                    id=collection_id,
+                    creation_idempotency_key=f"catalog-sync-{collection_id}",
+                    creation_identity_sha256=identity,
+                    creation_custody_mode="producer-retained",
+                    archive_generation=identity,
+                    content_identity=identity,
+                    encryption_format="age-v1-scrypt",
+                    passphrase_id="fixture",
+                    provenance_mode="omitted",
+                    provenance_identity=None,
+                    inventory_identity=identity,
+                    archive_root_sha256=identity,
+                    created_by_app="fixture",
+                    created_at="2026-09-07T00:00:00.000000Z",
+                    is_published=True,
+                    file_count=0,
+                    file_bytes=0,
+                )
+            )
+
+    first_locked = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+
+    def publish(collection_id: int) -> int:
+        with session_scope(make_session_factory(isolated_database_url)) as session:
+            if collection_id == 2:
+                second_started.set()
+            event = record_catalog_event(
+                session,
+                change="created",
+                collection_id=collection_id,
+                occurred_at="2026-09-07T00:00:00.000000Z",
+                inventory_identity=f"{collection_id:064x}",
+                before_groups=(),
+                after_groups=(),
+            )
+            if collection_id == 1:
+                first_locked.set()
+                assert release_first.wait(timeout=5)
+            assert event.revision is not None
+            return event.revision
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(publish, 1)
+        assert first_locked.wait(timeout=5)
+        second = executor.submit(publish, 2)
+        assert second_started.wait(timeout=5)
+        release_first.set()
+        assert (first.result(timeout=5), second.result(timeout=5)) == (1, 2)
+
+    with session_scope(make_session_factory(isolated_database_url)) as session:
+        state = session.get(CatalogSyncStateRecord, 1)
+        assert state is not None and state.committed_revision == 2
+        assert list(
+            session.scalars(
+                select(CatalogEventRecord.revision).order_by(CatalogEventRecord.revision)
+            )
+        ) == [1, 2]
+
+    restarted = SqlAlchemyCatalogSyncService(
+        RuntimeConfig(database_url=isolated_database_url),
+        session_factory=make_session_factory(isolated_database_url),
+    )
+    reader = ApplicationPrincipal(
+        app="indexer",
+        key_id="indexer-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ, ALL_RESOURCES)}),
+    )
+    checkpoint = restarted.checkpoint(principal=reader)
+    page = restarted.collections(cursor=checkpoint.catalog_cursor, limit=100, principal=reader)
+    assert [item.collection_id for item in page.collections] == [1, 2]
 
 
 def test_postgres_archive_sequence_state_round_trips_full_v1_domain(
