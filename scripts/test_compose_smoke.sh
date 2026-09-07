@@ -283,8 +283,6 @@ client_environment=(
 )
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint riverhog test tag create stove0-audio-archive --json >/dev/null
-compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
-  --entrypoint riverhog test tag create archive-audio --json >/dev/null
 
 stove0_compose up --detach --build --wait \
   state api controller worker ffprobe-sampling-observer exiftool-observer opus-target \
@@ -306,6 +304,7 @@ adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
 adapter_run_code="from ftplib import FTP, all_errors
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import time
@@ -360,14 +359,60 @@ with RiverhogFtpAdapterClient(
     status = client.get_ftp_adapter_status()
     assert status['sources'][0]['claims'] == 0, status
 assert all(not source.exists() for source, _content in uploads)
-assert list(Path('/intake/ftp/.riverhog-ftp-adapter/receipts').glob('*.json'))"
+receipts = sorted(Path('/intake/ftp/.riverhog-ftp-adapter/receipts').glob('*.json'))
+assert len(receipts) == 1, receipts
+receipt = json.loads(receipts[0].read_text(encoding='utf-8'))
+print(json.dumps({
+    key: receipt[key]
+    for key in ('collection_id', 'archive_root_sha256', 'content_identity')
+}, sort_keys=True))"
 scale_started_ns="$(date +%s%N)"
-adapter_compose exec -T \
+input_receipt_json="$(adapter_compose exec -T \
+  --env RIVERHOG_SMOKE_RECEIPT_OUTPUT=1 \
   --env "STOVE0_SMOKE_FILE_COUNT=${smoke_file_count}" \
   --env "STOVE0_SMOKE_AUDIO_FRAMES=${smoke_audio_frames}" \
-  ftp-adapter python -c "${adapter_run_code}"
+  ftp-adapter python -c "${adapter_run_code}")"
+test -n "${input_receipt_json}"
+input_collection_id="$(printf '%s' "${input_receipt_json}" | jq -r '.collection_id')"
 
-cache_code="from riverhog_api_client import ApiClient
+invoke_code="import json, os, urllib.request
+from stove0_operator_contracts import WorkCreateIn, WorkflowPreviewIn
+from stove0_protocol import CollectionRootRef
+receipt = json.loads(os.environ['RIVERHOG_INPUT_RECEIPT'])
+root = CollectionRootRef.model_validate(receipt)
+def post(path, payload):
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080' + path,
+        data=payload.model_dump_json(exclude_none=True).encode(),
+        headers={
+            'Authorization': 'Bearer stove0-compose-smoke-token',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    return json.load(urllib.request.urlopen(request, timeout=30))
+preview = post(
+    '/v1/workflow-previews',
+    WorkflowPreviewIn(recipe_id='stove0.audio-archive/v1', inputs=(root,)),
+)
+assert preview['state'] == 'ready', preview
+work = post(
+    '/v1/work',
+    WorkCreateIn(
+        recipe_id='stove0.audio-archive/v1',
+        inputs=(root,),
+        preview_sha256=preview['preview_sha256'],
+    ),
+)
+print(work['work_id'])"
+stove0_work_id="$(stove0_compose exec -T \
+  --env RIVERHOG_SMOKE_INVOCATION_OUTPUT=1 \
+  --env "RIVERHOG_INPUT_RECEIPT=${input_receipt_json}" \
+  api python -c "${invoke_code}")"
+test -n "${stove0_work_id}"
+
+cache_code="import os
+from riverhog_api_client import ApiClient
 def collect(method, key, **kwargs):
     page_token = None
     rows = []
@@ -378,15 +423,16 @@ def collect(method, key, **kwargs):
         if page_token is None:
             return rows
 with ApiClient() as client:
-    collections = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
-    assert len(collections) == 1, collections
-    input_id = collections[0]['id']
+    input_id = int(os.environ['INPUT_COLLECTION_ID'])
+    collection = client.get_collection(input_id)
+    assert collection['id'] == input_id, collection
     cached = collect(client.list_retrieval_cache_objects, 'objects', collection_id=input_id)
     assert cached, cached
     assert all(row['state'] == 'ready' for row in cached), cached
     assert all('new_archive' in row['lease_categories'] for row in cached), cached
     assert {row['cache_store'] for row in cached} == {'local'}, cached"
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   --entrypoint python test -c "${cache_code}"
 
 overflow_root="${smoke_root}/overflow"
@@ -497,6 +543,28 @@ else:
 stove0_compose exec -T api python -c "${wait_code}"
 scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 
+output_code="import json, os, urllib.request
+request = urllib.request.Request(
+    'http://127.0.0.1:8080/v1/work/' + os.environ['STOVE0_WORK_ID'],
+    headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
+)
+work = json.load(urllib.request.urlopen(request, timeout=30))
+assert work['phase'] == 'complete', work
+targets = work['preview_acceptance']['target_plans']
+assert len(targets) == 1, work
+child_request = urllib.request.Request(
+    'http://127.0.0.1:8080/v1/work/' + targets[0]['work_id'],
+    headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
+)
+child = json.load(urllib.request.urlopen(child_request, timeout=30))
+assert child['phase'] == 'complete' and child['output'] is not None, child
+print(child['output']['collection_id'])"
+output_collection_id="$(stove0_compose exec -T \
+  --env RIVERHOG_SMOKE_SETTLEMENT_OUTPUT=1 \
+  --env "STOVE0_WORK_ID=${stove0_work_id}" \
+  api python -c "${output_code}")"
+test -n "${output_collection_id}"
+
 lineage_code="import json, os
 from riverhog_api_client import ApiClient
 def collect(method, key, **kwargs):
@@ -509,9 +577,8 @@ def collect(method, key, **kwargs):
         if page_token is None:
             return rows
 with ApiClient() as client:
-    inputs = collect(client.list_collections, 'collections', tag='stove0-audio-archive')
-    outputs = collect(client.list_collections, 'collections', tag='archive-audio')
-    assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
+    inputs = [client.get_collection(int(os.environ['INPUT_COLLECTION_ID']))]
+    outputs = [client.get_collection(int(os.environ['OUTPUT_COLLECTION_ID']))]
     input_files = [row for row in collect(client.search, 'files', collection=inputs[0]['id']) if not row['path'].startswith('riverhog/')]
     output_files = [row for row in collect(client.search, 'files', collection=outputs[0]['id']) if not row['path'].startswith('riverhog/')]
     audio_count = int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
@@ -562,6 +629,8 @@ with ApiClient() as client:
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --env "STOVE0_SMOKE_FILE_COUNT=${smoke_file_count}" \
   --env "STOVE0_SMOKE_ELAPSED_NS=${scale_elapsed_ns}" \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
+  --env "OUTPUT_COLLECTION_ID=${output_collection_id}" \
   --entrypoint python test -c "${lineage_code}"
 
 state_metrics_code="import json
