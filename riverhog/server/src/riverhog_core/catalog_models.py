@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import secrets
 
+from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
 from sqlalchemy import (
     BigInteger,
@@ -1832,6 +1833,12 @@ class CollectionUploadFileRecord(Base):
         LargeBinary,
         default=lambda context: relpath_sort_key(str(context.get_current_parameters()["path"])),
     )
+    semantic_order_rank: Mapped[int] = mapped_column(
+        Integer,
+        default=lambda context: collection_upload_path_order_key(
+            str(context.get_current_parameters()["path"])
+        )[0],
+    )
     file_order: Mapped[int] = mapped_column(Integer)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -1864,12 +1871,22 @@ class CollectionUploadFileRecord(Base):
             "path_sort_key",
         ),
         Index(
+            "idx_collection_upload_files_semantic_order",
+            "collection_id",
+            "semantic_order_rank",
+            "path_sort_key",
+        ),
+        Index(
             "ux_collection_upload_files_order",
             "collection_id",
             "file_order",
             unique=True,
         ),
         CheckConstraint("file_order >= 0", name="ck_collection_upload_files_order"),
+        CheckConstraint(
+            "semantic_order_rank >= 0 AND semantic_order_rank <= 2",
+            name="ck_collection_upload_files_semantic_order_rank",
+        ),
         CheckConstraint("bytes >= 0", name="ck_collection_upload_files_bytes"),
         CheckConstraint("raw_parts_accepted >= 0", name="ck_collection_upload_files_raw_parts"),
         CheckConstraint("length(sha256) = 64", name="ck_collection_upload_files_sha256"),

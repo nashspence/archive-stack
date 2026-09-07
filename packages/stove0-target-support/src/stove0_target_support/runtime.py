@@ -63,10 +63,6 @@ class TargetCollectionPublication:
         self.writer = writer
         self._local_files: dict[str, Path] = {}
 
-    @property
-    def custody_receipts(self) -> Mapping[str, ProducerArtifactCustody]:
-        return self.writer.custody_receipts
-
     def append(
         self,
         source: ProducerInput,
@@ -100,7 +96,7 @@ class TargetCollectionPublication:
             source_count += 1
         if source_count == 0:
             raise ValueError("target output source references must be nonempty")
-        self._release_custodied_files()
+        self._release_custodied_files(receipts)
         return cast(tuple[ProducerArtifactCustody, ...], receipts)
 
     def finish_success(
@@ -131,7 +127,7 @@ class TargetCollectionPublication:
             disposition_set=disposition_set,
             **kwargs,
         )
-        self._release_custodied_files()
+        self._release_all_files()
         output_collection = OutputCollectionRef(
             collection_id=receipt.collection_id,
             archive_root_sha256=receipt.archive_root_sha256,
@@ -169,13 +165,23 @@ class TargetCollectionPublication:
             self.execution.session.record_completed(status)
         return status
 
-    def _release_custodied_files(self) -> None:
-        for path in set(self.writer.custody_receipts) & set(self._local_files):
-            local = self._local_files.pop(path)
+    def _release_custodied_files(self, receipts: Iterable[ProducerArtifactCustody]) -> None:
+        for receipt in receipts:
+            local = self._local_files.pop(receipt.artifact.path, None)
+            if local is None:
+                continue
             try:
                 local.unlink()
             except FileNotFoundError:
                 pass
+
+    def _release_all_files(self) -> None:
+        for local in self._local_files.values():
+            try:
+                local.unlink()
+            except FileNotFoundError:
+                pass
+        self._local_files.clear()
 
 
 class TargetExecutionRuntime:

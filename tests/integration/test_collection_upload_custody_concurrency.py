@@ -34,7 +34,6 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol import CollectionUploadProvenanceJournalCreateDocument
 from riverhog_protocol.errors import Conflict
-from riverhog_protocol.manifest import collection_content_identity_ordered
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
@@ -341,12 +340,8 @@ def test_completion_and_expiry_have_one_serial_terminal_intent(
     collection_id = _create(first)
     first.register_files(collection_id, (_FILE,))
     _expire(database_url, collection_id)
-    identity = collection_content_identity_ordered(
-        ((_FILE["path"], _FILE["bytes"], _FILE["sha256"]),)  # type: ignore[arg-type]
-    )
-
     completed, reaped = _race(
-        lambda: first.complete(collection_id, files_total=1, content_identity=identity),
+        lambda: first.complete(collection_id),
         lambda: second.reap_expired_custody_transfers(),
     )
     state = str(first.get(collection_id)["state"])
@@ -355,7 +350,7 @@ def test_completion_and_expiry_have_one_serial_terminal_intent(
         assert isinstance(completed, Conflict)
         assert reaped == 1
         _create(first)
-        resumed = first.complete(collection_id, files_total=1, content_identity=identity)
+        resumed = first.complete(collection_id)
         assert resumed["state"] in {"closing", "uploading", "finalizing", "finalized"}
     else:
         assert not isinstance(completed, Exception)

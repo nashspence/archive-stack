@@ -365,8 +365,7 @@ class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocum
 
 
 class CompleteCollectionUploadSessionRequest(RiverhogModel):
-    files_total: int = Field(ge=1, strict=True)
-    content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pass
 
 
 class CollectionSummaryOut(RiverhogModel):

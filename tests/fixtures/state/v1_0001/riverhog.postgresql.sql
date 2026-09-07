@@ -612,6 +612,7 @@ CREATE TABLE collection_upload_files (
 	collection_id BIGINT NOT NULL,
 	path VARCHAR NOT NULL,
 	path_sort_key BYTEA NOT NULL,
+	semantic_order_rank INTEGER NOT NULL,
 	file_order INTEGER NOT NULL,
 	bytes BIGINT NOT NULL,
 	sha256 VARCHAR(64) NOT NULL,
@@ -629,6 +630,7 @@ CREATE TABLE collection_upload_files (
 	PRIMARY KEY (collection_id, path),
 	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
 	CONSTRAINT ck_collection_upload_files_order CHECK (file_order >= 0),
+	CONSTRAINT ck_collection_upload_files_semantic_order_rank CHECK (semantic_order_rank >= 0 AND semantic_order_rank <= 2),
 	CONSTRAINT ck_collection_upload_files_bytes CHECK (bytes >= 0),
 	CONSTRAINT ck_collection_upload_files_raw_parts CHECK (raw_parts_accepted >= 0),
 	CONSTRAINT ck_collection_upload_files_sha256 CHECK (length(sha256) = 64),
@@ -640,6 +642,8 @@ CREATE TABLE collection_upload_files (
 CREATE INDEX idx_collection_upload_files_collection_order ON collection_upload_files (collection_id, file_order);
 
 CREATE INDEX idx_collection_upload_files_collection_path ON collection_upload_files (collection_id, path_sort_key);
+
+CREATE INDEX idx_collection_upload_files_semantic_order ON collection_upload_files (collection_id, semantic_order_rank, path_sort_key);
 
 CREATE UNIQUE INDEX ux_collection_upload_files_order ON collection_upload_files (collection_id, file_order);
 

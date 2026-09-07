@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import builtins
 import hashlib
-import json
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -29,7 +28,6 @@ from riverhog_protocol.collection_workflows import (
     ProducerEvidence,
 )
 from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
-from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import CollectionId, normalize_relpath, validate_collection_id
 from riverhog_protocol.storage_names import ArchiveStoreName
 
@@ -437,15 +435,7 @@ class CollectionProducer:
             window=configured_upload_window(concurrency=concurrency),
             client_factory=self.api.spawn,
         )
-        ordered = _ordered_sources(sources)
-        content_identity = collection_content_identity_ordered(
-            (source.path, source.bytes, source.sha256) for source in ordered
-        )
-        receipt = self.api.complete_collection_upload_session(
-            collection_id,
-            files_total=len(sources),
-            content_identity=content_identity,
-        )
+        receipt = self.api.complete_collection_upload_session(collection_id)
         if str(receipt.get("state") or "") != "finalized":
             # Closing discovery seals the bounded final pack. Upload any units
             # that could not exist during the incremental pre-close pass.
@@ -520,10 +510,7 @@ class IncrementalCollectionProducer:
             evidence.to_json_bytes(),
             provenance={} if server_generated_provenance else _omitted(reason),
         )
-        self._journals: dict[str, bytes] = {}
         self._sources: dict[str, _Source] = {}
-        self._registered: dict[str, _Source] = {}
-        self._custody: dict[str, ProducerArtifactCustody] = {}
         self._closed = False
         self._needs_upload_scan = True
         self._heartbeat_stop = threading.Event()
@@ -554,38 +541,12 @@ class IncrementalCollectionProducer:
         self.constraints = CollectionUploadRegistrationConstraintsDocument.model_validate(
             dict(constraints)
         )
-        self._refresh_registered()
-        if (
-            PRODUCER_EVIDENCE_PATH in self._registered
-            and PRODUCER_EVIDENCE_PATH not in self._custody
-        ):
-            expected = self._registered[PRODUCER_EVIDENCE_PATH]
-            if _source_identity(expected) != _source_identity(self._producer_evidence):
-                raise RuntimeError("resumed producer evidence identity changed")
-            self._sources[PRODUCER_EVIDENCE_PATH] = self._producer_evidence
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
             name=f"riverhog-upload-lease-{self.collection_id}",
             daemon=True,
         )
         self._heartbeat_thread.start()
-
-    @property
-    def custody_receipts(self) -> Mapping[str, ProducerArtifactCustody]:
-        return dict(self._custody)
-
-    @property
-    def registered_artifacts(self) -> tuple[ProducerArtifactIdentity, ...]:
-        return tuple(
-            ProducerArtifactIdentity(source.path, source.bytes, source.sha256)
-            for source in sorted(
-                self._registered.values(),
-                key=lambda current: collection_upload_path_order_key(current.path),
-            )
-        )
-
-    def is_registered(self, path: str) -> bool:
-        return normalize_relpath(path) in self._registered
 
     def heartbeat(self) -> None:
         if not self._closed:
@@ -626,28 +587,10 @@ class IncrementalCollectionProducer:
         if expected and set(expected) != set(supplied_paths):
             raise ValueError("expected producer identities must match the supplied paths")
         self._stage_journals(normalized_journals)
-        before = set(self._custody)
         candidates: list[_Source] = []
-        for item in sorted(
-            inputs, key=lambda current: collection_upload_path_order_key(current.path)
-        ):
-            existing = self._registered.get(item.path)
+        receipts: list[ProducerArtifactCustody] = []
+        for item in inputs:
             expected_identity = expected.get(item.path)
-            if (
-                existing is not None
-                and expected_identity is not None
-                and ProducerArtifactIdentity(
-                    existing.path,
-                    existing.bytes,
-                    existing.sha256,
-                )
-                != expected_identity
-            ):
-                raise ValueError(
-                    f"registered producer artifact differs from its expected identity: {item.path}"
-                )
-            if existing is not None and item.path in self._custody:
-                continue
             if self.server_generated_provenance and item.provenance is not None:
                 raise ValueError(
                     "server-generated provenance cannot be mixed with producer bindings"
@@ -660,6 +603,21 @@ class IncrementalCollectionProducer:
                     default=_omitted(self.provenance_omission_reason),
                 )
             )
+            if (
+                self.resumed
+                and expected_identity is not None
+                and expected_identity.bytes <= self.constraints.pack_member_bytes
+            ):
+                resumed_source = _Source(
+                    path=expected_identity.path,
+                    bytes=expected_identity.bytes,
+                    sha256=expected_identity.sha256,
+                    provenance=provenance,
+                )
+                resumed_receipts = self._append_sources([resumed_source])
+                receipts.extend(resumed_receipts)
+                if resumed_receipts:
+                    continue
             source = (
                 _hash_local_source(
                     item,
@@ -677,10 +635,6 @@ class IncrementalCollectionProducer:
                     progress=self.progress,
                 )
             )
-            if existing is not None and _registered_identity(existing) != _registered_identity(
-                source
-            ):
-                raise RuntimeError(f"resumed producer artifact identity changed: {item.path}")
             if (
                 expected_identity is not None
                 and ProducerArtifactIdentity(
@@ -692,10 +646,10 @@ class IncrementalCollectionProducer:
             ):
                 raise ValueError(f"producer source differs from its expected identity: {item.path}")
             candidates.append(source)
-        self._append_sources(candidates)
+        receipts.extend(self._append_sources(candidates))
         if self._needs_upload_scan:
-            self._upload_available()
-        return tuple(self._custody[path] for path in sorted(set(self._custody) - before))
+            receipts.extend(self._upload_available())
+        return tuple(receipts)
 
     def append_derivation_evidence(
         self, path: str, content: bytes
@@ -720,10 +674,14 @@ class IncrementalCollectionProducer:
             if self.server_generated_provenance
             else _omitted(self.provenance_omission_reason),
         )
-        self._append_sources([source])
+        receipts = self._append_sources([source])
+        immediate = next((item for item in receipts if item.artifact.path == normalized), None)
+        if immediate is not None:
+            return immediate
         if self._needs_upload_scan:
-            self._upload_available()
-        return self._custody.get(normalized)
+            receipts = self._upload_available()
+            return next((item for item in receipts if item.artifact.path == normalized), None)
+        return None
 
     def finish(
         self,
@@ -752,23 +710,12 @@ class IncrementalCollectionProducer:
                 else _omitted(self.provenance_omission_reason)
             ),
         )
-        self._append_sources([derivation], terminal=True)
+        self._append_sources([derivation])
         if self._needs_upload_scan:
             self._upload_available()
-        ordered = sorted(
-            self._registered.values(),
-            key=lambda current: collection_upload_path_order_key(current.path),
-        )
-        content_identity = collection_content_identity_ordered(
-            (source.path, source.bytes, source.sha256) for source in ordered
-        )
-        receipt = self.api.complete_collection_upload_session(
-            self.collection_id,
-            files_total=len(ordered),
-            content_identity=content_identity,
-        )
+        receipt = self.api.complete_collection_upload_session(self.collection_id)
         if str(receipt.get("state") or "") != "finalized":
-            self._upload_available()
+            self._upload_available(reconcile=False)
         deadline = time.monotonic() + timeout_seconds
         while str(receipt.get("state") or "") != "finalized":
             if time.monotonic() >= deadline:
@@ -810,38 +757,26 @@ class IncrementalCollectionProducer:
             except Exception as exc:
                 raise RuntimeError("collection upload custody lease heartbeat failed") from exc
 
-    def _append_sources(self, values: Sequence[_Source], *, terminal: bool = False) -> None:
+    def _append_sources(self, values: Sequence[_Source]) -> tuple[ProducerArtifactCustody, ...]:
         candidates = list(values)
-        if PRODUCER_EVIDENCE_PATH not in self._registered:
-            evidence_key = collection_upload_path_order_key(PRODUCER_EVIDENCE_PATH)
-            if terminal or (
-                candidates
-                and evidence_key
-                <= max(collection_upload_path_order_key(source.path) for source in candidates)
+        if all(source.path != PRODUCER_EVIDENCE_PATH for source in candidates):
+            candidates.append(self._producer_evidence)
+        if len({source.path for source in candidates}) != len(candidates):
+            raise ValueError("incremental producer source paths must be unique")
+        for source in candidates:
+            existing = self._sources.get(source.path)
+            if existing is not None and _registered_identity(existing) != _registered_identity(
+                source
             ):
-                candidates.append(self._producer_evidence)
-        candidates.sort(key=lambda current: collection_upload_path_order_key(current.path))
-        existing_paths = set(self._registered)
-        new = [source for source in candidates if source.path not in existing_paths]
-        if not new:
-            for source in candidates:
-                if source.path not in self._custody:
-                    self._sources[source.path] = source
-            return
-        if self._registered:
-            frontier = max(self._registered, key=collection_upload_path_order_key)
-            if collection_upload_path_order_key(new[0].path) <= collection_upload_path_order_key(
-                frontier
-            ):
-                raise ValueError(
-                    f"incremental producer path is behind the sealed append frontier: {new[0].path}"
-                )
-        registration = [_source_registration(source) for source in new]
+                raise RuntimeError(f"resumed producer artifact identity changed: {source.path}")
+            self._sources[source.path] = source
+        registration = [_source_registration(source) for source in candidates]
         constraints = self.constraints
         if constraints is None:
             raise RuntimeError("incremental collection producer has no registration constraints")
+        receipts: list[ProducerArtifactCustody] = []
         for start in range(0, len(registration), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
-            source_batch = new[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
+            source_batch = candidates[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
             registered = self.api.register_collection_upload_session_files(
                 self.collection_id,
                 registration[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES],
@@ -849,15 +784,16 @@ class IncrementalCollectionProducer:
             )
             for source in source_batch:
                 _register_source_raw_digests(self.api, self.collection_id, source)
+            rows = registered.get("files")
+            if not isinstance(rows, list):
+                raise RuntimeError("Riverhog returned invalid registered files")
+            receipts.extend(self._accept_registered_rows(iter(rows), expected=source_batch))
             volumes = registered.get("volumes")
             if isinstance(volumes, list) and volumes:
                 self._needs_upload_scan = True
-        for source in candidates:
-            self._registered[source.path] = source
-            if source.path not in self._custody:
-                self._sources[source.path] = source
+        return tuple(receipts)
 
-    def _upload_available(self) -> None:
+    def _upload_available(self, *, reconcile: bool = True) -> tuple[ProducerArtifactCustody, ...]:
         concurrency = configured_upload_concurrency()
 
         def content_for_unit(unit: CollectionUploadUnitWorkDocument) -> bytes:
@@ -881,29 +817,34 @@ class IncrementalCollectionProducer:
             window=configured_upload_window(concurrency=concurrency),
             client_factory=self.api.spawn,
         )
-        self._refresh_registered()
+        receipts = self._reconcile_pending_sources() if reconcile else ()
         self._needs_upload_scan = False
+        return receipts
 
-    def _refresh_registered(self) -> None:
-        page_token: str | None = None
-        while True:
-            payload = self.api.list_collection_upload_session_files(
+    def _reconcile_pending_sources(self) -> tuple[ProducerArtifactCustody, ...]:
+        receipts: list[ProducerArtifactCustody] = []
+        pending = list(self._sources.values())
+        for start in range(0, len(pending), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
+            source_batch = pending[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
+            payload = self.api.register_collection_upload_session_files(
                 self.collection_id,
-                page_size=100,
-                page_token=page_token,
+                [_source_registration(source) for source in source_batch],
+                registration_constraints=self.constraints,
             )
             rows = payload.get("files")
             if not isinstance(rows, list):
                 raise RuntimeError("Riverhog returned invalid registered files")
-            self._accept_registered_rows(iter(rows))
-            next_page_token = payload.get("next_page_token")
-            if next_page_token is None:
-                break
-            if not isinstance(next_page_token, str) or not next_page_token:
-                raise RuntimeError("Riverhog returned an invalid registration page token")
-            page_token = next_page_token
+            receipts.extend(self._accept_registered_rows(iter(rows), expected=source_batch))
+        return tuple(receipts)
 
-    def _accept_registered_rows(self, rows: Iterator[dict[str, Any]]) -> None:
+    def _accept_registered_rows(
+        self,
+        rows: Iterator[dict[str, Any]],
+        *,
+        expected: Sequence[_Source],
+    ) -> tuple[ProducerArtifactCustody, ...]:
+        expected_by_path = {source.path: source for source in expected}
+        receipts: list[ProducerArtifactCustody] = []
         for row in rows:
             provenance = row.get("provenance")
             if provenance is None and self.server_generated_provenance:
@@ -918,16 +859,15 @@ class IncrementalCollectionProducer:
                 sha256=str(row.get("sha256") or ""),
                 provenance=normalized_provenance,
             )
-            existing = self._registered.get(source.path)
-            if existing is not None and _registered_identity(existing) != _registered_identity(
-                source
-            ):
+            expected_source = expected_by_path.pop(source.path, None)
+            if expected_source is None:
+                raise RuntimeError(f"Riverhog returned an unexpected artifact: {source.path}")
+            if _registered_identity(expected_source) != _registered_identity(source):
                 raise RuntimeError(f"Riverhog changed a registered artifact: {source.path}")
-            self._registered[source.path] = source if existing is None else existing
             receipt_value = row.get("custody_receipt")
             if receipt_value is not None:
-                receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
-                    json.dumps(receipt_value, sort_keys=True, separators=(",", ":"))
+                receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate(
+                    receipt_value
                 )
                 validate_collection_upload_artifact_custody_receipt(
                     self.collection_id,
@@ -938,19 +878,19 @@ class IncrementalCollectionProducer:
                     ),
                     receipt,
                 )
-                self._custody[source.path] = ProducerArtifactCustody(
-                    artifact=ProducerArtifactIdentity(source.path, source.bytes, source.sha256),
-                    receipt=receipt,
+                receipts.append(
+                    ProducerArtifactCustody(
+                        artifact=ProducerArtifactIdentity(source.path, source.bytes, source.sha256),
+                        receipt=receipt,
+                    )
                 )
                 self._sources.pop(source.path, None)
+        if expected_by_path:
+            raise RuntimeError("Riverhog omitted requested registered artifacts")
+        return tuple(receipts)
 
     def _stage_journals(self, values: Mapping[str, bytes]) -> None:
         for journal_id, content in sorted(values.items()):
-            existing = self._journals.get(journal_id)
-            if existing is not None:
-                if existing != content:
-                    raise ValueError(f"producer provenance journal identity changed: {journal_id}")
-                continue
             self.api.upload_collection_upload_session_provenance_journal(
                 self.collection_id,
                 journal_id,
@@ -958,7 +898,6 @@ class IncrementalCollectionProducer:
                 byte_count=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
             )
-            self._journals[journal_id] = content
 
 
 def _hash_local_source(

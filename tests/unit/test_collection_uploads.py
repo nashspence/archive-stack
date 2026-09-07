@@ -44,7 +44,6 @@ from riverhog_core.incremental_plan import (
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services import collection_uploads as collection_uploads_module
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
@@ -404,11 +403,7 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
         collection_id,
         ({"path": "file.txt", "bytes": len(content), "sha256": sha256},),
     )
-    rotated.complete(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("file.txt", len(content), sha256),)),
-    )
+    rotated.complete(collection_id)
     volume = rotated.list_volumes(collection_id)["volumes"][0]
     rotated.upload_unit(
         collection_id,
@@ -445,11 +440,7 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
         reencrypted_collection_id,
         ({"path": "file.txt", "bytes": len(content), "sha256": sha256},),
     )
-    rotated.complete(
-        reencrypted_collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("file.txt", len(content), sha256),)),
-    )
+    rotated.complete(reencrypted_collection_id)
     reencrypted_volume = rotated.list_volumes(reencrypted_collection_id)["volumes"][0]
     rotated.upload_unit(
         reencrypted_collection_id,
@@ -517,11 +508,7 @@ def test_restore_required_ingress_commits_encrypted_cache_with_initial_lease(
         collection_id,
         ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
     )
-    service.complete(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
-    )
+    service.complete(collection_id)
     volume = service.list_volumes(collection_id)["volumes"][0]
     unit = volume["units"][0]
     service.upload_unit(
@@ -667,13 +654,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
             for binding in bindings
         ),
     )
-    closing = service.complete(
-        collection_id,
-        files_total=len(bindings),
-        content_identity=collection_content_identity(
-            (binding.path, binding.bytes, binding.sha256) for binding in bindings
-        ),
-    )
+    closing = service.complete(collection_id)
     assert closing["provenance_identity"] is None
     for volume in service.list_volumes(collection_id)["volumes"]:
         for unit in volume["units"]:
@@ -953,29 +934,11 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         assert upload is not None
         assert (upload.file_count, upload.file_bytes) == (1, len(content))
 
-    completion_identity = collection_content_identity((("document.txt", len(content), sha256),))
-    closed = service.complete(
-        collection_id,
-        files_total=1,
-        content_identity=completion_identity,
-    )
+    closed = service.complete(collection_id)
     assert closed["state"] == ("closing" if custody_mode == "custody-transfer" else "uploading")
     assert (closed["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     assert closed["orphaned_at"] is None
-    assert (
-        service.complete(
-            collection_id,
-            files_total=1,
-            content_identity=completion_identity,
-        )["state"]
-        == closed["state"]
-    )
-    with pytest.raises(Conflict, match="completion identity changed"):
-        service.complete(
-            collection_id,
-            files_total=2,
-            content_identity=completion_identity,
-        )
+    assert service.complete(collection_id)["state"] == closed["state"]
     volume = service.list_volumes(collection_id)["volumes"][0]
     assert volume["kind"] == "pack"
     unit = volume["units"][0]
@@ -1007,20 +970,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert finalized["state"] == "finalized"
     assert finalized["custody"] == {"state": "complete"}
     assert finalized["custody_mode"] == custody_mode
-    assert (
-        service.complete(
-            collection_id,
-            files_total=1,
-            content_identity=completion_identity,
-        )["state"]
-        == "finalized"
-    )
-    with pytest.raises(Conflict, match="completion identity changed"):
-        service.complete(
-            collection_id,
-            files_total=2,
-            content_identity=completion_identity,
-        )
+    assert service.complete(collection_id)["state"] == "finalized"
 
     with session_scope(make_session_factory(config.database_url)) as session:
         collection = session.get(CollectionRecord, collection_id)
@@ -1148,8 +1098,7 @@ def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
         collection_id,
         ({"path": "tail.txt", "bytes": len(content), "sha256": sha256},),
     )
-    identity = collection_content_identity((("tail.txt", len(content), sha256),))
-    closing = service.complete(collection_id, files_total=1, content_identity=identity)
+    closing = service.complete(collection_id)
     assert closing["state"] == "closing"
     assert closing["custody"] == {"state": "pending", "files": 0, "bytes": 0}
     assert closing["upload_state_expires_at"] is not None
@@ -1414,9 +1363,8 @@ def test_failed_orphan_cleanup_remains_visible_and_exactly_retryable(
     )
 
 
-def test_completion_uses_the_incremental_commitment_without_inventory_rescan(
+def test_completion_defers_canonical_identity_to_bounded_server_finalization(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, config = _service(tmp_path)
     files = tuple(
@@ -1439,19 +1387,7 @@ def test_completion_uses_the_incremental_commitment_without_inventory_rescan(
     collection_id = int(opened["collection_id"])
     for start in range(0, len(files), 64):
         service.register_files(collection_id, files[start : start + 64])
-    identity = collection_content_identity(
-        (str(row["path"]), int(row["bytes"]), str(row["sha256"])) for row in files
-    )
-
-    def fail_inventory_scan(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("synchronous completion rescanned the registered inventory")
-
-    monkeypatch.setattr(collection_uploads_module, "_upload_file_batches", fail_inventory_scan)
-    result = service.complete(
-        collection_id,
-        files_total=len(files),
-        content_identity=identity,
-    )
+    result = service.complete(collection_id)
 
     assert result["state"] == "uploading"
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -1460,9 +1396,72 @@ def test_completion_uses_the_incremental_commitment_without_inventory_rescan(
         checkpoint = parse_incremental_volume_planner_checkpoint(upload.planner_checkpoint_json)
         assert checkpoint.closed is True
         assert checkpoint.files_seen == len(files)
-        assert checkpoint.content_identity == identity
-        assert upload.catalog_content_identity == identity
-        assert upload.catalog_phase == "inventory-identity"
+        assert checkpoint.content_identity is not None
+        assert upload.catalog_content_identity is None
+        assert upload.catalog_phase == "content-identity"
+
+
+def test_server_owned_membership_is_independent_of_registration_order(
+    tmp_path: Path,
+) -> None:
+    contents = {
+        "a/first.txt": b"first\n",
+        "m/middle.txt": b"middle\n",
+        "z/last.txt": b"last\n",
+    }
+
+    def publish(order: tuple[str, ...], key: str) -> dict[str, object]:
+        service, _config = _service(tmp_path / key)
+        opened = service.create_or_resume(
+            idempotency_key=key,
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture",
+        )
+        collection_id = int(opened["collection_id"])
+        for path in order:
+            content = contents[path]
+            service.register_files(
+                collection_id,
+                (
+                    {
+                        "path": path,
+                        "bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    },
+                ),
+            )
+        service.complete(collection_id)
+        for volume in service.list_volumes(collection_id)["volumes"]:
+            for unit in volume["units"]:
+                payload = b"".join(
+                    contents[str(source["path"])][
+                        int(source["offset"]) : int(source["offset"]) + int(source["bytes"])
+                    ]
+                    for source in unit["sources"]
+                )
+                service.upload_unit(
+                    collection_id,
+                    str(volume["volume_id"]),
+                    int(unit["unit"]),
+                    plan_sha256=str(volume["plan_sha256"]),
+                    content=payload,
+                )
+        return _process_until(service, collection_id)
+
+    forward = publish(tuple(contents), "server-membership-forward")
+    shuffled = publish(tuple(reversed(contents)), "server-membership-shuffled")
+    expected = collection_content_identity(
+        (
+            (path, len(content), hashlib.sha256(content).hexdigest())
+            for path, content in contents.items()
+        )
+    )
+
+    assert forward["content_identity"] == shuffled["content_identity"] == expected
 
 
 def test_completion_requires_volume_plans_to_match_registered_file_identities(
@@ -1503,11 +1502,7 @@ def test_completion_requires_volume_plans_to_match_registered_file_identities(
         ).decode("utf-8")
 
     with pytest.raises(Conflict, match="volume plans differ from registered files"):
-        service.complete(
-            collection_id,
-            files_total=1,
-            content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
-        )
+        service.complete(collection_id)
 
 
 def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) -> None:
@@ -1557,11 +1552,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
             sha256s=[sha256],
         ),
     )
-    service.complete(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("media.bin", len(content), sha256),)),
-    )
+    service.complete(collection_id)
 
     volume = service.list_volumes(collection_id)["volumes"][0]
     assert volume["kind"] == "segment"
@@ -1595,11 +1586,7 @@ def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint
         collection_id,
         ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
     )
-    service.complete(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
-    )
+    service.complete(collection_id)
     volume = service.list_volumes(collection_id)["volumes"][0]
     service.upload_unit(
         collection_id,

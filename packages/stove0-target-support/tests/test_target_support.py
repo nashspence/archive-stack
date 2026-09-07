@@ -665,7 +665,7 @@ def test_target_runtime_builds_complete_success_status() -> None:
             return TargetProductionSealResponse(state="sealed", production=expected.production)
 
     class Writer:
-        custody_receipts: dict[str, ProducerArtifactCustody] = {}
+        pass
 
     runtime = TargetExecutionRuntime(request, Runtime(), session=session)  # type: ignore[arg-type]
     runtime._input_client = Callback()  # type: ignore[assignment]
@@ -695,7 +695,7 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
     )
 
     class Writer:
-        custody_receipts: dict[str, ProducerArtifactCustody] = {}
+        pass
 
     writer = Writer()
 
@@ -723,7 +723,6 @@ def test_incremental_publication_releases_local_output_only_after_exact_custody(
                     ),
                 ),
             )
-            writer.custody_receipts[identity.path] = receipt
             return (receipt,)
 
     class Execution:

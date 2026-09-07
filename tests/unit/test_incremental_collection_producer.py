@@ -28,7 +28,9 @@ from riverhog_protocol import (
     CollectionUploadUnitWorkDocument,
     CollectionUploadWorkBatchDocument,
 )
+from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
+from riverhog_protocol.manifest import collection_content_identity_ordered
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -39,6 +41,7 @@ class _CustodyApi:
         self.rows: dict[str, dict[str, object]] = {}
         self.completed: dict[str, object] | None = None
         self.heartbeats = 0
+        self.session_calls = 0
 
     def spawn(self) -> _CustodyApi:
         return self
@@ -52,8 +55,10 @@ class _CustodyApi:
         **kwargs: object,
     ) -> dict[str, object]:
         assert kwargs["custody_mode"] == "custody-transfer"
+        self.session_calls += 1
         return {
             "collection_id": 42,
+            "resumed": self.session_calls > 1,
             "state": "open",
             "registration_constraints": {
                 "pack_member_bytes": 1024,
@@ -99,7 +104,7 @@ class _CustodyApi:
             )
             row["custody_receipt"] = receipt.model_dump(mode="json")
             self.rows[path] = row
-        return {"files": list(self.rows.values()), "volumes": []}
+        return {"files": [self.rows[str(item["path"])] for item in files], "volumes": []}
 
     def acquire_collection_upload_session_work(
         self,
@@ -124,10 +129,14 @@ class _CustodyApi:
     def complete_collection_upload_session(
         self,
         _collection_id: int,
-        *,
-        content_identity: str,
-        **_kwargs: object,
     ) -> dict[str, object]:
+        ordered = sorted(
+            self.rows.values(),
+            key=lambda item: collection_upload_path_order_key(str(item["path"])),
+        )
+        content_identity = collection_content_identity_ordered(
+            (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in ordered
+        )
         self.completed = {
             "state": "finalized",
             "content_identity": content_identity,
@@ -163,7 +172,6 @@ def test_incremental_producer_resumes_without_rereading_custodied_local_bytes(
     try:
         receipts = first.append_inputs((ProducerFile(source, "z/artifact.bin"),))
         assert "z/artifact.bin" in {item.artifact.path for item in receipts}
-        assert "z/artifact.bin" in first.custody_receipts
     finally:
         first.stop()
 
@@ -171,18 +179,18 @@ def test_incremental_producer_resumes_without_rereading_custodied_local_bytes(
     source.unlink()
     resumed = _producer(api)
     try:
-        with pytest.raises(ValueError, match="differs from its expected identity"):
-            resumed.append_inputs(
-                (resumed_input,),
-                expected_identities={
-                    "z/artifact.bin": ProducerArtifactIdentity(
-                        "z/artifact.bin",
-                        len(b"completed artifact"),
-                        "0" * 64,
-                    )
-                },
-            )
-        assert resumed.append_inputs((resumed_input,)) == ()
+        identity = ProducerArtifactIdentity(
+            "z/artifact.bin",
+            len(b"completed artifact"),
+            hashlib.sha256(b"completed artifact").hexdigest(),
+        )
+        receipts = resumed.append_inputs(
+            (resumed_input,),
+            expected_identities={"z/artifact.bin": identity},
+        )
+        assert tuple(item.artifact for item in receipts if item.artifact.path == identity.path) == (
+            identity,
+        )
         produced = resumed.finish(
             terminal_evidence={DERIVATION_EVIDENCE_PATH: b'{"format":"fixture/v1"}'},
         )
@@ -242,7 +250,6 @@ def test_incremental_producer_keeps_local_custody_when_receipt_identity_is_wrong
         with pytest.raises(ValueError, match="upload file identity"):
             producer.append_inputs((ProducerFile(source, "z/artifact.bin"),))
         assert "z/artifact.bin" in producer._sources  # noqa: SLF001
-        assert "z/artifact.bin" not in producer.custody_receipts
     finally:
         producer.stop()
 
@@ -381,15 +388,8 @@ class _ServiceApi:
     def complete_collection_upload_session(
         self,
         collection_id: int,
-        *,
-        files_total: int,
-        content_identity: str,
     ) -> dict[str, object]:
-        return self.service.complete(
-            collection_id,
-            files_total=files_total,
-            content_identity=content_identity,
-        )
+        return self.service.complete(collection_id)
 
     def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
         self.service.process_due_finalizations(limit=1)
@@ -457,9 +457,8 @@ def test_many_artifact_publication_retains_only_the_unsealed_pack_window(
             poll_seconds=0.01,
             timeout_seconds=10,
         )
-        for path, _custody in producer.custody_receipts.items():
-            owned = local.get(path)
-            if owned is not None and owned.exists():
+        for owned in local.values():
+            if owned.exists():
                 owned.unlink()
     finally:
         producer.stop()

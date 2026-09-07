@@ -1397,17 +1397,11 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def complete_collection_upload_session(
         self,
         collection_id: CollectionId,
-        *,
-        files_total: int,
-        content_identity: str,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/complete",
-            json={
-                "files_total": files_total,
-                "content_identity": content_identity,
-            },
+            json={},
         )
 
     def cancel_collection_upload_session(self, collection_id: CollectionId) -> dict[str, Any]:

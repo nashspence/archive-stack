@@ -72,11 +72,12 @@ def test_direct_ingress_rejects_noncanonical_file_paths(path: str) -> None:
         CollectionUploadFileIn.model_validate(_file(path))
 
 
-def test_direct_ingress_batch_preserves_the_server_order_contract() -> None:
-    with pytest.raises(ValidationError, match="canonical path order"):
-        CollectionUploadFileBatchDocument.model_validate(
-            {"files": [_file("z.txt"), _file("a.txt")]}
-        )
+def test_direct_ingress_batch_accepts_arbitrary_finalization_order() -> None:
+    batch = CollectionUploadFileBatchDocument.model_validate(
+        {"files": [_file("z.txt"), _file("a.txt")]}
+    )
+
+    assert [item.path for item in batch.files] == ["z.txt", "a.txt"]
 
 
 def test_upload_order_places_control_evidence_after_payload_and_derivation_last() -> None:
