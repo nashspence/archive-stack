@@ -11152,7 +11152,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "0867fa829a6e85741ac897ae21c933cdd0eecb994560a42889d28134bf8d59d3"
+            "e1b2b6666073015e9ae689bf4b187bcdee2f897c8274133e5902f94cc8bdceb0"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
