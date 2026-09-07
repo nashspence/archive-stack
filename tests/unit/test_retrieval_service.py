@@ -35,7 +35,6 @@ from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUpload
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import CollectionUploadRawDigestBatchDocument
 from riverhog_protocol.errors import Conflict, NotFound, PreconditionFailed
-from riverhog_protocol.manifest import collection_content_identity
 from sqlalchemy import select
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
@@ -389,13 +388,7 @@ def _seed_collection(
                 ),
             )
         digest_spool.close()
-    uploads.complete(
-        collection_id,
-        files_total=len(manifest),
-        content_identity=collection_content_identity(
-            (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in manifest
-        ),
-    )
+    uploads.complete(collection_id)
     for volume in uploads.list_volumes(collection_id)["volumes"]:
         for unit in volume["units"]:
             payload = b"".join(

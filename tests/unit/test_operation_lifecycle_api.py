@@ -51,7 +51,6 @@ from riverhog_protocol.collection_workflows import (
     derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Forbidden
-from riverhog_protocol.manifest import collection_content_identity
 from riverhog_provenance import (
     FileProvenanceBinding,
     create_derivative_journal_from_identity,
@@ -397,13 +396,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
         == 1
     )
-    operator.complete_collection_upload_session(
-        collection_id,
-        files_total=1,
-        content_identity=collection_content_identity(
-            [(binding.path, binding.bytes, binding.sha256)]
-        ),
-    )
+    operator.complete_collection_upload_session(collection_id)
     while work := operator.acquire_collection_upload_session_work(collection_id).work:
         for assignment in work:
             operator.put_collection_upload_session_unit(
@@ -1048,11 +1041,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ],
         registration_constraints=target_session["registration_constraints"],
     )
-    target.complete_collection_upload_session(
-        output_collection_id,
-        files_total=len(output_entries),
-        content_identity=collection_content_identity(output_entries),
-    )
+    target.complete_collection_upload_session(output_collection_id)
     while work := target.acquire_collection_upload_session_work(output_collection_id).work:
         for assignment in work:
             target.put_collection_upload_session_unit(

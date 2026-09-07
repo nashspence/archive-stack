@@ -251,7 +251,6 @@ class IncrementalDerivedCollectionWriter:
             raise ValueError("incremental writer requires the sealed claim plan")
         self.input_set_sha256 = plan.inputs.sha256
         self.artifact_set_sha256 = plan.artifacts.sha256
-        self._artifacts: dict[str, ProducerArtifactIdentity] = {}
         self.producer = IncrementalCollectionProducer(
             api,
             producer_app=producer_app,
@@ -285,10 +284,6 @@ class IncrementalDerivedCollectionWriter:
             ),
         )
 
-    @property
-    def custody_receipts(self) -> Mapping[str, ProducerArtifactCustody]:
-        return self.producer.custody_receipts
-
     def heartbeat(self) -> None:
         self.producer.heartbeat()
 
@@ -303,10 +298,6 @@ class IncrementalDerivedCollectionWriter:
     ) -> tuple[ProducerArtifactCustody, ...]:
         if source.path != identity.path:
             raise ValueError("incremental transform source path differs from its identity")
-        existing = self._artifacts.get(identity.path)
-        if existing is not None and existing != identity:
-            raise ValueError(f"incremental transform artifact identity changed: {identity.path}")
-        self._artifacts[identity.path] = identity
         return self.producer.append_inputs(
             [source],
             expected_identities={identity.path: identity},
@@ -320,10 +311,6 @@ class IncrementalDerivedCollectionWriter:
         poll_seconds: float = 2.0,
         timeout_seconds: float = 24 * 60 * 60,
     ) -> DerivedCollectionReceipt:
-        if not self._artifacts:
-            raise ValueError("successful collection transform must produce output artifacts")
-        if disposition_set.output_artifact_count != len(self._artifacts):
-            raise ValueError("sealed disposition authority differs from derived outputs")
         derivation = CollectionDerivation(
             execution_id=self.execution_id,
             claim_id=self.claim_id,

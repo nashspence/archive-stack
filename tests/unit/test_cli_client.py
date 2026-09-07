@@ -270,11 +270,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
         ],
         registration_constraints=UPLOAD_REGISTRATION_CONSTRAINTS,
     )
-    client.complete_collection_upload_session(
-        1,
-        files_total=1,
-        content_identity="b" * 64,
-    )
+    client.complete_collection_upload_session(1)
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
@@ -296,10 +292,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
             }
         ],
     }
-    assert client.calls[2][2]["json"] == {
-        "files_total": 1,
-        "content_identity": "b" * 64,
-    }
+    assert client.calls[2][2]["json"] == {}
 
 
 def test_collection_upload_client_rejects_a_custody_receipt_for_another_artifact() -> None:

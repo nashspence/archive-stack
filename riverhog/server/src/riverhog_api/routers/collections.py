@@ -431,8 +431,6 @@ def complete_collection_upload_session(
     container.collection_uploads.require_access(collection_id, principal)
     payload = container.collection_uploads.complete(
         collection_id,
-        files_total=request.files_total,
-        content_identity=request.content_identity,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 

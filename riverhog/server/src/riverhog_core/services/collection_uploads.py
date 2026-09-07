@@ -89,7 +89,7 @@ from riverhog_provenance.journal import (
     resolve_incremental_journal_current_state,
     validate_incremental_journal_entry,
 )
-from sqlalchemy import asc, case, desc, exists, func, insert, or_, select, true
+from sqlalchemy import and_, asc, case, desc, exists, func, insert, or_, select, true
 from sqlalchemy.orm import Session, selectinload
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
@@ -534,12 +534,6 @@ class SqlAlchemyCollectionUploadService:
                     )
                 )
             }
-            last_registered = session.scalar(
-                select(CollectionUploadFileRecord)
-                .where(CollectionUploadFileRecord.collection_id == normalized_id)
-                .order_by(CollectionUploadFileRecord.file_order.desc())
-                .limit(1)
-            )
             new_files: list[_RegisteredFile] = []
             for current in normalized_files:
                 row = existing.get(current["path"])
@@ -552,11 +546,6 @@ class SqlAlchemyCollectionUploadService:
                     continue
                 new_files.append(current)
             if new_files:
-                last_path = last_registered.path if last_registered is not None else None
-                if last_path is not None and collection_upload_path_order_key(
-                    new_files[0]["path"]
-                ) <= collection_upload_path_order_key(last_path):
-                    raise Conflict("collection upload file registration is not append-only")
                 _require_transform_control_paths(session, upload, new_files)
             ordered: list[OrderedArchiveFile] = []
             next_order = checkpoint.next_file_order
@@ -566,6 +555,7 @@ class SqlAlchemyCollectionUploadService:
                         collection_id=normalized_id,
                         path=current["path"],
                         path_sort_key=relpath_sort_key(current["path"]),
+                        semantic_order_rank=collection_upload_path_order_key(current["path"])[0],
                         file_order=next_order,
                         bytes=current["bytes"],
                         sha256=current["sha256"],
@@ -887,13 +877,8 @@ class SqlAlchemyCollectionUploadService:
     def complete(
         self,
         collection_id: int,
-        *,
-        files_total: int,
-        content_identity: str,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if files_total < 1 or _SHA256_RE.fullmatch(content_identity) is None:
-            raise BadRequest("collection upload completion identity is invalid")
         with session_scope(self._session_factory) as session:
             collection = session.scalar(
                 select(CollectionRecord).where(
@@ -902,11 +887,6 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             if collection is not None:
-                if (
-                    collection.file_count != files_total
-                    or collection.content_identity != content_identity
-                ):
-                    raise Conflict("collection upload completion identity changed")
                 return _finalized_payload(
                     session,
                     collection,
@@ -922,20 +902,11 @@ class SqlAlchemyCollectionUploadService:
             if upload.state not in {"open", "closing", "uploading", "finalizing"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             checkpoint = _planner_checkpoint(upload)
-            if upload.state != "open":
-                if (
-                    not checkpoint.closed
-                    or checkpoint.files_seen != files_total
-                    or checkpoint.content_identity != content_identity
-                ):
-                    raise Conflict("collection upload completion identity changed")
-            else:
+            if upload.state == "open":
                 _seal_open_collection_upload(
                     session,
                     upload,
                     checkpoint=checkpoint,
-                    files_total=files_total,
-                    content_identity=content_identity,
                     config=self._config,
                 )
         self._schedule_finalization_if_ready(normalized_id)
@@ -2962,15 +2933,20 @@ def _mapping_nonnegative_int(
 
 def _advance_catalog_identity(session: Session, upload: CollectionUploadRecord) -> None:
     cursor = _catalog_cursor(upload)
-    next_order = _cursor_nonnegative_int(cursor, "next_file_order")
+    files_seen = _cursor_nonnegative_int(cursor, "files_seen")
+    after_rank = _cursor_nonnegative_int(cursor, "after_rank")
+    after_path_value = cursor.get("after_path")
+    if after_path_value is not None and not isinstance(after_path_value, str):
+        raise RuntimeError("catalog identity path cursor is invalid")
+    after_path = relpath_sort_key(after_path_value) if after_path_value is not None else None
     digest = (
         CheckpointSHA256.from_state(upload.catalog_hash_state)
         if upload.catalog_hash_state is not None
         else CheckpointSHA256()
     )
-    if upload.catalog_phase == "content-identity" and next_order == 0:
+    if upload.catalog_phase == "content-identity" and files_seen == 0:
         digest.update(b'{"files":[')
-    if upload.catalog_phase == "inventory-identity" and next_order == 0:
+    if upload.catalog_phase == "inventory-identity" and files_seen == 0:
         if upload.catalog_content_identity is None:
             raise RuntimeError("portable inventory has no content identity")
         provenance_mode = _final_provenance_mode(
@@ -2987,24 +2963,31 @@ def _advance_catalog_identity(session: Session, upload: CollectionUploadRecord) 
             provenance_identity=upload.provenance_identity,
         )
         digest.update(canonical_json_bytes(header.model_dump(mode="json")))
+    statement = select(CollectionUploadFileRecord).where(
+        CollectionUploadFileRecord.collection_id == upload.collection_id
+    )
+    if after_path is not None:
+        statement = statement.where(
+            or_(
+                CollectionUploadFileRecord.semantic_order_rank > after_rank,
+                and_(
+                    CollectionUploadFileRecord.semantic_order_rank == after_rank,
+                    CollectionUploadFileRecord.path_sort_key > after_path,
+                ),
+            )
+        )
     rows = list(
         session.scalars(
-            select(CollectionUploadFileRecord)
-            .where(
-                CollectionUploadFileRecord.collection_id == upload.collection_id,
-                CollectionUploadFileRecord.file_order >= next_order,
-            )
-            .order_by(CollectionUploadFileRecord.file_order)
-            .limit(_FINALIZATION_FILE_BATCH)
+            statement.order_by(
+                CollectionUploadFileRecord.semantic_order_rank,
+                CollectionUploadFileRecord.path_sort_key,
+            ).limit(_FINALIZATION_FILE_BATCH)
         )
     )
     if rows:
-        expected = next_order
         for row in rows:
-            if row.file_order != expected:
-                raise RuntimeError("catalog identity file order is not contiguous")
             if upload.catalog_phase == "content-identity":
-                if expected:
+                if files_seen:
                     digest.update(b",")
                 digest.update(
                     json.dumps(
@@ -3023,11 +3006,19 @@ def _advance_catalog_identity(session: Session, upload: CollectionUploadRecord) 
                 )
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
-            expected += 1
+            files_seen += 1
         upload.catalog_hash_state = digest.export_state()
-        _set_catalog_cursor(upload, {"next_file_order": expected})
+        final = rows[-1]
+        _set_catalog_cursor(
+            upload,
+            {
+                "files_seen": files_seen,
+                "after_rank": final.semantic_order_rank,
+                "after_path": final.path,
+            },
+        )
         return
-    if next_order != upload.file_count:
+    if files_seen != upload.file_count:
         raise RuntimeError("catalog identity does not cover every registered file")
     if upload.catalog_phase == "content-identity":
         digest.update(b'],"format":"riverhog-collection-content/v1"}')
@@ -4579,8 +4570,6 @@ def _seal_open_collection_upload(
     upload: CollectionUploadRecord,
     *,
     checkpoint: Any,
-    files_total: int,
-    content_identity: str,
     config: RuntimeConfig,
 ) -> None:
     collection_id = upload.collection_id
@@ -4611,8 +4600,8 @@ def _seal_open_collection_upload(
     if incomplete_provenance is not None:
         raise Conflict(f"provenance journal is not sealed: {incomplete_provenance}")
     _require_transform_output_authority(session, upload)
-    if upload.file_count != files_total:
-        raise Conflict("collection upload registered manifest differs from completion")
+    if upload.file_count < 1:
+        raise Conflict("collection upload has no registered files")
     _require_pending_pack_matches_registration(session, upload, checkpoint)
     batch = advance_incremental_volume_plan(checkpoint, (), final=True)
     sealed = batch.checkpoint
@@ -4622,14 +4611,12 @@ def _seal_open_collection_upload(
         or sealed.bytes_seen != upload.file_bytes
     ):
         raise Conflict("collection upload planner differs from registered files")
-    if sealed.content_identity != content_identity:
-        raise Conflict("collection upload registered manifest differs from completion")
     _persist_plan_batch(session, upload=upload, batch=batch)
     upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(sealed).decode(
         "utf-8"
     )
-    upload.catalog_content_identity = sealed.content_identity
-    upload.catalog_phase = "inventory-identity"
+    upload.catalog_content_identity = None
+    upload.catalog_phase = "content-identity"
     upload.catalog_cursor_json = "{}"
     upload.catalog_hash_state = None
     custody_pending = (

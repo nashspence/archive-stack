@@ -28,6 +28,7 @@ from riverhog_protocol import (
     PortableCollectionInventoryAuthority,
     PortableCollectionInventoryPage,
 )
+from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.collection_workflow_transport import (
     ArtifactDispositionOutputPageDocument,
     ArtifactDispositionPageDocument,
@@ -42,6 +43,7 @@ from riverhog_protocol.collection_workflows import (
     RecipeIdentity,
 )
 from riverhog_protocol.errors import InvalidState, NotFound
+from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_provenance import (
     create_derivative_journal_from_identity,
     create_observation_journal,
@@ -458,7 +460,12 @@ class UploadApi:
                 assert prior == item
                 continue
             self.registered.append(item)
-        return {"state": "uploading"}
+        by_path = {str(item["path"]): item for item in self.registered}
+        return {
+            "state": "open",
+            "files": [dict(by_path[str(item["path"])]) for item in batch],
+            "volumes": [],
+        }
 
     def list_collection_upload_session_files(
         self,
@@ -575,10 +582,14 @@ class UploadApi:
     def complete_collection_upload_session(
         self,
         _collection_id: int,
-        *,
-        content_identity: str,
-        **_kwargs: Any,
     ) -> dict[str, Any]:
+        ordered = sorted(
+            self.registered,
+            key=lambda item: collection_upload_path_order_key(str(item["path"])),
+        )
+        content_identity = collection_content_identity_ordered(
+            (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in ordered
+        )
         self.completion_content_identity = content_identity
         self.discovery_closed = True
         return {

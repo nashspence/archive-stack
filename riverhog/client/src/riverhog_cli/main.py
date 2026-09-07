@@ -44,7 +44,6 @@ from riverhog_protocol.collection_upload_transport import (
     CollectionUploadUnitWorkDocument,
 )
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
-from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_collection_id,
@@ -1047,17 +1046,10 @@ def _register_collection_upload_raw_digests(
 def _complete_collection_upload_session(
     api: ApiClient,
     collection_id: int,
-    manifest: list[CollectionManifestEntry],
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         "Upload session complete",
-        lambda: api.complete_collection_upload_session(
-            collection_id,
-            files_total=len(manifest),
-            content_identity=collection_content_identity(
-                (item["path"], item["bytes"], item["sha256"]) for item in manifest
-            ),
-        ),
+        lambda: api.complete_collection_upload_session(collection_id),
     )
 
 
@@ -1466,7 +1458,7 @@ def _upload_collection_via_session(
                 progress.registered_file()
 
         progress.notice("Closing discovery and persisting final volume plans", phase="planning")
-        _complete_collection_upload_session(api, collection_id, manifest)
+        _complete_collection_upload_session(api, collection_id)
         progress.notice("Uploading plaintext units over the authenticated API", phase="uploading")
         _upload_planned_units(
             api,

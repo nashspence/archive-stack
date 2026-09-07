@@ -294,13 +294,8 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
         def complete_collection_upload_session(
             self,
             collection_id: int,
-            *,
-            files_total: int,
-            content_identity: str,
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
-            assert files_total == 2
-            assert len(content_identity) == 64
             return {"collection_id": collection_id, "state": "uploading"}
 
         def upload_collection_upload_session_provenance_journal(

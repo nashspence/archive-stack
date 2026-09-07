@@ -302,18 +302,13 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
             "x-riverhog-extent": {
                 "policy": "segmented_no_total_max",
                 "reason": "bounded-upload-registration",
-                "progression": "repeated-canonical-registration",
+                "progression": "repeated-artifact-registration",
             }
         },
     )
 
     @model_validator(mode="after")
-    def validate_canonical_file_order(self) -> Self:
-        if self.files != sorted(
-            self.files,
-            key=lambda item: collection_upload_path_order_key(item.path),
-        ):
-            raise ValueError("collection upload files must be in canonical path order")
+    def validate_unique_file_paths(self) -> Self:
         paths = [item.path for item in self.files]
         if len(paths) != len(set(paths)):
             raise ValueError("collection upload file paths must be unique")
