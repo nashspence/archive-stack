@@ -467,7 +467,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             INSERT INTO collection_processing_claims (
                 id, work_id, consumer_app, purpose, work_document_json,
                 work_document_sha256, execution_id,
-                input_count, artifact_count, artifact_bytes, output_tag_count,
+                input_count, artifact_count, artifact_bytes,
                 outcome_count, outcome_state, outcome_validation_count,
                 retirement_grace_seconds,
                 state, fence, expires_at, created_at, updated_at
@@ -475,7 +475,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             SELECT repeat(md5('claim-' || g), 2), repeat(md5('work-' || g), 2),
                    'qualification', 'archive-' || g, '{{}}', {sha},
                    repeat(md5('execution-' || g), 2),
-                   0, 0, 0, 0, 0, 'receiving', 0, 0,
+                   0, 0, 0, 0, 'receiving', 0, 0,
                    CASE WHEN g % 2 = 0 THEN 'active' ELSE 'settled' END,
                    1, '2027-08-28T00:00:00.000000Z', {timestamp}, {timestamp}
             FROM generate_series(1, {rows}) AS g
