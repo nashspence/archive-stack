@@ -280,9 +280,6 @@ client_environment=(
   --env RIVERHOG_ALLOW_INSECURE_HTTP=true
   --env "RIVERHOG_TOKEN=${smoke_token}"
 )
-compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
-  --entrypoint riverhog test tag create stove0-audio-archive --json >/dev/null
-
 stove0_compose up --detach --build --wait \
   state api controller worker ffprobe-sampling-observer exiftool-observer opus-target \
   opus-review-sampler
