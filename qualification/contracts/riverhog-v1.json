@@ -556,6 +556,20 @@
         "role": "reference_component"
       },
       {
+        "console_scripts": {
+          "riverhog-storage-adapter-filesystem": "riverhog_storage_adapter_filesystem.app:main"
+        },
+        "dependencies": [
+          "riverhog-storage-adapter-asgi-support",
+          "riverhog-storage-adapter-protocol",
+          "time-formats"
+        ],
+        "distribution": "riverhog-storage-adapter-filesystem",
+        "optional_dependencies": {},
+        "path": "reference/riverhog/storage/filesystem",
+        "role": "reference_component"
+      },
+      {
         "console_scripts": {},
         "dependencies": [
           "riverhog-storage-adapter-protocol",
@@ -1041,6 +1055,12 @@
             "images": [
               "riverhog-storage-adapter-backblaze"
             ]
+          },
+          {
+            "distribution": "riverhog-storage-adapter-filesystem",
+            "images": [
+              "riverhog-storage-adapter-filesystem"
+            ]
           }
         ],
         "schema_bundle_format": "riverhog-storage-adapter-schema-bundle/v1"
@@ -1182,6 +1202,14 @@
             "riverhog-storage-adapter-backblaze"
           ],
           "repository": "ghcr.io/nashspence/riverhog-storage-adapter-backblaze",
+          "role": "reference"
+        },
+        "riverhog-storage-adapter-filesystem": {
+          "description": "Optional nonnormative Linux filesystem storage reference for Riverhog.",
+          "distributions": [
+            "riverhog-storage-adapter-filesystem"
+          ],
+          "repository": "ghcr.io/nashspence/riverhog-storage-adapter-filesystem",
           "role": "reference"
         },
         "stove0": {

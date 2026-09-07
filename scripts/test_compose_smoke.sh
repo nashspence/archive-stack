@@ -8,10 +8,14 @@ configure_compose_tty
 export COMPOSE_PROFILES=development
 export SOURCE_REVISION="${SOURCE_REVISION:-$(git -C "${ROOT_DIR}" rev-parse HEAD)}"
 export RIVERHOG_API_PORT="${RIVERHOG_API_PORT:-0}"
-export RIVERHOG_RETRIEVAL_CACHE_STORES="${RIVERHOG_RETRIEVAL_CACHE_STORES:-local}"
-export RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL="${RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL:-http://retrieval-cache-adapter:8080}"
+export RIVERHOG_RETRIEVAL_CACHE_STORES="${RIVERHOG_RETRIEVAL_CACHE_STORES:-local,elastic}"
+export RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL="${RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_URL:-http://filesystem-cache-adapter:8080}"
 export RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE="${RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_TOKEN_FILE:-/run/secrets/riverhog-storage-adapter.token}"
 export RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_ALLOW_INSECURE_HTTP="${RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADAPTER_ALLOW_INSECURE_HTTP:-true}"
+export RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_BUDGET_BYTES="${RIVERHOG_RETRIEVAL_CACHE_LOCAL_ADMISSION_BUDGET_BYTES:-1MiB}"
+export RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_URL="${RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_URL:-http://elastic-cache-adapter:8080}"
+export RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_TOKEN_FILE="${RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_TOKEN_FILE:-/run/secrets/riverhog-storage-adapter.token}"
+export RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_ALLOW_INSECURE_HTTP="${RIVERHOG_RETRIEVAL_CACHE_ELASTIC_ADAPTER_ALLOW_INSECURE_HTTP:-true}"
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/riverhog-compose-smoke.XXXXXX")"
 smoke_file_count="${STOVE0_SMOKE_FILE_COUNT:-16}"
@@ -74,7 +78,19 @@ cleanup() {
 trap cleanup EXIT
 
 "${ROOT_DIR}/scripts/bootstrap_garage.sh"
-compose up --detach --wait archive-adapter retrieval-cache-adapter
+compose up --detach --wait archive-adapter filesystem-cache-adapter elastic-cache-adapter
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --entrypoint riverhog-storage-adapter-conformance \
+  test \
+  --base-url http://filesystem-cache-adapter:8080 \
+  --token-file /run/secrets/riverhog-storage-adapter.token \
+  --object-prefix conformance/compose-filesystem \
+  --allow-insecure-http
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --entrypoint python \
+  test -m tests.harness.storage_adapter_goodput_probe \
+  --base-url http://filesystem-cache-adapter:8080 \
+  --token-file /run/secrets/riverhog-storage-adapter.token
 continuation_root="${smoke_root}/storage-adapter-continuation"
 install -d -m 0700 "${continuation_root}"
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
@@ -85,6 +101,20 @@ compose restart archive-adapter
 compose up --detach --wait archive-adapter
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
   --volume "${continuation_root}:/continuation" \
+  --entrypoint python \
+  test -m tests.harness.storage_adapter_restart_probe resume /continuation/state.json
+filesystem_continuation_root="${smoke_root}/filesystem-adapter-continuation"
+install -d -m 0700 "${filesystem_continuation_root}"
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --env RIVERHOG_STORAGE_ADAPTER_RESTART_PROBE_CACHE_STORE=local \
+  --volume "${filesystem_continuation_root}:/continuation" \
+  --entrypoint python \
+  test -m tests.harness.storage_adapter_restart_probe prepare /continuation/state.json
+compose restart filesystem-cache-adapter
+compose up --detach --wait filesystem-cache-adapter
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --env RIVERHOG_STORAGE_ADAPTER_RESTART_PROBE_CACHE_STORE=local \
+  --volume "${filesystem_continuation_root}:/continuation" \
   --entrypoint python \
   test -m tests.harness.storage_adapter_restart_probe resume /continuation/state.json
 compose run --rm \
@@ -354,9 +384,53 @@ with ApiClient() as client:
     cached = collect(client.list_retrieval_cache_objects, 'objects', collection_id=input_id)
     assert cached, cached
     assert all(row['state'] == 'ready' for row in cached), cached
-    assert all('new_archive' in row['lease_categories'] for row in cached), cached"
+    assert all('new_archive' in row['lease_categories'] for row in cached), cached
+    assert {row['cache_store'] for row in cached} == {'local'}, cached"
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint python test -c "${cache_code}"
+
+overflow_root="${smoke_root}/overflow"
+install -d -m 0700 "${overflow_root}"
+truncate -s 2MiB "${overflow_root}/larger-than-local-budget.bin"
+overflow_result="$(
+  compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
+    --volume "${overflow_root}:/overflow:ro" \
+    --entrypoint riverhog test collection upload start /overflow \
+    --omit-provenance 'compose qualification fixture' --json
+)"
+overflow_collection_id="$(printf '%s' "${overflow_result}" | jq -r '.collection_id')"
+overflow_cache_code="import os, time
+from riverhog_api_client import ApiClient
+def collect(method, key, **kwargs):
+    page_token = None
+    rows = []
+    while True:
+        payload = method(page_size=100, page_token=page_token, **kwargs)
+        rows.extend(payload[key])
+        page_token = payload.get('next_page_token')
+        if page_token is None:
+            return rows
+with ApiClient() as client:
+    deadline = time.monotonic() + 60
+    while True:
+        rows = collect(client.list_retrieval_cache_objects, 'objects')
+        overflow = [
+            row for row in rows
+            if row['collection_id'] == int(os.environ['OVERFLOW_COLLECTION_ID'])
+        ]
+        stores = {row['cache_store'] for row in rows if row['state'] == 'ready'}
+        if overflow and all(row['state'] == 'ready' for row in overflow) and stores == {'local', 'elastic'}:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError((stores, overflow))
+        time.sleep(0.25)
+    assert 'elastic' in {row['cache_store'] for row in overflow}, overflow
+    status = client.retrieval_cache_status()
+    assert [store['cache_store'] for store in status['stores']] == ['local', 'elastic'], status
+    assert status['stores'][0]['admission_budget_bytes'] == 1048576, status"
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
+  --env "OVERFLOW_COLLECTION_ID=${overflow_collection_id}" \
+  --entrypoint python test -c "${overflow_cache_code}"
 
 wait_code="import json, time, urllib.request
 def diagnostic(row):

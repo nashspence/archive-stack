@@ -30,7 +30,14 @@ _SECOND_SEGMENT = b"continued after adapter restart\n"
 
 def _client() -> StorageAdapterClient:
     config = load_runtime_config()
-    registration = config.archive_store(config.archive_write_store)
+    cache_store = os.environ.get("RIVERHOG_STORAGE_ADAPTER_RESTART_PROBE_CACHE_STORE")
+    if cache_store:
+        try:
+            registration = config.retrieval_cache_stores[cache_store].adapter
+        except KeyError as exc:
+            raise ValueError(f"retrieval-cache store is not configured: {cache_store}") from exc
+    else:
+        registration = config.archive_store(config.archive_write_store)
     return StorageAdapterClient.from_token_file(
         registration.base_url,
         token_file=registration.token_file,

@@ -21,6 +21,7 @@ required_checks = [
   "build riverhog-ftp-adapter",
   "build riverhog-storage-adapter-aws",
   "build riverhog-storage-adapter-backblaze",
+  "build riverhog-storage-adapter-filesystem",
   "build stove0",
   "build stove0-exiftool-observer",
   "build stove0-ffprobe-sampling-observer",
@@ -196,8 +197,8 @@ windows-x64 = { mounted_volume_distribution = "gogurt-windows-mounted-volume", m
 
 [qualification.storage_reference]
 purpose = "Maintainer-selected storage-adapter reference conformance."
-distributions = ["riverhog-storage-adapter-aws", "riverhog-storage-adapter-backblaze"]
-cases = ["b2-archive", "b2-retrieval-cache", "aws-deep-archive", "aws-cloudfront-egress"]
+distributions = ["riverhog-storage-adapter-aws", "riverhog-storage-adapter-backblaze", "riverhog-storage-adapter-filesystem"]
+cases = ["filesystem-retrieval-cache", "b2-archive", "b2-retrieval-cache", "aws-deep-archive", "aws-cloudfront-egress"]
 
 [references]
 policy = "Checked-in references form a closed, tightly scoped, maintainer-selected, nonnormative conformance set."
@@ -242,6 +243,7 @@ reference_component = [
   "reference/riverhog/provenance/observers/windows",
   "reference/riverhog/storage/aws",
   "reference/riverhog/storage/backblaze",
+  "reference/riverhog/storage/filesystem",
   "reference/riverhog/storage/s3-support",
   "reference/stove0/observers/contracts/media-metadata",
   "reference/stove0/observers/contracts/media-sampling",
@@ -311,6 +313,7 @@ mango-fish = { role = "product", description = "Riverhog CloudEvents utility.", 
 riverhog-ftp-adapter = { role = "reference", description = "Optional nonnormative Riverhog FTP ingress reference.", distributions = ["riverhog-ftp-adapter", "riverhog-provenance-linux-observer"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 riverhog-storage-adapter-aws = { role = "reference", description = "Optional nonnormative AWS storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-aws"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
 riverhog-storage-adapter-backblaze = { role = "reference", description = "Optional nonnormative Backblaze B2 storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-backblaze"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
+riverhog-storage-adapter-filesystem = { role = "reference", description = "Optional nonnormative Linux filesystem storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-filesystem"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-filesystem" }
 stove0 = { role = "product", description = "Stove0 transformation companion.", distributions = ["stove0-server"], repository = "ghcr.io/nashspence/riverhog-stove0" }
 stove0-exiftool-observer = { role = "reference", description = "Optional nonnormative ExifTool observer reference for Stove0.", distributions = ["stove0-exiftool-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
 stove0-ffprobe-sampling-observer = { role = "reference", description = "Optional nonnormative FFprobe sampling-observer reference for Stove0.", distributions = ["stove0-ffprobe-sampling-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }

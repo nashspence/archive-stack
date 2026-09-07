@@ -22,6 +22,7 @@ MISE_CONTAINER_TOOLS = {
     "riverhog-ftp-adapter": {"uv"},
     "riverhog-storage-adapter-aws": {"uv"},
     "riverhog-storage-adapter-backblaze": {"uv"},
+    "riverhog-storage-adapter-filesystem": {"uv"},
     "stove0": {"uv"},
     "stove0-exiftool-observer": {"http:exiftool", "uv"},
     "stove0-ffprobe-sampling-observer": {"uv"},
@@ -65,6 +66,13 @@ IMAGE_CONTRACTS = {
         "title": "Riverhog Backblaze storage adapter",
         "license": "CAL-1.0",
         "compose": (),
+    },
+    "riverhog-storage-adapter-filesystem": {
+        "dockerfile": "reference/riverhog/storage/filesystem/Dockerfile",
+        "tag": "riverhog-storage-adapter-filesystem:dev",
+        "title": "Riverhog filesystem storage adapter",
+        "license": "CAL-1.0",
+        "compose": (("riverhog/server/compose.yaml", "filesystem-cache-adapter"),),
     },
     "stove0": {
         "dockerfile": "companions/stove0/server/Dockerfile",

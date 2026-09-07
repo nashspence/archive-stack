@@ -339,7 +339,8 @@ jobs:
           targets: >-
             riverhog,
             riverhog-storage-adapter-aws,
-            riverhog-storage-adapter-backblaze
+            riverhog-storage-adapter-backblaze,
+            riverhog-storage-adapter-filesystem
           load: true
           set: |
             *.args.SOURCE_REVISION=${{ needs.resolve.outputs.source_sha }}
@@ -453,7 +454,8 @@ jobs:
           if ! "${compose[@]}" up -d --wait app; then
             "${compose[@]}" ps
             "${compose[@]}" logs --no-color --tail 80 \
-              app state aws-deep-archive-adapter b2-archive-adapter b2-retrieval-cache-adapter
+              app state aws-deep-archive-adapter b2-archive-adapter b2-retrieval-cache-adapter \
+              qualification-filesystem-cache-adapter
             timeout 30s "${compose[@]}" exec -T app python -c \
               'from riverhog_api.deps import default_container; default_container()' \
               || true

@@ -42,7 +42,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "runtime_images",
     }
     components = boundaries["components"]
-    assert len(components) == 73
+    assert len(components) == 74
     roles = {component["distribution"]: component["role"] for component in components}
     extension_points = boundaries["entry_point_extensions"]
     assert {point["group"] for point in extension_points} == {

@@ -1,4 +1,24 @@
 services:
+  qualification-filesystem-cache-adapter:
+    image: riverhog-storage-adapter-filesystem:dev
+    restart: unless-stopped
+    environment:
+      RIVERHOG_FILESYSTEM_STORAGE_ADAPTER_TOKEN_FILE: /run/secrets/riverhog-storage-adapter.token
+      RIVERHOG_FILESYSTEM_STORAGE_ADAPTER_ROOT: /var/lib/riverhog-filesystem
+      RIVERHOG_FILESYSTEM_STORAGE_ADAPTER_MINIMUM_FREE_BYTES: 0B
+    volumes:
+      - qualification-filesystem-cache-data:/var/lib/riverhog-filesystem
+      - type: bind
+        source: ${RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH}
+        target: /run/secrets/riverhog-storage-adapter.token
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
   aws-deep-archive-adapter:
     image: riverhog-storage-adapter-aws:dev
     restart: unless-stopped
@@ -59,9 +79,14 @@ services:
 
   app:
     depends_on:
+      qualification-filesystem-cache-adapter:
+        condition: service_healthy
       aws-deep-archive-adapter:
         condition: service_healthy
       b2-archive-adapter:
         condition: service_healthy
       b2-retrieval-cache-adapter:
         condition: service_healthy
+
+volumes:
+  qualification-filesystem-cache-data:

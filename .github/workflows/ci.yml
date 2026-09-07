@@ -131,6 +131,7 @@ jobs:
           - riverhog-ftp-adapter
           - riverhog-storage-adapter-aws
           - riverhog-storage-adapter-backblaze
+          - riverhog-storage-adapter-filesystem
           - stove0
           - stove0-exiftool-observer
           - stove0-ffprobe-sampling-observer
