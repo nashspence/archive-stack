@@ -30,7 +30,10 @@ from riverhog_core.catalog_models import (
     RetrievalJobRecord,
     RetrievalPlanObjectRecord,
 )
-from riverhog_core.catalog_workflow_models import CollectionDerivationRecord
+from riverhog_core.catalog_workflow_models import (
+    CollectionDerivationRecord,
+    CollectionProcessingDispositionSetRecord,
+)
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveStore,
@@ -1144,6 +1147,74 @@ def test_postgres_exact_output_intent_creation_resumes_one_upload(
         assert len(rows) == 1
         assert rows[0].idempotency_key == EXECUTION_ID
         assert rows[0].initiated_by_app == f"transform:{EXECUTION_ID}"
+
+
+def test_postgres_concurrent_first_disposition_and_output_create_one_set(
+    database_url: str,
+) -> None:
+    _seed(database_url)
+    services = (
+        SqlAlchemyCollectionWorkflowService(RuntimeConfig(database_url=database_url)),
+        SqlAlchemyCollectionWorkflowService(RuntimeConfig(database_url=database_url)),
+    )
+    root, claim = _workflow_claim(services[0])
+    claim_id = str(claim["id"])
+    _seal_workflow_claim(services[0], claim_id)
+    disposition = ArtifactDisposition(
+        input_collection_id=COLLECTION_ID,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=FILE_PATH,
+        status="transformed",
+    )
+    output = ArtifactDispositionOutput(
+        input_collection_id=COLLECTION_ID,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=FILE_PATH,
+        output_path="derived/document.txt",
+    )
+    barrier = threading.Barrier(2)
+    failures: list[BaseException] = []
+
+    def record_disposition() -> None:
+        try:
+            barrier.wait(5)
+            services[0].record_dispositions(
+                claim_id,
+                fence=1,
+                dispositions=(disposition,),
+                principal=WORKFLOW_PRINCIPAL,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted by parent thread
+            failures.append(exc)
+
+    def record_output() -> None:
+        try:
+            barrier.wait(5)
+            services[1].record_disposition_outputs(
+                claim_id,
+                fence=1,
+                outputs=(output,),
+                principal=WORKFLOW_PRINCIPAL,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted by parent thread
+            failures.append(exc)
+
+    threads = [threading.Thread(target=record_disposition), threading.Thread(target=record_output)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+
+    assert failures == []
+    assert all(not thread.is_alive() for thread in threads)
+    with session_scope(make_session_factory(database_url)) as session:
+        disposition_sets = list(session.scalars(select(CollectionProcessingDispositionSetRecord)))
+        assert len(disposition_sets) == 1
+        assert disposition_sets[0].disposition_count == 1
+        assert disposition_sets[0].output_edge_count == 1
+        assert disposition_sets[0].output_artifact_count == 1
+        assert disposition_sets[0].transformed_count == 1
+        assert disposition_sets[0].transformed_with_outputs_count == 1
 
 
 def test_postgres_settlement_replay_converges_on_one_derivation_record(

@@ -2212,6 +2212,16 @@ def _receiving_disposition_set(
     session: Session,
     claim: CollectionProcessingClaimRecord,
 ) -> CollectionProcessingDispositionSetRecord:
+    # The claim is the durable serialization point for its one disposition
+    # set. Locking only the child row cannot protect first creation because an
+    # absent row provides nothing for PostgreSQL to lock.
+    locked_claim_id = session.scalar(
+        select(CollectionProcessingClaimRecord.id)
+        .where(CollectionProcessingClaimRecord.id == claim.id)
+        .with_for_update()
+    )
+    if locked_claim_id is None:
+        raise NotFound(f"collection processing claim not found: {claim.id}")
     current = session.scalar(
         select(CollectionProcessingDispositionSetRecord)
         .where(CollectionProcessingDispositionSetRecord.claim_id == claim.id)
