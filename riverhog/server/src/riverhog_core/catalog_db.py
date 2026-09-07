@@ -53,6 +53,12 @@ def create_catalog_engine(database_url: str) -> Engine:
 
         @event.listens_for(engine, "connect")
         def set_sqlite_pragma(dbapi_connection: Any, _connection_record: Any) -> None:
+            dbapi_connection.create_function(
+                "octet_length",
+                1,
+                lambda value: len(value.encode("utf-8")) if isinstance(value, str) else None,
+                deterministic=True,
+            )
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
             cursor.execute("PRAGMA foreign_keys=ON;")
@@ -97,6 +103,7 @@ def _load_catalog_models() -> None:
         CollectionArchiveObjectRecord,
         CollectionArchiveObjectUploadRecord,
         CollectionDeletionRecord,
+        CollectionDescriptionPublicationRecord,
         CollectionFileProvenanceRecord,
         CollectionFileRecord,
         CollectionProvenanceEntityRecord,
@@ -144,6 +151,7 @@ def _load_catalog_models() -> None:
         CollectionArchiveObjectRecord,
         CollectionArchiveObjectUploadRecord,
         CollectionDeletionRecord,
+        CollectionDescriptionPublicationRecord,
         CollectionFileRecord,
         CollectionFileProvenanceRecord,
         CollectionRecord,

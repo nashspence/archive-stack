@@ -60,6 +60,9 @@ from riverhog_core.services.archive_copy_states import (
     ARCHIVE_COPY_TRANSFER_STATES,
 )
 from riverhog_core.services.archive_records import archive_copy_is_complete
+from riverhog_core.services.collection_descriptions import (
+    ensure_description_publication_for_copy,
+)
 from riverhog_core.services.collection_mutations import require_collection_archive_idle
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
@@ -1526,6 +1529,12 @@ class SqlAlchemyArchiveCopyService:
             destination.last_uploaded_at = str(uploaded_at)
             destination.last_verified_at = str(uploaded_at)
             destination.failure = None
+            ensure_description_publication_for_copy(
+                session,
+                collection=collection,
+                copy=destination,
+                now=format_utc_timestamp(utc_now()),
+            )
             job.state = "completed"
             job.completed_at = format_utc_timestamp(utc_now())
             job.next_attempt_at = None

@@ -73,11 +73,20 @@ def _uses_postgresql_implicit_sequence(column: Any, bind: Connection | Engine) -
 
 def _check_expression(value: object | None) -> str:
     expression = (_sql(value) or "").casefold().replace('"', "")
+    # PostgreSQL deparses integer literals outside its implicit ``integer`` domain as
+    # quoted strings with an explicit integer cast.  Normalize that representation
+    # before removing dialect-added casts, while preserving genuine quoted text.
+    expression = re.sub(
+        r"'([0-9]+)'::(?:bigint|integer)",
+        r"\1",
+        expression,
+    )
     expression = re.sub(
         r"::(?:character varying|text|bigint|integer)(?:\[\])?",
         "",
         expression,
     )
+    expression = expression.replace("<>", "!=")
     expression = re.sub(
         r"([a-z_][a-z0-9_]*)\s*=\s*any\s*\(\s*array\[(.*?)\]\s*\)",
         r"\1 in (\2)",
@@ -85,6 +94,11 @@ def _check_expression(value: object | None) -> str:
     )
     expression = re.sub(
         r"\(([a-z_][a-z0-9_]*\s+in\s*\([^()]*\))\)",
+        r"\1",
+        expression,
+    )
+    expression = re.sub(
+        r"\(([a-z_][a-z0-9_]*\s*[+-]\s*[0-9]+)\)",
         r"\1",
         expression,
     )

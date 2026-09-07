@@ -3,6 +3,10 @@ from __future__ import annotations
 import builtins
 import secrets
 
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_UTF8_BYTES_MAX,
+    MAX_COLLECTION_DESCRIPTION_REVISION,
+)
 from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
 from sqlalchemy import (
@@ -136,6 +140,38 @@ class CollectionRecord(Base):
     archive_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     catalog_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_search: Mapped[str] = mapped_column(
+        Text,
+        default="",
+        server_default=text("''"),
+    )
+    description_revision: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    description_identity: Mapped[str] = mapped_column(
+        String(64),
+        default="0" * 64,
+        server_default=text(f"'{'0' * 64}'"),
+    )
+    description_mutation_state: Mapped[str] = mapped_column(
+        String,
+        default="idle",
+        server_default=text("'idle'"),
+    )
+    pending_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_description_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pending_description_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
+    description_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    description_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    description_failure: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
@@ -184,6 +220,12 @@ class CollectionRecord(Base):
             postgresql_using="gin",
             postgresql_ops={"search_text": "gin_trgm_ops"},
         ),
+        Index(
+            "ix_collections_description_search_trgm",
+            "description_search",
+            postgresql_using="gin",
+            postgresql_ops={"description_search": "gin_trgm_ops"},
+        ),
         CheckConstraint("file_count >= 0", name="ck_collections_file_count"),
         CheckConstraint("file_bytes >= 0", name="ck_collections_file_bytes"),
         CheckConstraint(
@@ -206,6 +248,61 @@ class CollectionRecord(Base):
         CheckConstraint(
             "catalog_revision IS NULL OR catalog_revision > 0",
             name="ck_collections_catalog_revision",
+        ),
+        CheckConstraint(
+            f"description IS NULL OR octet_length(description) <= "
+            f"{COLLECTION_DESCRIPTION_UTF8_BYTES_MAX}",
+            name="ck_collections_description_bytes",
+        ),
+        CheckConstraint(
+            "description IS NULL AND description_search = '' OR "
+            "description IS NOT NULL AND length(description_search) > 0",
+            name="ck_collections_description_search",
+        ),
+        CheckConstraint(
+            f"description_revision >= 0 AND description_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_collections_description_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("description_identity", 64),
+            name="ck_collections_description_identity",
+        ),
+        CheckConstraint(
+            "description_revision > 0 OR description IS NULL",
+            name="ck_collections_initial_description",
+        ),
+        CheckConstraint(
+            "description_mutation_state IN ('idle','pending','publishing','retry_wait')",
+            name="ck_collections_description_mutation_state",
+        ),
+        CheckConstraint(
+            "description_mutation_state = 'idle' AND pending_description_revision IS NULL "
+            "AND pending_description_identity IS NULL AND description_next_attempt_at IS NULL OR "
+            "description_mutation_state != 'idle' AND pending_description_revision IS NOT NULL "
+            "AND pending_description_revision = description_revision + 1 "
+            "AND pending_description_identity IS NOT NULL "
+            "AND description_next_attempt_at IS NOT NULL",
+            name="ck_collections_description_pending",
+        ),
+        CheckConstraint(
+            f"pending_description_revision IS NULL OR pending_description_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_collections_pending_description_revision",
+        ),
+        CheckConstraint(
+            f"pending_description IS NULL OR octet_length(pending_description) <= "
+            f"{COLLECTION_DESCRIPTION_UTF8_BYTES_MAX}",
+            name="ck_collections_pending_description_bytes",
+        ),
+        CheckConstraint(
+            "pending_description_identity IS NULL OR "
+            + _fixed_lowercase_integer_check("pending_description_identity", 64),
+            name="ck_collections_pending_description_identity",
+        ),
+        CheckConstraint(
+            "description_attempt_count >= 0",
+            name="ck_collections_description_attempt_count",
         ),
     )
 
@@ -697,6 +794,84 @@ class CollectionArchiveCopyRecord(Base):
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="archive_copies")
+    description_publication: Mapped[CollectionDescriptionPublicationRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class CollectionDescriptionPublicationRecord(Base):
+    __tablename__ = "collection_description_publications"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    desired_revision: Mapped[int] = mapped_column(BigInteger)
+    desired_identity: Mapped[str] = mapped_column(String(64))
+    published_revision: Mapped[int] = mapped_column(BigInteger)
+    published_identity: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_description_publications_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+        ),
+        CheckConstraint(
+            f"desired_revision >= 0 AND desired_revision <= {MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_description_publications_desired_revision",
+        ),
+        CheckConstraint(
+            f"published_revision >= 0 AND published_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_description_publications_published_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("desired_identity", 64),
+            name="ck_description_publications_desired_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("published_identity", 64),
+            name="ck_description_publications_published_identity",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_description_publications_attempt_count"),
+        CheckConstraint(
+            "state IN ('pending','publishing','published','retry_wait')",
+            name="ck_description_publications_state",
+        ),
+        CheckConstraint(
+            "state = 'published' AND next_attempt_at IS NULL OR "
+            "state != 'published' AND next_attempt_at IS NOT NULL",
+            name="ck_description_publications_next_attempt",
+        ),
+        CheckConstraint(
+            "published_revision = 0 AND object_path IS NULL AND stored_bytes IS NULL "
+            "AND stored_sha256 IS NULL OR published_revision > 0 AND object_path IS NOT NULL "
+            "AND stored_bytes IS NOT NULL AND stored_sha256 IS NOT NULL",
+            name="ck_description_publications_receipt",
+        ),
+    )
+
+    copy: Mapped[CollectionArchiveCopyRecord] = relationship(
+        back_populates="description_publication"
+    )
 
 
 class CollectionArchiveObjectRecord(Base):
@@ -940,6 +1115,9 @@ class CatalogEventRecord(Base):
     inventory_identity: Mapped[str] = mapped_column(String(64))
     archive_root_sha256: Mapped[str] = mapped_column(String(64))
     content_identity: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    description_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     committed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     published: Mapped[bool] = mapped_column(
         Boolean,
@@ -955,6 +1133,16 @@ class CatalogEventRecord(Base):
         CheckConstraint(
             "revision IS NULL OR revision > 0",
             name="ck_catalog_events_revision",
+        ),
+        CheckConstraint(
+            f"description IS NULL OR octet_length(description) <= "
+            f"{COLLECTION_DESCRIPTION_UTF8_BYTES_MAX}",
+            name="ck_catalog_events_description_bytes",
+        ),
+        CheckConstraint(
+            f"description_revision >= 0 AND description_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_catalog_events_description_revision",
         ),
     )
 
@@ -1653,6 +1841,10 @@ class CollectionUploadRecord(Base):
         String(64), nullable=False, default=lambda: secrets.token_hex(32)
     )
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    description_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description_publication_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1856,6 +2048,17 @@ class CollectionUploadRecord(Base):
             "archive_phase IN ('planning','uploading','finalization_queued','finalizing',"
             "'retry_wait','orphaned','discarding')",
             name="ck_collection_uploads_archive_phase",
+        ),
+        CheckConstraint(
+            f"description IS NULL OR octet_length(description) <= "
+            f"{COLLECTION_DESCRIPTION_UTF8_BYTES_MAX}",
+            name="ck_collection_uploads_description_bytes",
+        ),
+        CheckConstraint(
+            "description_revision IS NULL AND description_identity IS NULL OR "
+            f"description_revision >= 0 AND description_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION} AND description_identity IS NOT NULL",
+            name="ck_collection_uploads_description_state",
         ),
         CheckConstraint("archive_attempt_count >= 0", name="ck_collection_uploads_attempt_count"),
         {"sqlite_autoincrement": True},

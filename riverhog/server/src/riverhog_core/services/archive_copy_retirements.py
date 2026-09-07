@@ -24,6 +24,7 @@ from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
+    CollectionDescriptionPublicationRecord,
     CollectionRecord,
     RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
@@ -191,6 +192,18 @@ class SqlAlchemyArchiveCopyRetirementService:
             if target is None or not archive_copy_is_complete(target):
                 raise Conflict("archive copy changed during retirement")
             target_objects = archive_copy_owned_identity(target).objects
+            description = session.get(
+                CollectionDescriptionPublicationRecord,
+                (normalized_id, normalized_store),
+            )
+            description_prefix = target.archive_storage_prefix
+        if description is not None:
+            if description_prefix is None:
+                raise Conflict("archive copy description has no owned storage prefix")
+            target_store.delete_collection_description(
+                collection_id=normalized_id,
+                archive_storage_prefix=description_prefix,
+            )
         target_store.delete_collection_archive(
             collection_id=normalized_id,
             objects=target_objects,
@@ -501,7 +514,8 @@ def _build_plan(
 ) -> dict[str, object]:
     db = session
     now_text = format_utc_timestamp(utc_now())
-    if db.get(CollectionRecord, collection_id) is None:
+    collection = db.get(CollectionRecord, collection_id)
+    if collection is None:
         raise NotFound(f"collection not found: {collection_id}")
     target = db.get(CollectionArchiveCopyRecord, (collection_id, store))
     if target is None:
@@ -586,6 +600,8 @@ def _build_plan(
     blockers: list[str] = []
     if db.get(CollectionDeletionRecord, collection_id) is not None:
         blockers.append(f"collection deletion is active: {collection_id}")
+    if collection.description_mutation_state != "idle":
+        blockers.append("collection description replacement is active")
     blockers.extend(
         f"retrieval is active: {job_id}" for job_id in active_retrievals[:_BLOCKER_SAMPLE_LIMIT]
     )
@@ -606,6 +622,30 @@ def _build_plan(
     )
     if not retained:
         blockers.append("retirement would remove the collection's last complete archive copy")
+    target_description = db.get(
+        CollectionDescriptionPublicationRecord,
+        (collection_id, store),
+    )
+    if target_description is not None and target_description.state == "publishing":
+        blockers.append("collection description publication is active on the selected copy")
+    if collection.description_revision > 0 and not any(
+        (
+            (
+                publication := db.get(
+                    CollectionDescriptionPublicationRecord,
+                    (collection_id, copy.store),
+                )
+            )
+            is not None
+            and publication.state == "published"
+            and publication.published_revision == collection.description_revision
+            and publication.published_identity == collection.description_identity
+        )
+        for copy in retained
+    ):
+        blockers.append(
+            "retirement would remove the last current durable collection description replica"
+        )
 
     aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
     target_object_count, target_stored_bytes = aggregates.get(

@@ -21,6 +21,9 @@ ALL_RESOURCES = "*"
 CATALOG_READ: Literal["catalog:read"] = "catalog:read"
 RETRIEVAL_MANAGE: Literal["retrieval:manage"] = "retrieval:manage"
 COLLECTIONS_CREATE: Literal["collections:create"] = "collections:create"
+COLLECTION_DESCRIPTIONS_MANAGE: Literal["collection-descriptions:manage"] = (
+    "collection-descriptions:manage"
+)
 COLLECTION_TRANSFORMS_CONTROL: Literal["collection-transforms:control"] = (
     "collection-transforms:control"
 )
@@ -48,6 +51,7 @@ type ApplicationPermission = Literal[
     "catalog:read",
     "retrieval:manage",
     "collections:create",
+    "collection-descriptions:manage",
     "collection-transforms:control",
     "collection-transforms:execute",
     "collection-access-groups:manage",
@@ -71,6 +75,7 @@ APPLICATION_PERMISSIONS = frozenset(
         CATALOG_READ,
         RETRIEVAL_MANAGE,
         COLLECTIONS_CREATE,
+        COLLECTION_DESCRIPTIONS_MANAGE,
         COLLECTION_TRANSFORMS_CONTROL,
         COLLECTION_TRANSFORMS_EXECUTE,
         COLLECTION_ACCESS_GROUPS_MANAGE,
@@ -89,6 +94,7 @@ APPLICATION_PERMISSIONS = frozenset(
 COLLECTION_SCOPED_PERMISSIONS = frozenset(
     {
         CATALOG_READ,
+        COLLECTION_DESCRIPTIONS_MANAGE,
         RETRIEVAL_MANAGE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
@@ -350,6 +356,7 @@ __all__ = [
     "ApplicationResource",
     "CATALOG_READ",
     "COLLECTIONS_CREATE",
+    "COLLECTION_DESCRIPTIONS_MANAGE",
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",

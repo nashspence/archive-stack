@@ -61,6 +61,16 @@ from riverhog_protocol.catalog_sync import (
     CatalogSyncRevision,
     CatalogSyncUpsert,
 )
+from riverhog_protocol.collection_description import (
+    COLLECTION_DESCRIPTION_DOCUMENT_FORMAT,
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_DESCRIPTION_UTF8_BYTES_MAX,
+    MAX_COLLECTION_DESCRIPTION_REVISION,
+    CollectionDescription,
+    CollectionDescriptionDocument,
+    collection_description_identity,
+    validate_collection_description,
+)
 from riverhog_protocol.collection_upload_transport import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
@@ -219,6 +229,14 @@ __all__ += [
     "CatalogSyncPosition",
     "CatalogSyncRevision",
     "CatalogSyncUpsert",
+    "COLLECTION_DESCRIPTION_DOCUMENT_FORMAT",
+    "COLLECTION_DESCRIPTION_RELATIVE_PATH",
+    "COLLECTION_DESCRIPTION_UTF8_BYTES_MAX",
+    "MAX_COLLECTION_DESCRIPTION_REVISION",
+    "CollectionDescription",
+    "CollectionDescriptionDocument",
+    "collection_description_identity",
+    "validate_collection_description",
     "ArtifactDisposition",
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",

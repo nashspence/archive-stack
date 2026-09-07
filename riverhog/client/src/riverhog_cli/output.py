@@ -36,6 +36,12 @@ def format_collections(payload: Mapping[str, object]) -> str:
             f"{collection.get('passphrase_id', 'unknown')}  "
             f"archive-copies={collection.get('archive_copy_count', 0)}"
         )
+        if collection.get("description") is not None:
+            lines.append(f"  description: {collection['description']}")
+        lines.append(
+            f"  description revision: {collection.get('description_revision', 0)}  "
+            f"publication={collection.get('description_publication', 'unknown')}"
+        )
     return "\n".join(lines)
 
 
@@ -70,6 +76,9 @@ def format_collection_summary(
     lines = [
         f"collection {payload.get('id', 'unknown')}",
         f"created: {payload.get('created_at', 'unknown')}",
+        f"description: {payload.get('description') or 'none'}",
+        f"description revision: {payload.get('description_revision', 0)}",
+        f"description publication: {payload.get('description_publication', 'unknown')}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
@@ -78,6 +87,18 @@ def format_collection_summary(
         f"archive copies: {payload.get('archive_copy_count', 0)}",
     ]
     return "\n".join(lines)
+
+
+def format_collection_description(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"collection description: {payload.get('collection_id', 'unknown')}",
+            f"description: {payload.get('description') or 'none'}",
+            f"revision: {payload.get('description_revision', 'unknown')}",
+            f"identity: {payload.get('description_identity', 'unknown')}",
+            f"publication: {payload.get('description_publication', 'unknown')}",
+        ]
+    )
 
 
 def format_collection_archive_copies(payload: Mapping[str, object]) -> str:

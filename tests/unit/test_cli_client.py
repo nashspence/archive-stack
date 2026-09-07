@@ -295,6 +295,42 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     assert "json" not in client.calls[2][2]
 
 
+def test_client_carries_description_on_create_and_conditional_replacement() -> None:
+    client = RecordingClient()
+
+    client.create_or_resume_collection_upload_session(
+        "upload-description",
+        description="Reference footage — morning",
+    )
+    client.replace_collection_description(
+        42,
+        "Corrected footage — morning",
+        expected_identity="a" * 64,
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/v1/collection-upload-sessions",
+            {
+                "json": {
+                    "idempotency_key": "upload-description",
+                    "provenance_mode": "captured",
+                    "description": "Reference footage — morning",
+                }
+            },
+        ),
+        (
+            "PUT",
+            "/v1/collections/42/description",
+            {
+                "json": {"description": "Corrected footage — morning"},
+                "headers": {"If-Match": '"' + "a" * 64 + '"'},
+            },
+        ),
+    ]
+
+
 def test_collection_upload_client_rejects_a_custody_receipt_for_another_artifact() -> None:
     client = WrongCustodyReceiptClient()
 
@@ -706,6 +742,7 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
     assert client.token == "application-token"
     assert callable(client.plan_retrieval)
     assert callable(client.create_or_resume_collection_upload_session)
+    assert callable(client.replace_collection_description)
     assert callable(client.create_app_key)
 
 

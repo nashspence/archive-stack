@@ -31,6 +31,10 @@ from riverhog_core.domain.archive import (
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.raw_verification import raw_file_ordered_volume_commitment
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    CollectionDescriptionDocument,
+)
 from riverhog_provenance import (
     PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
     FileProvenanceBinding,
@@ -46,7 +50,7 @@ from riverhog_provenance import (
     update_ordered_volume_commitment,
     validate_journal,
 )
-from riverhog_recover import RecoveryError, recover_archive
+from riverhog_recover import RecoveryError, recover_archive, recover_collection_description
 
 from tests.fixtures.archive import age_state_json
 from tests.provenance_observer import native_provenance_observer
@@ -91,6 +95,7 @@ def _write_archive(
     with_provenance: bool = False,
     provenance_journal: bytes | None = None,
     provenance_journals: Mapping[str, bytes] | None = None,
+    description: str | None = None,
 ) -> tuple[dict[str, bytes], bytes | None]:
     expected = {
         "notes/alpha.txt": b"alpha\n",
@@ -339,6 +344,17 @@ def _write_archive(
         **raw_ciphertexts,
         **provenance_ciphertexts,
     }
+    if description is not None:
+        description_document = CollectionDescriptionDocument.seal(
+            archive_root_sha256=_sha256(manifest),
+            revision=1,
+            description=description,
+        )
+        ciphertext[COLLECTION_DESCRIPTION_RELATIVE_PATH] = encrypt_age_scrypt(
+            description_document.to_json_bytes(),
+            passphrase,
+            log_n=1,
+        )
     for document in volume_documents:
         relative_path = (
             f"metadata/volume-{format_archive_sequence(document.volume.sequence)}.json.age"
@@ -380,6 +396,44 @@ def test_recovers_complete_collection_without_server_or_database(tmp_path: Path)
     assert summary.bytes == sum(len(content) for content in expected.values())
     assert summary.volumes == 3
     assert {path: (output / path).read_bytes() for path in expected} == expected
+
+
+def test_recovers_description_without_reading_collection_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "archive"
+    _write_archive(archive, description="Résumé of 東京 footage")
+    decrypted: list[str] = []
+    original_decrypt = recovery_module._age_decrypt
+
+    def decrypt(source: Path, *args: object, **kwargs: object) -> None:
+        decrypted.append(source.relative_to(archive).as_posix())
+        original_decrypt(source, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(recovery_module, "_age_decrypt", decrypt)
+    document = recover_collection_description(
+        archive,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
+    )
+
+    assert document is not None
+    assert document.description == "Résumé of 東京 footage"
+    assert len(document.archive_root_sha256) == 64
+    assert decrypted == ["manifest.json.age", COLLECTION_DESCRIPTION_RELATIVE_PATH]
+
+
+def test_missing_description_is_an_explicitly_absent_optional_sidecar(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _write_archive(archive)
+
+    assert (
+        recover_collection_description(
+            archive,
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
+        )
+        is None
+    )
 
 
 def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_path: Path) -> None:

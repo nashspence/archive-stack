@@ -48,6 +48,7 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/collection-upload-sessions/{collection_id}/work",
         "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "/v1/collections/{collection_id}",
+        "/v1/collections/{collection_id}/description",
         "/v1/collections/{collection_id}/provenance/files",
         "/v1/collections/{collection_id}/provenance/files/{path}",
         "/v1/collections/{collection_id}/provenance/trace/{path}",
@@ -390,6 +391,17 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
         "CollectionUploadSessionOut",
     ):
         assert {"encryption_format", "passphrase_id"} <= set(schemas[schema]["required"])
+    for schema in (
+        "CollectionSummaryOut",
+        "CollectionUploadListItemOut",
+        "CollectionUploadSessionOut",
+    ):
+        assert {
+            "description",
+            "description_revision",
+            "description_identity",
+            "description_publication",
+        } <= set(schemas[schema]["required"])
     list_parameters = {
         parameter["name"] for parameter in document["paths"]["/v1/collections"]["get"]["parameters"]
     }
@@ -399,6 +411,10 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
         CollectionSummary(
             id=CollectionId(42),
             created_at="2026-07-26T20:00:00.000000Z",
+            description=None,
+            description_revision=0,
+            description_identity="0" * 64,
+            description_publication="not_required",
             content_identity="1" * 64,
             archive_root_sha256="2" * 64,
             encryption_format="age-v1-scrypt",

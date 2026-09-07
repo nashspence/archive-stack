@@ -1,0 +1,667 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import TypeAdapter, ValidationError
+from riverhog_age import decrypt_age_scrypt
+from riverhog_application_access import ALL_RESOURCES
+from riverhog_core.app_permissions import (
+    CATALOG_READ,
+    COLLECTION_DESCRIPTIONS_MANAGE,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_events import record_catalog_event
+from riverhog_core.catalog_models import (
+    CatalogEventRecord,
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
+    CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
+    CollectionDescriptionPublicationRecord,
+    CollectionFileRecord,
+    CollectionRecord,
+    RetrievalCacheObjectRecord,
+)
+from riverhog_core.ports.archive_store import CollectionDescriptionReceipt
+from riverhog_core.runtime_config import (
+    DEV_ARCHIVE_PASSPHRASE,
+    DEV_ARCHIVE_PASSPHRASE_ID,
+    RuntimeConfig,
+)
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
+from riverhog_core.services.collection_descriptions import (
+    SqlAlchemyCollectionDescriptionService,
+)
+from riverhog_core.services.collections import SqlAlchemyCollectionService
+from riverhog_core.services.search import SqlAlchemySearchService
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_DESCRIPTION_UTF8_BYTES_MAX,
+    CatalogSyncUpsert,
+    CollectionDescription,
+    CollectionDescriptionDocument,
+    collection_description_identity,
+)
+from riverhog_protocol.errors import PreconditionFailed, ServiceUnavailable
+from sqlalchemy import select
+
+from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
+from tests.unit.db_helpers import sqlite_url
+
+NOW = "2026-09-07T00:00:00.000000Z"
+DESCRIPTION = TypeAdapter(CollectionDescription)
+PRINCIPAL = ApplicationPrincipal(
+    app="catalog-editor",
+    key_id="catalog-editor-key",
+    access=frozenset(
+        {
+            ApplicationAccess(CATALOG_READ, ALL_RESOURCES),
+            ApplicationAccess(COLLECTION_DESCRIPTIONS_MANAGE, ALL_RESOURCES),
+        }
+    ),
+)
+
+
+class FailingDescriptionStore(MemoryArchiveStore):
+    fail = True
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionDescriptionReceipt:
+        if self.fail:
+            raise OSError("simulated unavailable description store")
+        return super().publish_collection_description(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+            document=document,
+            passphrase_id=passphrase_id,
+        )
+
+
+def _seed(
+    path: Path,
+) -> tuple[RuntimeConfig, object, MemoryArchiveStore, ArchiveStoreRegistry]:
+    config = RuntimeConfig(
+        database_url=sqlite_url(path),
+        browse_token_signing_key="description-test-key-000000000000",
+    )
+    initialize_db(config.database_url)
+    factory = make_session_factory(config.database_url)
+    with session_scope(factory) as session:
+        collection = CollectionRecord(
+            id=1,
+            creation_idempotency_key="fixture-1",
+            creation_identity_sha256="1" * 64,
+            creation_custody_mode="producer-retained",
+            archive_generation="2" * 64,
+            content_identity="3" * 64,
+            encryption_format="age-v1-scrypt",
+            passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
+            provenance_mode="omitted",
+            provenance_identity=None,
+            inventory_identity="4" * 64,
+            archive_root_sha256="5" * 64,
+            description_revision=0,
+            description_identity=collection_description_identity(
+                archive_root_sha256="5" * 64,
+                revision=0,
+                description=None,
+            ),
+            created_by_app="fixture",
+            created_at=NOW,
+            is_published=True,
+            file_count=1,
+            file_bytes=7,
+        )
+        session.add(collection)
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="archive",
+                state="uploaded",
+                archive_storage_prefix="archives/1",
+                last_uploaded_at=NOW,
+                last_verified_at=NOW,
+            )
+        )
+        session.add(
+            CollectionDescriptionPublicationRecord(
+                collection_id=1,
+                store="archive",
+                desired_revision=0,
+                desired_identity=collection.description_identity,
+                published_revision=0,
+                published_identity=collection.description_identity,
+                state="published",
+                next_attempt_at=None,
+            )
+        )
+        session.add(
+            CollectionArchiveObjectRecord(
+                collection_id=1,
+                store="archive",
+                object_id="manifest",
+                object_order=0,
+                kind="manifest",
+                object_path="archives/1/manifest.json.age",
+                plaintext_bytes=1,
+                stored_bytes=1,
+                sha256="5" * 64,
+                stored_sha256="6" * 64,
+                revision="provider-revision",
+                uploaded_at=NOW,
+                verified_at=NOW,
+            )
+        )
+        session.add(
+            CollectionAccessGroupRecord(
+                id="a" * 64,
+                creation_idempotency_key="description-fixture-group",
+                created_by_app="fixture",
+                display_label="Description fixture",
+                status="active",
+                authorization_revision=1,
+                created_at=NOW,
+                updated_at=NOW,
+                collection_count=1,
+            )
+        )
+        session.flush()
+        session.add(
+            CollectionAccessGroupMembershipRecord(
+                collection_id=1,
+                group_id="a" * 64,
+                added_by_app="fixture",
+                added_at=NOW,
+            )
+        )
+        session.add(
+            RetrievalCacheObjectRecord(
+                source_store="archive",
+                collection_id=1,
+                object_id="manifest",
+                cache_store="local",
+                object_path="cache/1/manifest.json.age",
+                revision="cache-revision",
+                stored_bytes=1,
+                stored_sha256="6" * 64,
+                cached_at=NOW,
+                verified_at=NOW,
+                state="ready",
+            )
+        )
+        session.add(
+            CollectionFileRecord(
+                collection_id=1,
+                path="source/camera.bin",
+                bytes=7,
+                sha256="7" * 64,
+            )
+        )
+        session.flush()
+        record_catalog_event(
+            session,
+            change="created",
+            collection_id=1,
+            occurred_at=NOW,
+            inventory_identity=collection.inventory_identity,
+            before_groups=(),
+            after_groups=(),
+        )
+    store = MemoryArchiveStore()
+    registry = ArchiveStoreRegistry({"archive": archive_store_binding(store)})
+    return config, factory, store, registry
+
+
+def _immutable_identity(collection: CollectionRecord) -> tuple[object, ...]:
+    return (
+        collection.creation_identity_sha256,
+        collection.archive_generation,
+        collection.content_identity,
+        collection.encryption_format,
+        collection.passphrase_id,
+        collection.provenance_mode,
+        collection.provenance_identity,
+        collection.inventory_identity,
+        collection.archive_root_sha256,
+        collection.file_count,
+        collection.file_bytes,
+    )
+
+
+def test_description_contract_accepts_exact_bounded_nfc_unicode() -> None:
+    value = "Résumé of 東京 footage\nCaptured at dawn"
+    assert DESCRIPTION.validate_python(value) == value
+    assert DESCRIPTION.validate_python("a" * COLLECTION_DESCRIPTION_UTF8_BYTES_MAX) == (
+        "a" * COLLECTION_DESCRIPTION_UTF8_BYTES_MAX
+    )
+    assert DESCRIPTION.validate_python("🦆" * (COLLECTION_DESCRIPTION_UTF8_BYTES_MAX // 4))
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        " \t\n",
+        "e\u0301",
+        "contains\x00control",
+        "a" * (COLLECTION_DESCRIPTION_UTF8_BYTES_MAX + 1),
+        "🦆" * (COLLECTION_DESCRIPTION_UTF8_BYTES_MAX // 4 + 1),
+    ),
+)
+def test_description_contract_rejects_noncanonical_or_oversized_text(value: str) -> None:
+    with pytest.raises(ValidationError):
+        DESCRIPTION.validate_python(value)
+
+
+def test_description_is_outside_immutable_archive_authority() -> None:
+    schema_root = (
+        Path(__file__).resolve().parents[2] / "packages/riverhog-archive-contracts/schemas"
+    )
+    schemas = [json.loads(path.read_text(encoding="utf-8")) for path in schema_root.glob("*.json")]
+    assert len(schemas) == 4
+
+    def property_names(value: object) -> set[str]:
+        if isinstance(value, list):
+            return {name for item in value for name in property_names(item)}
+        if not isinstance(value, dict):
+            return set()
+        names = set(value.get("properties", {}))
+        return names | {name for item in value.values() for name in property_names(item)}
+
+    assert all(
+        {"description", "description_identity"}.isdisjoint(property_names(schema))
+        for schema in schemas
+    )
+
+
+def test_description_replacement_is_durable_searchable_and_syncable(tmp_path: Path) -> None:
+    config, factory, store, registry = _seed(tmp_path / "catalog.sqlite3")
+    descriptions = SqlAlchemyCollectionDescriptionService(
+        config,
+        registry,
+        session_factory=factory,
+    )
+    collections = SqlAlchemyCollectionService(config, session_factory=factory)
+    files = SqlAlchemySearchService(config, session_factory=factory)
+    sync = SqlAlchemyCatalogSyncService(config, session_factory=factory)
+
+    checkpoint = sync.checkpoint(principal=PRINCIPAL)
+    bootstrap = sync.collections(cursor=checkpoint.catalog_cursor, limit=10, principal=PRINCIPAL)
+    assert bootstrap.changes_cursor is not None
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        before = _immutable_identity(collection)
+        object_rows = list(
+            session.execute(
+                select(
+                    CollectionArchiveObjectRecord.object_path,
+                    CollectionArchiveObjectRecord.sha256,
+                    CollectionArchiveObjectRecord.stored_sha256,
+                    CollectionArchiveObjectRecord.revision,
+                )
+            )
+        )
+        cache_rows = list(
+            session.execute(
+                select(
+                    RetrievalCacheObjectRecord.source_store,
+                    RetrievalCacheObjectRecord.object_id,
+                    RetrievalCacheObjectRecord.object_path,
+                    RetrievalCacheObjectRecord.revision,
+                    RetrievalCacheObjectRecord.stored_sha256,
+                    RetrievalCacheObjectRecord.state,
+                )
+            )
+        )
+        access_rows = list(
+            session.execute(
+                select(
+                    CollectionAccessGroupMembershipRecord.collection_id,
+                    CollectionAccessGroupMembershipRecord.group_id,
+                    CollectionAccessGroupMembershipRecord.added_by_app,
+                    CollectionAccessGroupMembershipRecord.added_at,
+                )
+            )
+        )
+
+    description = "Camera seven — morning reference"
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    description_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=1,
+        description=description,
+    )
+    assert descriptions.replace(
+        1,
+        description=description,
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    ) == {
+        "collection_id": 1,
+        "description": description,
+        "description_revision": 1,
+        "description_identity": description_identity,
+        "description_publication": "current",
+    }
+
+    summary = collections.get(1, principal=PRINCIPAL)
+    assert (summary.description, summary.description_identity) == (
+        description,
+        description_identity,
+    )
+    matched = collections.list(
+        page_size=25,
+        position=None,
+        q="MORNING reference",
+        principal=PRINCIPAL,
+    )
+    assert [item.id for item in matched.collections] == [1]
+    assert (
+        files.search(
+            q="morning reference",
+            page_size=25,
+            position=None,
+            sort="file_ref",
+            order="asc",
+            principal=PRINCIPAL,
+        )["files"]
+        == []
+    )
+    assert [
+        item["path"]
+        for item in files.search(
+            q="camera.bin",
+            page_size=25,
+            position=None,
+            sort="file_ref",
+            order="asc",
+            principal=PRINCIPAL,
+        )["files"]
+    ] == ["source/camera.bin"]
+
+    caught_up = sync.changes(cursor=bootstrap.changes_cursor, limit=10, principal=PRINCIPAL)
+    assert caught_up.changes == []
+    changes = sync.changes(cursor=caught_up.next_cursor, limit=10, principal=PRINCIPAL)
+    assert changes.changes == [
+        CatalogSyncUpsert(
+            collection_id=1,
+            archive_root_sha256="5" * 64,
+            content_identity="3" * 64,
+            description=description,
+            description_revision=1,
+            description_identity=description_identity,
+            revision="2",
+        )
+    ]
+
+    assert (
+        descriptions.replace(
+            1,
+            description=description,
+            expected_identity=initial_identity,
+            principal=PRINCIPAL,
+        )["description_identity"]
+        == description_identity
+    )
+
+    with pytest.raises(PreconditionFailed):
+        descriptions.replace(
+            1,
+            description="Stale writer",
+            expected_identity=initial_identity,
+            principal=PRINCIPAL,
+        )
+    assert (
+        descriptions.replace(
+            1,
+            description=description,
+            expected_identity=description_identity,
+            principal=PRINCIPAL,
+        )["description_identity"]
+        == description_identity
+    )
+    cleared_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=2,
+        description=None,
+    )
+    cleared = descriptions.replace(
+        1,
+        description=None,
+        expected_identity=description_identity,
+        principal=PRINCIPAL,
+    )
+    assert cleared == {
+        "collection_id": 1,
+        "description": None,
+        "description_revision": 2,
+        "description_identity": cleared_identity,
+        "description_publication": "current",
+    }
+
+    description_path = f"archives/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+    document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(store.objects[description_path], DEV_ARCHIVE_PASSPHRASE)
+    )
+    assert document.archive_root_sha256 == "5" * 64
+    assert document.revision == 2
+    assert document.description is None
+    assert document.description_identity == cleared_identity
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        assert _immutable_identity(collection) == before
+        assert collection.description_revision == 2
+        assert collection.description_identity == cleared_identity
+        assert (
+            list(
+                session.execute(
+                    select(
+                        CollectionArchiveObjectRecord.object_path,
+                        CollectionArchiveObjectRecord.sha256,
+                        CollectionArchiveObjectRecord.stored_sha256,
+                        CollectionArchiveObjectRecord.revision,
+                    )
+                )
+            )
+            == object_rows
+        )
+        assert (
+            list(
+                session.execute(
+                    select(
+                        RetrievalCacheObjectRecord.source_store,
+                        RetrievalCacheObjectRecord.object_id,
+                        RetrievalCacheObjectRecord.object_path,
+                        RetrievalCacheObjectRecord.revision,
+                        RetrievalCacheObjectRecord.stored_sha256,
+                        RetrievalCacheObjectRecord.state,
+                    )
+                )
+            )
+            == cache_rows
+        )
+        assert (
+            list(
+                session.execute(
+                    select(
+                        CollectionAccessGroupMembershipRecord.collection_id,
+                        CollectionAccessGroupMembershipRecord.group_id,
+                        CollectionAccessGroupMembershipRecord.added_by_app,
+                        CollectionAccessGroupMembershipRecord.added_at,
+                    )
+                )
+            )
+            == access_rows
+        )
+        events = list(
+            session.scalars(select(CatalogEventRecord).order_by(CatalogEventRecord.revision))
+        )
+        assert [(event.revision, event.description) for event in events] == [
+            (1, None),
+            (2, description),
+            (3, None),
+        ]
+
+
+def test_description_projection_waits_for_durable_publication_and_restarts(
+    tmp_path: Path,
+) -> None:
+    config, factory, _store, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = FailingDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+
+    with pytest.raises(ServiceUnavailable, match="publication failed"):
+        service.replace(
+            1,
+            description="Durable only after storage accepts it",
+            expected_identity=initial_identity,
+            principal=PRINCIPAL,
+        )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        assert collection.description is None
+        assert collection.description_revision == 0
+        assert collection.description_identity == initial_identity
+        assert collection.description_mutation_state == "retry_wait"
+        collection.description_next_attempt_at = NOW
+
+    store.fail = False
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        assert collection.description == "Durable only after storage accepts it"
+        assert collection.description_revision == 1
+        assert collection.description_mutation_state == "idle"
+        assert len(list(session.scalars(select(CatalogEventRecord)))) == 2
+
+
+def test_description_acknowledges_one_copy_then_reconciles_every_retained_copy(
+    tmp_path: Path,
+) -> None:
+    config, factory, primary, _registry = _seed(tmp_path / "catalog.sqlite3")
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/1",
+                last_uploaded_at=NOW,
+                last_verified_at=NOW,
+            )
+        )
+        session.add(
+            CollectionDescriptionPublicationRecord(
+                collection_id=1,
+                store="mirror",
+                desired_revision=0,
+                desired_identity=initial_identity,
+                published_revision=0,
+                published_identity=initial_identity,
+                state="published",
+                next_attempt_at=None,
+            )
+        )
+    mirror = MemoryArchiveStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry(
+            {
+                "archive": archive_store_binding(primary),
+                "mirror": archive_store_binding(mirror),
+            }
+        ),
+        session_factory=factory,
+    )
+
+    updated = service.replace(
+        1,
+        description="Replicate me",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    assert updated["description_publication"] == "reconciling"
+    assert f"archives/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}" in primary.objects
+    assert not mirror.objects
+
+    assert service.process_due(limit=1) == 1
+    assert f"archives/mirror/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}" in mirror.objects
+    assert (
+        SqlAlchemyCollectionService(config, session_factory=factory)
+        .get(1, principal=PRINCIPAL)
+        .description_publication
+        == "current"
+    )
+
+
+def test_description_status_excludes_incomplete_archive_copies(tmp_path: Path) -> None:
+    config, factory, archive, registry = _seed(tmp_path / "catalog.sqlite3")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="incomplete",
+                state="failed",
+                archive_storage_prefix="archives/incomplete/1",
+            )
+        )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+
+    updated = SqlAlchemyCollectionDescriptionService(
+        config,
+        registry,
+        session_factory=factory,
+    ).replace(
+        1,
+        description="Only retained copies participate",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+
+    assert updated["description_publication"] == "current"
+    assert archive.objects
+    summary = SqlAlchemyCollectionService(config, session_factory=factory).get(
+        1,
+        principal=PRINCIPAL,
+    )
+    assert summary.archive_copy_count == 2
+    assert summary.description_publication == "current"

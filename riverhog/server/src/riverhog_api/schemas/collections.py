@@ -6,7 +6,9 @@ from http_api_contracts import BrowsePageToken, CanonicalVisibleText
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
+    MAX_COLLECTION_DESCRIPTION_REVISION,
     ArchiveStoreName,
+    CollectionDescription,
     CollectionId,
     CollectionSort,
     CollectionUploadArtifactCustodyReceiptDocument,
@@ -342,6 +344,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
 
     idempotency_key: CanonicalVisibleText = Field(max_length=200)
     ingest_source: str | None = None
+    description: CollectionDescription | None = None
     archive_store: ArchiveStoreName | None = None
     event_context: EventContext | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
@@ -367,6 +370,10 @@ class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocum
 class CollectionSummaryOut(RiverhogModel):
     id: CollectionId
     created_at: str
+    description: CollectionDescription | None
+    description_revision: int = Field(ge=0, le=MAX_COLLECTION_DESCRIPTION_REVISION, strict=True)
+    description_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    description_publication: Literal["not_required", "current", "reconciling"]
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
@@ -375,6 +382,18 @@ class CollectionSummaryOut(RiverhogModel):
     bytes: int
     remote_storage_bytes: int
     archive_copy_count: int = Field(ge=0, strict=True)
+
+
+class ReplaceCollectionDescriptionRequest(RiverhogModel):
+    description: CollectionDescription | None
+
+
+class CollectionDescriptionOut(RiverhogModel):
+    collection_id: CollectionId
+    description: CollectionDescription | None
+    description_revision: int = Field(ge=0, le=MAX_COLLECTION_DESCRIPTION_REVISION, strict=True)
+    description_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    description_publication: Literal["not_required", "current", "reconciling"]
 
 
 class ListCollectionsResponse(RiverhogModel):
@@ -533,6 +552,14 @@ class CollectionUploadListItemOut(RiverhogModel):
     collection_id: CollectionId
     created_at: str | None
     ingest_source: str | None
+    description: CollectionDescription | None
+    description_revision: int | None = Field(
+        ge=0,
+        le=MAX_COLLECTION_DESCRIPTION_REVISION,
+        strict=True,
+    )
+    description_identity: str | None = Field(pattern=r"^[0-9a-f]{64}$")
+    description_publication: Literal["pending", "not_required", "current"]
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
@@ -616,6 +643,14 @@ class CollectionUploadSessionOut(RiverhogModel):
     collection_id: CollectionId
     created_at: str
     ingest_source: str | None
+    description: CollectionDescription | None
+    description_revision: int | None = Field(
+        ge=0,
+        le=MAX_COLLECTION_DESCRIPTION_REVISION,
+        strict=True,
+    )
+    description_identity: str | None = Field(pattern=r"^[0-9a-f]{64}$")
+    description_publication: Literal["pending", "not_required", "current"]
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

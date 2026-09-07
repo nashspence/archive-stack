@@ -55,6 +55,10 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     )
     lifecycle_events = SimpleNamespace(reap_expired_contexts=Mock(return_value=1))
     collection_deletions = SimpleNamespace(process_due=Mock(return_value=0))
+    collection_descriptions = SimpleNamespace(
+        requeue_interrupted_for_startup=Mock(return_value=1),
+        process_due=Mock(return_value=0),
+    )
     retrieval = SimpleNamespace(
         request_cache_accounting_reconciliation_for_startup=Mock(return_value=1),
         process_cache_accounting_reconciliation=Mock(return_value=0),
@@ -66,6 +70,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             collection_workflows=collection_workflows,
             archive_copies=archive_copies,
             collection_deletions=collection_deletions,
+            collection_descriptions=collection_descriptions,
             retrieval=retrieval,
             provenance=provenance,
             lifecycle_events=lifecycle_events,
@@ -89,6 +94,8 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
     provenance.process_due_verifications.assert_called_once_with(limit=1)
     collection_deletions.process_due.assert_called_once_with(limit=1)
+    collection_descriptions.requeue_interrupted_for_startup.assert_called_once_with(limit=100)
+    collection_descriptions.process_due.assert_called_once_with(limit=1)
     retrieval.request_cache_accounting_reconciliation_for_startup.assert_called_once_with()
     retrieval.process_cache_accounting_reconciliation.assert_called_once_with(limit=100)
     lifecycle_events.reap_expired_contexts.assert_called_once_with()
@@ -119,6 +126,10 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
                     process_due=zero,
                 ),
                 collection_deletions=SimpleNamespace(process_due=zero),
+                collection_descriptions=SimpleNamespace(
+                    requeue_interrupted_for_startup=zero,
+                    process_due=zero,
+                ),
                 retrieval=SimpleNamespace(
                     request_cache_accounting_reconciliation_for_startup=zero,
                     process_cache_accounting_reconciliation=zero,

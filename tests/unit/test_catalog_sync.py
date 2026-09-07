@@ -35,6 +35,7 @@ from riverhog_protocol import (
     CatalogSyncDelete,
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
+    collection_description_identity,
 )
 from riverhog_protocol.errors import (
     CatalogSyncCursorExpired,
@@ -81,6 +82,12 @@ def _seed(factory: object, collection_id: int) -> None:
             provenance_identity=None,
             inventory_identity=root,
             archive_root_sha256=root,
+            description_revision=0,
+            description_identity=collection_description_identity(
+                archive_root_sha256=root,
+                revision=0,
+                description=None,
+            ),
             created_by_app="fixture",
             created_at=NOW,
             is_published=True,
@@ -145,6 +152,13 @@ def test_catalog_sync_bootstrap_and_follow_are_exact_bounded_authorities(
             collection_id=4,
             archive_root_sha256=f"{4:064x}",
             content_identity=f"{4:064x}",
+            description=None,
+            description_revision=0,
+            description_identity=collection_description_identity(
+                archive_root_sha256=f"{4:064x}",
+                revision=0,
+                description=None,
+            ),
             revision="4",
         )
     ]
@@ -321,6 +335,9 @@ class _ReplicaApi:
                     collection_id=1,
                     archive_root_sha256="c" * 64,
                     content_identity="d" * 64,
+                    description="Reference collection",
+                    description_revision=2,
+                    description_identity="e" * 64,
                     revision="1",
                 )
             ],
@@ -358,7 +375,11 @@ def test_catalog_replica_uses_one_request_per_step_and_publishes_atomically(
 
     replica.step(api, limit=1)
     assert api.calls[-1] == "changes:changes-1:1"
-    assert [item.collection_id for item in replica.page()] == [1]
+    page = replica.page()
+    assert [item.collection_id for item in page] == [1]
+    assert page[0].description == "Reference collection"
+    assert page[0].description_identity == "e" * 64
+    assert replica.get(1) == page[0]
 
     replica.start(api)
     assert [item.collection_id for item in replica.page()] == [1]
@@ -405,6 +426,9 @@ def test_catalog_replica_rejects_cross_page_reordering(tmp_path: Path) -> None:
                             collection_id=2,
                             archive_root_sha256="c" * 64,
                             content_identity="d" * 64,
+                            description=None,
+                            description_revision=0,
+                            description_identity="1" * 64,
                             revision="1",
                         )
                     ],
@@ -419,6 +443,9 @@ def test_catalog_replica_rejects_cross_page_reordering(tmp_path: Path) -> None:
                         collection_id=1,
                         archive_root_sha256="e" * 64,
                         content_identity="f" * 64,
+                        description=None,
+                        description_revision=0,
+                        description_identity="2" * 64,
                         revision="2",
                     )
                 ],
@@ -541,12 +568,18 @@ def test_catalog_sync_documents_fail_closed_on_ambiguous_continuations() -> None
             collection_id=1,
             archive_root_sha256="c" * 64,
             content_identity="d" * 64,
+            description=None,
+            description_revision=0,
+            description_identity="1" * 64,
             revision="0",
         )
     boundary = CatalogSyncDescriptor(
         collection_id=1,
         archive_root_sha256="c" * 64,
         content_identity="d" * 64,
+        description=None,
+        description_revision=0,
+        description_identity="1" * 64,
         revision=str(MAX_CATALOG_SYNC_REVISION),
     )
     assert boundary.revision == str(MAX_CATALOG_SYNC_REVISION)
@@ -555,5 +588,8 @@ def test_catalog_sync_documents_fail_closed_on_ambiguous_continuations() -> None
             collection_id=1,
             archive_root_sha256="c" * 64,
             content_identity="d" * 64,
+            description=None,
+            description_revision=0,
+            description_identity="1" * 64,
             revision=str(MAX_CATALOG_SYNC_REVISION + 1),
         )

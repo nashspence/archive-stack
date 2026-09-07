@@ -40,6 +40,7 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
 )
+from riverhog_protocol.collection_description import validate_collection_description
 from riverhog_protocol.collection_upload_transport import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadUnitWorkDocument,
@@ -79,6 +80,7 @@ from riverhog_cli.output import (
     format_collection_archive_copies,
     format_collection_deletion_plan,
     format_collection_deletion_result,
+    format_collection_description,
     format_collection_summary,
     format_collection_upload,
     format_collection_upload_discard_plan,
@@ -252,11 +254,16 @@ def catalog_sync_collections_cmd(
     result = client().list_catalog_sync_collections(cursor, limit=limit)
     payload = result.model_dump(mode="json")
     lines = [f"collections: {len(result.collections)}"]
-    lines.extend(
-        f"- {item.collection_id}  revision={item.revision}  "
-        f"archive_root_sha256={item.archive_root_sha256}  content_identity={item.content_identity}"
-        for item in result.collections
-    )
+    for item in result.collections:
+        lines.append(
+            f"- {item.collection_id}  revision={item.revision}  "
+            f"archive_root_sha256={item.archive_root_sha256}  "
+            f"content_identity={item.content_identity}"
+        )
+        if item.description is not None:
+            lines.append(f"  description: {item.description}")
+        lines.append(f"  description revision: {item.description_revision}")
+        lines.append(f"  description identity: {item.description_identity}")
     lines.append(f"next cursor: {result.next_cursor or '-'}")
     lines.append(f"changes cursor: {result.changes_cursor or '-'}")
     emit(payload if json_mode else "\n".join(lines), json_mode=json_mode)
@@ -1039,6 +1046,7 @@ def _create_or_resume_collection_upload_session(
     idempotency_key: str,
     *,
     ingest_source: str | None,
+    description: str | None = None,
     archive_store: str | None = None,
     provenance_mode: ProvenanceMode,
     provenance_omission_reason: str | None,
@@ -1048,6 +1056,7 @@ def _create_or_resume_collection_upload_session(
         lambda: api.create_or_resume_collection_upload_session(
             idempotency_key,
             ingest_source=ingest_source,
+            description=description,
             archive_store=archive_store,
             provenance_mode=provenance_mode,
             provenance_omission_reason=provenance_omission_reason,
@@ -1150,6 +1159,7 @@ def _collection_upload_dry_run_plan(
     files_total: int,
     bytes_total: int,
     files_preview: list[CollectionManifestEntry],
+    description: str | None = None,
     archive_store: str | None = None,
     provenance_observer: ResolvedProvenanceObserver | None = None,
 ) -> dict[str, object]:
@@ -1160,6 +1170,7 @@ def _collection_upload_dry_run_plan(
         "collection_id": None,
         "root": str(root),
         "ingest_source": str(root),
+        "description": description,
         "files_total": files_total,
         "bytes_total": bytes_total,
         "archive_store": archive_store,
@@ -1386,6 +1397,7 @@ def _upload_collection_via_session(
     resolved_root: Path,
     *,
     ingest_source: str | None,
+    description: str | None = None,
     archive_store: str | None = None,
     json_mode: bool = False,
     file_concurrency: int,
@@ -1399,6 +1411,7 @@ def _upload_collection_via_session(
         api,
         idempotency_key,
         ingest_source=ingest_source,
+        description=description,
         archive_store=archive_store,
         provenance_mode="omitted" if omit_provenance is not None else "captured",
         provenance_omission_reason=omit_provenance,
@@ -1542,7 +1555,11 @@ def collection_list_cmd(
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Substring match over collection ids"),
+        typer.Option(
+            "--query",
+            "-q",
+            help="Substring match over collection ids and descriptions",
+        ),
     ] = None,
     encryption_format: Annotated[
         str | None,
@@ -1614,6 +1631,10 @@ def upload_cmd(
         str | None,
         typer.Option("--archive-store", help="Named archive store destination"),
     ] = None,
+    description: Annotated[
+        str | None,
+        typer.Option("--description", help="Mutable human description for catalog discovery"),
+    ] = None,
     provenance: Annotated[
         Path | None,
         typer.Option(
@@ -1657,6 +1678,11 @@ def upload_cmd(
         raise typer.BadParameter(
             "--provenance-observer and --omit-provenance are mutually exclusive"
         )
+    if description is not None:
+        try:
+            description = validate_collection_description(description)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--description") from exc
     resolved_provenance = provenance.expanduser().resolve() if provenance is not None else None
     if resolved_provenance is not None and not resolved_provenance.exists():
         raise typer.BadParameter("--provenance path does not exist")
@@ -1703,6 +1729,7 @@ def upload_cmd(
             files_total=files_total,
             bytes_total=manifest_bytes,
             files_preview=files_preview,
+            description=description,
             archive_store=archive_store,
             provenance_observer=resolved_observer,
         )
@@ -1716,6 +1743,7 @@ def upload_cmd(
         resolved_idempotency_key,
         resolved_root,
         ingest_source=str(resolved_root),
+        description=description,
         archive_store=archive_store,
         json_mode=json_mode,
         file_concurrency=file_concurrency,
@@ -1947,6 +1975,46 @@ def show_cmd(
 
     payload = client().get_collection(collection)
     emit(payload if json_mode else format_collection_summary(payload), json_mode=json_mode)
+
+
+@collection_app.command("describe")
+def collection_describe_cmd(
+    collection: Annotated[int, typer.Argument(help="Collection id")],
+    description: Annotated[
+        str | None,
+        typer.Option("--description", help="Replacement human description"),
+    ] = None,
+    clear: Annotated[
+        bool,
+        typer.Option("--clear", help="Remove the current description"),
+    ] = False,
+    if_match: Annotated[
+        str | None,
+        typer.Option(
+            "--if-match",
+            help="Expected current description identity; fetched when omitted",
+        ),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Conditionally replace or clear one collection description."""
+
+    if (description is None) == (not clear):
+        raise typer.BadParameter("provide exactly one of --description or --clear")
+    api = client()
+    expected_identity = if_match
+    if expected_identity is None:
+        current = api.get_collection(collection)
+        value = current.get("description_identity")
+        if not isinstance(value, str):
+            raise RuntimeError("collection response omitted description identity")
+        expected_identity = value
+    payload = api.replace_collection_description(
+        collection,
+        None if clear else description,
+        expected_identity=expected_identity,
+    )
+    emit(payload if json_mode else format_collection_description(payload), json_mode=json_mode)
 
 
 _PROVENANCE_SORT_FIELDS = {"path", "bytes", "status"}

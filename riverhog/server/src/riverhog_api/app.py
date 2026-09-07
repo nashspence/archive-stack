@@ -125,6 +125,15 @@ def _process_archive_maintenance(
         progressed += requeued_copies
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
+        requeued_descriptions = container.collection_descriptions.requeue_interrupted_for_startup(
+            limit=100
+        )
+        progressed += requeued_descriptions
+        if requeued_descriptions:
+            _LOG.info(
+                "startup requeued interrupted collection descriptions: count=%s",
+                requeued_descriptions,
+            )
         requeued_verifications = (
             container.provenance.requeue_interrupted_verifications_for_startup()
         )
@@ -162,6 +171,7 @@ def _process_archive_maintenance(
     progressed += container.collection_deletions.process_due(limit=1)
     progressed += container.retrieval.process_cache_accounting_reconciliation(limit=100)
     progressed += container.archive_copies.process_due(limit=1)
+    progressed += container.collection_descriptions.process_due(limit=1)
     progressed += container.provenance.process_due_verifications(limit=1)
     progressed += container.lifecycle_events.reap_expired_contexts()
     return progressed > 0

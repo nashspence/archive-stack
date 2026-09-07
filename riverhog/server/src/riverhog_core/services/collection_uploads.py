@@ -21,6 +21,8 @@ from riverhog_archive_contracts import (
 )
 from riverhog_protocol import (
     CapturedFileProvenanceBinding,
+    CollectionDescription,
+    CollectionDescriptionDocument,
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyMode,
     CollectionUploadCustodyObjectDocument,
@@ -36,6 +38,7 @@ from riverhog_protocol import (
     PortableCollectionFile,
     PortableCollectionHeader,
     SortOrder,
+    collection_description_identity,
     collection_upload_path_order_key,
     collection_upload_raw_digest_summary,
     validate_collection_upload_batch_against_registration_constraints,
@@ -129,6 +132,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveFileObjectRecord,
     CollectionArchiveObjectRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionDescriptionPublicationRecord,
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
     CollectionProvenanceEntityRecord,
@@ -247,6 +251,14 @@ class _RegisteredFile(TypedDict):
     provenance_omission_reason: str | None
 
 
+class _InitialDescriptionReceipt(TypedDict):
+    object_path: str
+    provider_revision: str | None
+    published_at: str
+    stored_bytes: int
+    stored_sha256: str
+
+
 class SqlAlchemyCollectionUploadService:
     """Own direct-to-final collection ingress and its final catalog transaction."""
 
@@ -291,6 +303,7 @@ class SqlAlchemyCollectionUploadService:
         *,
         idempotency_key: str,
         ingest_source: str | None,
+        description: CollectionDescription | None = None,
         archive_store: str | None,
         initiator: ApplicationPrincipal,
         event_context: Mapping[str, object] | None,
@@ -313,6 +326,7 @@ class SqlAlchemyCollectionUploadService:
         normalized_custody_mode = _normalize_custody_mode(custody_mode)
         creation_identity = _collection_upload_creation_identity(
             ingest_source=ingest_source,
+            description=description,
             archive_store=store_name,
             event_context_json=context_json,
             provenance_mode=normalized_provenance_mode,
@@ -382,6 +396,7 @@ class SqlAlchemyCollectionUploadService:
                 creation_identity_sha256=creation_identity.creation_identity_sha256,
                 archive_generation=secrets.token_hex(32),
                 ingest_source=ingest_source,
+                description=description,
                 search_text=text_search_key(ingest_source or ""),
                 provenance_mode=normalized_provenance_mode,
                 provenance_omission_reason=normalized_omission_reason,
@@ -1913,6 +1928,9 @@ class SqlAlchemyCollectionUploadService:
         if self._publish_final_authority(collection_id):
             self._requeue_finalization_step(collection_id)
             return
+        if self._publish_initial_description(collection_id):
+            self._requeue_finalization_step(collection_id)
+            return
         if self._advance_catalog_projection(collection_id):
             self._requeue_finalization_step(collection_id)
 
@@ -2031,6 +2049,71 @@ class SqlAlchemyCollectionUploadService:
                 upload.final_authority_json = encoded
         return True
 
+    def _publish_initial_description(self, collection_id: int) -> bool:
+        """Establish the initial description state after the root and before catalog publish."""
+
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, collection_id)
+            if upload is None or upload.final_authority_json is None:
+                return False
+            if upload.description_identity is not None:
+                return False
+            authority = _final_authority(upload)
+            archive_root_sha256 = str(authority["root"]["plaintext_sha256"])
+            revision = 1 if upload.description is not None else 0
+            identity = collection_description_identity(
+                archive_root_sha256=archive_root_sha256,
+                revision=revision,
+                description=upload.description,
+            )
+            if revision == 0:
+                upload.description_revision = revision
+                upload.description_identity = identity
+                return True
+            if not upload.archive_storage_prefix:
+                raise RuntimeError("collection archive storage prefix is missing")
+            document = CollectionDescriptionDocument(
+                archive_root_sha256=archive_root_sha256,
+                revision=revision,
+                description=upload.description,
+                description_identity=identity,
+            ).to_json_bytes()
+            store_name = upload.archive_store
+            prefix = upload.archive_storage_prefix
+            passphrase_id = upload.passphrase_id
+
+        receipt = self._archive_stores.require(store_name).store.publish_collection_description(
+            collection_id=collection_id,
+            archive_storage_prefix=prefix,
+            document=document,
+            passphrase_id=passphrase_id,
+        )
+        receipt_json = json.dumps(
+            {
+                "object_path": receipt.object_path,
+                "provider_revision": receipt.revision,
+                "stored_bytes": receipt.stored_bytes,
+                "stored_sha256": receipt.stored_sha256,
+                "published_at": receipt.published_at,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == collection_id)
+                .with_for_update()
+            )
+            if upload is None:
+                return False
+            if upload.description_identity not in {None, identity}:
+                raise RuntimeError("initial collection description identity changed")
+            upload.description_revision = revision
+            upload.description_identity = identity
+            upload.description_publication_receipt_json = receipt_json
+        return True
+
     def _advance_catalog_projection(self, collection_id: int) -> bool:
         """Advance one bounded durable catalog-projection transaction."""
 
@@ -2082,6 +2165,8 @@ class SqlAlchemyCollectionUploadService:
                 upload.collection_id,
                 upload.provenance_mode,
             )
+            if upload.description_revision is None or upload.description_identity is None:
+                raise RuntimeError("initial collection description state is unavailable")
             session.add(
                 CollectionRecord(
                     id=upload.collection_id,
@@ -2097,6 +2182,10 @@ class SqlAlchemyCollectionUploadService:
                     inventory_identity=upload.catalog_inventory_identity,
                     archive_root_sha256=str(authority["root"]["plaintext_sha256"]),
                     ingest_source=upload.ingest_source,
+                    description=upload.description,
+                    description_search=text_search_key(upload.description or ""),
+                    description_revision=upload.description_revision,
+                    description_identity=upload.description_identity,
                     created_by_app=upload.initiated_by_app,
                     created_by_key_id=upload.initiated_by_key_id,
                     created_at=upload.opened_at or now,
@@ -2106,14 +2195,36 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             session.flush()
+            copy = CollectionArchiveCopyRecord(
+                collection_id=upload.collection_id,
+                store=upload.archive_store,
+                state="uploaded",
+                archive_storage_prefix=upload.archive_storage_prefix,
+                last_uploaded_at=now,
+                last_verified_at=now,
+            )
+            session.add(copy)
+            session.flush()
+            receipt = _initial_description_receipt(upload)
             session.add(
-                CollectionArchiveCopyRecord(
+                CollectionDescriptionPublicationRecord(
                     collection_id=upload.collection_id,
                     store=upload.archive_store,
-                    state="uploaded",
-                    archive_storage_prefix=upload.archive_storage_prefix,
-                    last_uploaded_at=now,
-                    last_verified_at=now,
+                    desired_revision=upload.description_revision,
+                    desired_identity=upload.description_identity,
+                    published_revision=upload.description_revision,
+                    published_identity=upload.description_identity,
+                    state="published",
+                    next_attempt_at=None,
+                    object_path=(str(receipt["object_path"]) if receipt is not None else None),
+                    provider_revision=(
+                        str(receipt["provider_revision"])
+                        if receipt is not None and receipt["provider_revision"] is not None
+                        else None
+                    ),
+                    stored_bytes=(int(receipt["stored_bytes"]) if receipt is not None else None),
+                    stored_sha256=(str(receipt["stored_sha256"]) if receipt is not None else None),
+                    published_at=(str(receipt["published_at"]) if receipt is not None else None),
                 )
             )
         upload.catalog_phase = "files"
@@ -3350,6 +3461,35 @@ def _final_authority(upload: CollectionUploadRecord) -> dict[str, dict[str, obje
     return cast(dict[str, dict[str, object]], value)
 
 
+def _initial_description_receipt(
+    upload: CollectionUploadRecord,
+) -> _InitialDescriptionReceipt | None:
+    if upload.description_publication_receipt_json is None:
+        if upload.description_revision == 0:
+            return None
+        raise RuntimeError("initial collection description receipt is unavailable")
+    value = json.loads(upload.description_publication_receipt_json)
+    if not isinstance(value, dict) or set(value) != {
+        "object_path",
+        "provider_revision",
+        "published_at",
+        "stored_bytes",
+        "stored_sha256",
+    }:
+        raise RuntimeError("initial collection description receipt is invalid")
+    if (
+        not isinstance(value["object_path"], str)
+        or value["provider_revision"] is not None
+        and not isinstance(value["provider_revision"], str)
+        or not isinstance(value["published_at"], str)
+        or not isinstance(value["stored_bytes"], int)
+        or isinstance(value["stored_bytes"], bool)
+        or not isinstance(value["stored_sha256"], str)
+    ):
+        raise RuntimeError("initial collection description receipt values are invalid")
+    return cast(_InitialDescriptionReceipt, value)
+
+
 def _catalog_archive_parts_json(parts: Sequence[StoredArchivePart]) -> str:
     return canonical_json_bytes([_part_payload(part) for part in parts]).decode("utf-8")
 
@@ -3454,6 +3594,7 @@ def _normalize_idempotency_key(value: str) -> str:
 def _collection_upload_creation_identity(
     *,
     ingest_source: str | None,
+    description: CollectionDescription | None,
     archive_store: str,
     event_context_json: str | None,
     provenance_mode: Literal["captured", "omitted"],
@@ -3466,6 +3607,7 @@ def _collection_upload_creation_identity(
     return CollectionUploadCreationIdentityDocument.seal(
         CollectionUploadCreationIdentityPayload(
             ingest_source=ingest_source,
+            description=description,
             archive_store=archive_store,
             event_context=event_context,
             provenance_mode=provenance_mode,
@@ -5728,6 +5870,16 @@ def _upload_list_payload(
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
         "ingest_source": upload.ingest_source,
+        "description": upload.description,
+        "description_revision": upload.description_revision,
+        "description_identity": upload.description_identity,
+        "description_publication": (
+            "pending"
+            if upload.description_identity is None
+            else "not_required"
+            if upload.description_revision == 0
+            else "current"
+        ),
         "archive_store": upload.archive_store,
         "encryption_format": upload.encryption_format,
         "passphrase_id": upload.passphrase_id,
@@ -5923,6 +6075,16 @@ def _upload_payload(
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
         "ingest_source": upload.ingest_source,
+        "description": upload.description,
+        "description_revision": upload.description_revision,
+        "description_identity": upload.description_identity,
+        "description_publication": (
+            "pending"
+            if upload.description_identity is None
+            else "not_required"
+            if upload.description_revision == 0
+            else "current"
+        ),
         "provenance_mode": upload.provenance_mode,
         "provenance_identity": None,
         "archive_store": upload.archive_store,
@@ -6004,6 +6166,12 @@ def _finalized_payload(
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
+        "description": collection.description,
+        "description_revision": collection.description_revision,
+        "description_identity": collection.description_identity,
+        "description_publication": (
+            "not_required" if collection.description_revision == 0 else "current"
+        ),
         "content_identity": collection.content_identity,
         "archive_root_sha256": manifest_sha256,
         "encryption_format": collection.encryption_format,
@@ -6017,6 +6185,12 @@ def _finalized_payload(
         "collection_id": collection.id,
         "created_at": collection.created_at,
         "ingest_source": collection.ingest_source,
+        "description": collection.description,
+        "description_revision": collection.description_revision,
+        "description_identity": collection.description_identity,
+        "description_publication": (
+            "not_required" if collection.description_revision == 0 else "current"
+        ),
         "provenance_mode": collection.provenance_mode,
         "provenance_identity": collection.provenance_identity,
         "content_identity": collection.content_identity,

@@ -12,6 +12,10 @@ from pydantic import (
     model_validator,
 )
 
+from riverhog_protocol.collection_description import (
+    MAX_COLLECTION_DESCRIPTION_REVISION,
+    CollectionDescription,
+)
 from riverhog_protocol.paths import CollectionId
 from riverhog_protocol.transport import CATALOG_SYNC_PAGE_SIZE_MAX
 
@@ -50,6 +54,13 @@ class CatalogSyncDescriptor(CatalogSyncModel):
     collection_id: CollectionId
     archive_root_sha256: CatalogSyncIdentity
     content_identity: CatalogSyncIdentity
+    description: CollectionDescription | None
+    description_revision: int = Field(
+        ge=0,
+        le=MAX_COLLECTION_DESCRIPTION_REVISION,
+        strict=True,
+    )
+    description_identity: CatalogSyncIdentity
     revision: CatalogSyncRevision
 
 

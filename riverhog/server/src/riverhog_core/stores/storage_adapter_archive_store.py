@@ -5,7 +5,12 @@ import secrets
 from collections.abc import Iterator, Sequence
 from typing import Literal
 
-from riverhog_age import iter_decrypt_age_scrypt
+from riverhog_age import encrypt_age_scrypt, iter_decrypt_age_scrypt
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_DOCUMENT_FORMAT,
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    CollectionDescriptionDocument,
+)
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     DeleteObjectRequest,
@@ -32,6 +37,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     ArchiveVerificationError,
     CollectionArchiveIdentity,
+    CollectionDescriptionReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
@@ -124,6 +130,81 @@ class StorageAdapterArchiveStore:
             raise RuntimeError(
                 "collection archive deletion could not be verified: " + ", ".join(remaining)
             )
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionDescriptionReceipt:
+        description = CollectionDescriptionDocument.from_json_bytes(document)
+        object_path = (
+            f"{_archive_prefix(archive_storage_prefix)}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        )
+        plaintext_sha256 = hashlib.sha256(document).hexdigest()
+        identity = {
+            "riverhog-format": COLLECTION_DESCRIPTION_DOCUMENT_FORMAT,
+            "riverhog-archive-root-sha256": description.archive_root_sha256,
+            "riverhog-description-identity": description.description_identity,
+            "riverhog-description-revision": str(description.revision),
+            "riverhog-encryption": "age-v1-scrypt",
+            "riverhog-passphrase-id": passphrase_id,
+            _PLAINTEXT_BYTES_METADATA: str(len(document)),
+            _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
+        }
+        existing = self._head(
+            object_path=object_path,
+            revision=None,
+            placement="immediate",
+        )
+        if existing is not None and _metadata_contains(existing, identity):
+            return CollectionDescriptionReceipt(
+                object_path=existing.object_path,
+                revision=existing.revision,
+                stored_bytes=existing.stored_bytes,
+                stored_sha256=_required_stored_sha256(existing, object_path=object_path),
+                published_at=existing.completed_at,
+            )
+        ciphertext = encrypt_age_scrypt(
+            document,
+            self._config.archive_passphrase_for(passphrase_id),
+            log_n=self._config.archive_scrypt_work_factor,
+        )
+        receipt = self._put_small(
+            object_path=object_path,
+            content=ciphertext,
+            content_type="application/vnd.riverhog.collection-description.v1+age",
+            identity=identity,
+            mode="replace_current",
+        )
+        return CollectionDescriptionReceipt(
+            object_path=receipt.object_path,
+            revision=receipt.revision,
+            stored_bytes=receipt.stored_bytes,
+            stored_sha256=receipt.stored_sha256,
+            published_at=receipt.completed_at,
+        )
+
+    def delete_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None:
+        _ = collection_id
+        object_path = (
+            f"{_archive_prefix(archive_storage_prefix)}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        )
+        self._adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(object_path=object_path),
+                mode="all_versions",
+            )
+        )
+        if self._head(object_path=object_path, revision=None, placement="immediate") is not None:
+            raise RuntimeError("collection description deletion could not be verified")
 
     def read_archive_artifact(
         self,

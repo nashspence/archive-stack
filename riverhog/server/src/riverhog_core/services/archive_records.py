@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
+    CollectionDescriptionPublicationRecord,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
@@ -57,7 +58,13 @@ def archive_copy_aggregates(
         literal(1).label("object_count"),
         CollectionArchiveObjectRecord.stored_bytes.label("stored_bytes"),
     )
-    combined = object_rows.subquery()
+    description_rows = select(
+        CollectionDescriptionPublicationRecord.collection_id.label("collection_id"),
+        CollectionDescriptionPublicationRecord.store.label("store"),
+        literal(1).label("object_count"),
+        func.coalesce(CollectionDescriptionPublicationRecord.stored_bytes, 0).label("stored_bytes"),
+    ).where(CollectionDescriptionPublicationRecord.object_path.is_not(None))
+    combined = union_all(object_rows, description_rows).subquery()
     stmt = (
         select(
             combined.c.collection_id,

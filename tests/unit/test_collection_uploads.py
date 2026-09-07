@@ -22,6 +22,7 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionDescriptionPublicationRecord,
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
     CollectionProvenanceEntityRecord,
@@ -49,7 +50,9 @@ from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventServ
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
 from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
     COLLECTION_UPLOAD_PROVENANCE_APPEND_BYTES_MAX,
+    CollectionDescriptionDocument,
     CollectionUploadProvenanceJournalCreateDocument,
     CollectionUploadRawDigestBatchDocument,
 )
@@ -149,6 +152,54 @@ class _MemoryResumableCache:
 def _service(tmp_path: Path) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
     service, config, _resumable, _root = _service_with_archive_objects(tmp_path)
     return service, config
+
+
+def test_upload_description_is_exact_and_bound_to_create_idempotency(tmp_path: Path) -> None:
+    service, config = _service(tmp_path)
+    description = "Camera seven — morning reference"
+    opened = service.create_or_resume(
+        idempotency_key="described-upload",
+        ingest_source="fixture",
+        description=description,
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+    resumed = service.create_or_resume(
+        idempotency_key="described-upload",
+        ingest_source="fixture",
+        description=description,
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+
+    assert opened["description"] == resumed["description"] == description
+    assert opened["description_revision"] is resumed["description_revision"] is None
+    assert opened["description_identity"] is resumed["description_identity"] is None
+    assert opened["description_publication"] == resumed["description_publication"] == "pending"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, int(opened["collection_id"]))
+        assert upload is not None
+        assert (upload.description, upload.description_identity) == (
+            description,
+            None,
+        )
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="described-upload",
+            ingest_source="fixture",
+            description="Different description",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture has no source provenance",
+        )
 
 
 def _process_until(
@@ -891,10 +942,17 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         )
 
 
-@pytest.mark.parametrize("custody_mode", ("producer-retained", "custody-transfer"))
+@pytest.mark.parametrize(
+    ("custody_mode", "description"),
+    (
+        ("producer-retained", None),
+        ("custody-transfer", "Camera seven — morning reference"),
+    ),
+)
 def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     tmp_path: Path,
     custody_mode: str,
+    description: str | None,
 ) -> None:
     service, config, _resumable, immutable = _service_with_archive_objects(tmp_path)
     content = b"direct final archive\n"
@@ -903,6 +961,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     opened = service.create_or_resume(
         idempotency_key="upload-1",
         ingest_source="fixture",
+        description=description,
         archive_store=None,
         initiator=_CREATOR,
         event_context=None,
@@ -970,6 +1029,11 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert finalized["state"] == "finalized"
     assert finalized["custody"] == {"state": "complete"}
     assert finalized["custody_mode"] == custody_mode
+    assert finalized["description"] == description
+    assert finalized["description_revision"] == (1 if description is not None else 0)
+    assert finalized["description_publication"] == (
+        "current" if description is not None else "not_required"
+    )
     assert service.complete(collection_id)["state"] == "finalized"
 
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -1000,6 +1064,29 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         assert objects[3].sha256 == plaintext_root_sha256
         assert objects[3].stored_sha256 == root_object.receipt.stored_sha256
         assert objects[3].sha256 != objects[3].stored_sha256
+        publication = session.get(
+            CollectionDescriptionPublicationRecord,
+            (collection_id, "archive"),
+        )
+        assert publication is not None
+        assert publication.published_revision == (1 if description is not None else 0)
+
+    archive_store = service._archive_stores.require("archive").store
+    assert isinstance(archive_store, MemoryArchiveStore)
+    description_path = f"{archive_store.new_archive_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+    if description is None:
+        assert description_path not in archive_store.objects
+    else:
+        document = CollectionDescriptionDocument.from_json_bytes(
+            decrypt_age_scrypt(
+                archive_store.objects[description_path],
+                config.archive_passphrase_for(config.archive_active_passphrase_id),
+            )
+        )
+        assert document.archive_root_sha256 == plaintext_root_sha256
+        assert document.revision == 1
+        assert document.description == description
+        assert document.description_identity == finalized["description_identity"]
 
     assert finalized["archive_root_sha256"] == plaintext_root_sha256
     finalized_events = [
@@ -1019,6 +1106,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     resumed = service.create_or_resume(
         idempotency_key="upload-1",
         ingest_source="fixture",
+        description=description,
         archive_store=None,
         initiator=_CREATOR,
         event_context=None,

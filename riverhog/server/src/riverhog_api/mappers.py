@@ -84,6 +84,10 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
     return {
         "id": summary.id,
         "created_at": summary.created_at,
+        "description": summary.description,
+        "description_revision": summary.description_revision,
+        "description_identity": summary.description_identity,
+        "description_publication": summary.description_publication,
         "content_identity": summary.content_identity,
         "archive_root_sha256": summary.archive_root_sha256,
         "encryption_format": summary.encryption_format,

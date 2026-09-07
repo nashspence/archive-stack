@@ -72,6 +72,21 @@ class CollectionService(Protocol):
     ) -> Iterator[JsonObject]: ...
 
 
+class CollectionDescriptionService(Protocol):
+    def replace(
+        self,
+        collection_id: int,
+        *,
+        description: str | None,
+        expected_identity: str,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+
+    def requeue_interrupted_for_startup(self, *, limit: int = 100) -> int: ...
+
+    def process_due(self, *, limit: int = 1) -> int: ...
+
+
 class ProvenanceService(Protocol):
     def list_files(
         self,

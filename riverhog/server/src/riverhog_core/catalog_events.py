@@ -39,6 +39,9 @@ def record_catalog_event(
         inventory_identity=inventory_identity,
         archive_root_sha256=collection.archive_root_sha256,
         content_identity=collection.content_identity,
+        description=collection.description,
+        description_revision=collection.description_revision,
+        description_identity=collection.description_identity,
         published=False,
     )
     session.add(event)
@@ -74,6 +77,9 @@ def begin_catalog_event(
         inventory_identity=inventory_identity,
         archive_root_sha256=collection.archive_root_sha256,
         content_identity=collection.content_identity,
+        description=collection.description,
+        description_revision=collection.description_revision,
+        description_identity=collection.description_identity,
         published=False,
     )
     session.add(event)

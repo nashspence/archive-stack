@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,6 +32,10 @@ from riverhog_archive_contracts import (
 )
 from riverhog_archive_contracts import (
     ArchiveFileIdentity as FileIdentity,
+)
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    CollectionDescriptionDocument,
 )
 from riverhog_provenance import (
     PROVENANCE_JOURNAL_ENTRY_BYTES_MAX,
@@ -87,6 +92,70 @@ class _RecoveredJournalCurrent:
     path: str
     bytes: int
     sha256: str
+
+
+def recover_collection_description(
+    archive_dir: Path,
+    *,
+    passphrases: Mapping[str, str],
+    age_command: str = "age",
+) -> CollectionDescriptionDocument | None:
+    """Read and validate only the small mutable description authority, when present."""
+
+    archive = archive_dir.expanduser().resolve()
+    if not archive.is_dir():
+        raise RecoveryError(f"archive directory does not exist: {archive}")
+    descriptor = read_recovery_descriptor(archive)
+    try:
+        passphrase = passphrases[descriptor.encryption.passphrase_id]
+    except KeyError as exc:
+        raise RecoveryError(
+            f"no passphrase is available for archive key ID {descriptor.encryption.passphrase_id}"
+        ) from exc
+    if not isinstance(passphrase, str) or not passphrase:
+        raise RecoveryError(
+            f"archive passphrase is empty for key ID {descriptor.encryption.passphrase_id}"
+        )
+    encrypted_description = archive / COLLECTION_DESCRIPTION_RELATIVE_PATH
+    if not encrypted_description.exists():
+        return None
+    if not encrypted_description.is_file() or encrypted_description.is_symlink():
+        raise RecoveryError("collection description path is not a regular archive object")
+    try:
+        encrypted_manifest = _archive_file(archive, descriptor.root.path)
+        _verify_stored_identity(
+            encrypted_manifest,
+            expected_bytes=descriptor.root.stored_bytes,
+            expected_sha256=descriptor.root.stored_sha256,
+            label=descriptor.root.path,
+        )
+        with tempfile.TemporaryDirectory(prefix="riverhog-description-") as scratch_name:
+            scratch = Path(scratch_name)
+            manifest_path = scratch / "manifest.json"
+            description_path = scratch / "description.json"
+            _age_decrypt(
+                encrypted_manifest,
+                manifest_path,
+                passphrase=passphrase,
+                command=age_command,
+            )
+            manifest_bytes = manifest_path.read_bytes()
+            CollectionArchiveManifest.from_json_bytes(manifest_bytes)
+            archive_root_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+            _age_decrypt(
+                encrypted_description,
+                description_path,
+                passphrase=passphrase,
+                command=age_command,
+            )
+            document = CollectionDescriptionDocument.from_json_bytes(description_path.read_bytes())
+        if document.archive_root_sha256 != archive_root_sha256:
+            raise RecoveryError("collection description belongs to another archive root")
+        return document
+    except RecoveryError:
+        raise
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RecoveryError(str(exc)) from exc
 
 
 def recover_archive(

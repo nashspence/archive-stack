@@ -66,6 +66,10 @@ class ArchiveStoreListPage:
 class CollectionSummary:
     id: CollectionId
     created_at: str
+    description: str | None
+    description_revision: int
+    description_identity: str
+    description_publication: str
     content_identity: str
     archive_root_sha256: str
     encryption_format: str

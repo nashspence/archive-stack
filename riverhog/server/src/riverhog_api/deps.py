@@ -39,6 +39,7 @@ from riverhog_core.services.archive_copy_retirements import (
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
+from riverhog_core.services.collection_descriptions import SqlAlchemyCollectionDescriptionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collection_workflows import SqlAlchemyCollectionWorkflowService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
@@ -51,6 +52,7 @@ from riverhog_core.services.interfaces import (
     CatalogSyncService,
     CollectionAccessGroupService,
     CollectionDeletionService,
+    CollectionDescriptionService,
     CollectionService,
     LifecycleEventService,
     ProvenanceService,
@@ -81,6 +83,7 @@ class ServiceContainer:
     collection_access: SqlAlchemyCollectionAccessService
     access_groups: CollectionAccessGroupService
     collections: CollectionService
+    collection_descriptions: CollectionDescriptionService
     collection_uploads: SqlAlchemyCollectionUploadService
     collection_workflows: SqlAlchemyCollectionWorkflowService
     provenance: ProvenanceService
@@ -217,6 +220,11 @@ def _build_default_container(
             config, session_factory=session_factory
         ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
+        collection_descriptions=SqlAlchemyCollectionDescriptionService(
+            config,
+            archive_stores,
+            session_factory=session_factory,
+        ),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             archive_stores,

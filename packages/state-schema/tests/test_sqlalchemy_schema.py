@@ -19,6 +19,7 @@ from state_schema import (
     assert_schema_matches_metadata,
     attach_sha256_string_constraints,
 )
+from state_schema.sqlalchemy_schema import _check_expression
 
 
 def _metadata(*, state_default: str, check: str, index: bool = True) -> MetaData:
@@ -101,6 +102,19 @@ def test_complete_schema_verifier_rejects_changed_check_expression() -> None:
             expected,
             version_table="state_schema_revision",
         )
+
+
+def test_check_expression_normalizes_only_cast_postgres_integer_literals() -> None:
+    assert _check_expression("revision <= '9007199254740991'::bigint") == (
+        "revision <=9007199254740991"
+    )
+    assert _check_expression("revision_label = '9007199254740991'::text") == (
+        "revision_label='9007199254740991'"
+    )
+    assert _check_expression("state <> 'published'") == "state !='published'"
+    assert _check_expression("revision = (previous_revision + 1)") == (
+        "revision=previous_revision + 1"
+    )
 
 
 def test_complete_schema_verifier_rejects_missing_index() -> None:

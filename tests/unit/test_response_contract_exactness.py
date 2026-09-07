@@ -31,6 +31,8 @@ from riverhog_api.schemas.provenance import (
 from riverhog_api.schemas.retrieval import RetrievalJobOut, RetrievalPlanFileOut
 from riverhog_api.schemas.search import SearchFileOut
 
+DESCRIPTION_IDENTITY = "d" * 64
+
 
 def _collection_deletion(status: str, challenge: str | None, blockers: list[str]) -> dict[str, Any]:
     return {
@@ -231,6 +233,10 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "ingest_source": None,
+        "description": None,
+        "description_revision": None,
+        "description_identity": None,
+        "description_publication": "pending",
         "provenance_mode": "omitted",
         "provenance_identity": None,
         "content_identity": None,
@@ -376,6 +382,10 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
             "collection": {
                 "id": 1,
                 "created_at": "2026-08-25T00:00:00.000000Z",
+                "description": None,
+                "description_revision": 0,
+                "description_identity": DESCRIPTION_IDENTITY,
+                "description_publication": "not_required",
                 "content_identity": "a" * 64,
                 "archive_root_sha256": "b" * 64,
                 "encryption_format": "age-x25519/v1",
@@ -525,6 +535,10 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "ingest_source": None,
+        "description": None,
+        "description_revision": None,
+        "description_identity": None,
+        "description_publication": "pending",
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
@@ -590,6 +604,10 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "ingest_source": None,
+        "description": None,
+        "description_revision": None,
+        "description_identity": None,
+        "description_publication": "pending",
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
@@ -621,6 +639,10 @@ def test_upload_session_list_complete_states_require_complete_custody(
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "ingest_source": None,
+        "description": None,
+        "description_revision": None,
+        "description_identity": None,
+        "description_publication": "pending",
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",

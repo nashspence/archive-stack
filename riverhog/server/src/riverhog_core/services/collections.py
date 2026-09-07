@@ -7,16 +7,18 @@ from http_api_contracts import closed_literal_values
 from riverhog_archive_contracts import normalize_passphrase_id
 from riverhog_protocol import CollectionSort, SortOrder
 from riverhog_protocol.errors import BadRequest, NotFound
-from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import asc, desc, func, select
+from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, text_search_key
+from sqlalchemy import asc, desc, func, or_, select
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.browse import bounded_page, keyset_statement
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    ArchiveCopyRetirementRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
+    CollectionDescriptionPublicationRecord,
     CollectionRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
@@ -356,9 +358,12 @@ def _collection_list_filters(
         collection_access_filter(CollectionRecord.id, principal, CATALOG_READ),
     ]
     if q is not None:
-        pattern = _like_pattern(q.casefold())
+        pattern = _like_pattern(text_search_key(q))
         matching_ids = select(CollectionRecord.id).where(
-            CollectionRecord.search_text.like(pattern, escape="\\")
+            or_(
+                CollectionRecord.search_text.like(pattern, escape="\\"),
+                CollectionRecord.description_search.like(pattern, escape="\\"),
+            )
         )
         filters.append(CollectionRecord.id.in_(matching_ids))
     if normalized_format is not None:
@@ -379,6 +384,57 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
     remote_storage_bytes = (
         select(func.coalesce(func.sum(CollectionArchiveObjectRecord.stored_bytes), 0))
         .where(CollectionArchiveObjectRecord.collection_id == CollectionRecord.id)
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
+    description_storage_bytes = (
+        select(func.coalesce(func.sum(CollectionDescriptionPublicationRecord.stored_bytes), 0))
+        .where(CollectionDescriptionPublicationRecord.collection_id == CollectionRecord.id)
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
+    retained_archive_copy_count = (
+        select(func.count())
+        .select_from(CollectionArchiveCopyRecord)
+        .where(
+            CollectionArchiveCopyRecord.collection_id == CollectionRecord.id,
+            CollectionArchiveCopyRecord.state == "uploaded",
+            ~select(ArchiveCopyRetirementRecord.collection_id)
+            .where(
+                ArchiveCopyRetirementRecord.collection_id == CollectionRecord.id,
+                ArchiveCopyRetirementRecord.store == CollectionArchiveCopyRecord.store,
+            )
+            .exists(),
+        )
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
+    current_description_copies = (
+        select(func.count())
+        .select_from(CollectionDescriptionPublicationRecord)
+        .join(
+            CollectionArchiveCopyRecord,
+            (
+                CollectionArchiveCopyRecord.collection_id
+                == CollectionDescriptionPublicationRecord.collection_id
+            )
+            & (CollectionArchiveCopyRecord.store == CollectionDescriptionPublicationRecord.store),
+        )
+        .where(
+            CollectionDescriptionPublicationRecord.collection_id == CollectionRecord.id,
+            CollectionArchiveCopyRecord.state == "uploaded",
+            ~select(ArchiveCopyRetirementRecord.collection_id)
+            .where(
+                ArchiveCopyRetirementRecord.collection_id == CollectionRecord.id,
+                ArchiveCopyRetirementRecord.store == CollectionDescriptionPublicationRecord.store,
+            )
+            .exists(),
+            CollectionDescriptionPublicationRecord.state == "published",
+            CollectionDescriptionPublicationRecord.published_revision
+            == CollectionRecord.description_revision,
+            CollectionDescriptionPublicationRecord.published_identity
+            == CollectionRecord.description_identity,
+        )
         .correlate(CollectionRecord)
         .scalar_subquery()
     )
@@ -406,7 +462,9 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             CollectionRecord.file_count.label("files"),
             CollectionRecord.file_bytes.label("bytes"),
             archive_copy_count.label("archive_copy_count"),
-            remote_storage_bytes.label("remote_storage_bytes"),
+            (remote_storage_bytes + description_storage_bytes).label("remote_storage_bytes"),
+            retained_archive_copy_count.label("retained_archive_copy_count"),
+            current_description_copies.label("current_description_copies"),
             archive_root_sha256.label("archive_root_sha256"),
             archive_root_sha256_max.label("archive_root_sha256_max"),
         ),
@@ -428,6 +486,16 @@ def _collection_summary(
     return CollectionSummary(
         id=CollectionId(collection.id),
         created_at=collection.created_at,
+        description=collection.description,
+        description_revision=collection.description_revision,
+        description_identity=collection.description_identity,
+        description_publication=(
+            "not_required"
+            if collection.description_revision == 0
+            else "current"
+            if int(row.current_description_copies) == int(row.retained_archive_copy_count)
+            else "reconciling"
+        ),
         content_identity=collection.content_identity,
         archive_root_sha256=str(row.archive_root_sha256),
         encryption_format=collection.encryption_format,

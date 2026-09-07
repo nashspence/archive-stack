@@ -37,6 +37,9 @@ class _Client:
                     collection_id=7,
                     archive_root_sha256="c" * 64,
                     content_identity="d" * 64,
+                    description="Field notes",
+                    description_revision=3,
+                    description_identity="e" * 64,
                     revision="11",
                 )
             ],
@@ -53,6 +56,9 @@ class _Client:
                     collection_id=7,
                     archive_root_sha256="c" * 64,
                     content_identity="d" * 64,
+                    description=None,
+                    description_revision=0,
+                    description_identity="f" * 64,
                     revision="12",
                 )
             ],
@@ -87,6 +93,8 @@ def test_catalog_sync_cli_preserves_one_request_steps_in_rich_and_json(
     assert "catalog cursor: catalog-cursor" in rich_checkpoint.stdout
     assert json.loads(json_checkpoint.stdout)["catalog_cursor"] == "catalog-cursor"
     assert "archive_root_sha256=" + "c" * 64 in rich_collections.stdout
+    assert "description: Field notes" in rich_collections.stdout
+    assert "description identity: " + "e" * 64 in rich_collections.stdout
     assert json.loads(json_changes.stdout)["changes"][0]["operation"] == "upsert"
     assert client.calls == [
         ("checkpoint",),

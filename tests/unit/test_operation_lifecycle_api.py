@@ -23,6 +23,9 @@ from riverhog_core.services.archive_copy_retirements import (
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
+from riverhog_core.services.collection_descriptions import (
+    SqlAlchemyCollectionDescriptionService,
+)
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collection_workflows import (
     SqlAlchemyCollectionWorkflowService,
@@ -101,6 +104,11 @@ def _container(tmp_path: Path) -> ServiceContainer:
             config, session_factory=session_factory
         ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
+        collection_descriptions=SqlAlchemyCollectionDescriptionService(
+            config,
+            stores,
+            session_factory=session_factory,
+        ),
         catalog_sync=SqlAlchemyCatalogSyncService(config, session_factory=session_factory),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
@@ -350,6 +358,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     opened = operator.create_or_resume_collection_upload_session(
         "qualification-upload",
         ingest_source="disposable-test",
+        description="Qualification source collection",
         archive_store="primary",
     )
     assert opened["resumed"] is False
@@ -417,7 +426,19 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     _finalize_upload(container, operator, collection_id)
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
-    assert operator.get_collection(collection_id)["id"] == collection_id
+    source_collection = operator.get_collection(collection_id)
+    assert source_collection["id"] == collection_id
+    assert source_collection["description"] == "Qualification source collection"
+    updated_description = operator.replace_collection_description(
+        collection_id,
+        "Qualified source collection",
+        expected_identity=str(source_collection["description_identity"]),
+    )
+    assert updated_description["description"] == "Qualified source collection"
+    assert (
+        operator.get_collection(collection_id)["description_identity"]
+        == updated_description["description_identity"]
+    )
     operator.add_collection_access_group_member(docs_group_id, collection_id)
     assert (
         len(

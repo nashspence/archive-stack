@@ -212,6 +212,9 @@ class FakeApi:
                     collection_id=COLLECTION_ID,
                     archive_root_sha256="e" * 64,
                     content_identity=str(MANIFEST["content_identity"]),
+                    description=None,
+                    description_revision=0,
+                    description_identity="f" * 64,
                     revision="1",
                 )
             ],

@@ -49,6 +49,7 @@ from riverhog_protocol import (
     CatalogSyncCollectionPage,
     CollectionAccessGroupSort,
     CollectionAccessGroupStatus,
+    CollectionDescription,
     CollectionId,
     CollectionSort,
     CollectionUploadArtifactCustodyReceiptDocument,
@@ -130,6 +131,7 @@ _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuo
 _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
 _COLLECTION_UPLOAD_VOLUME_ID: TypeAdapter[str] = TypeAdapter(CollectionUploadVolumeId)
 _COLLECTION_UPLOAD_UNIT_NUMBER: TypeAdapter[int] = TypeAdapter(CollectionUploadUnitNumber)
+_COLLECTION_DESCRIPTION: TypeAdapter[str] = TypeAdapter(CollectionDescription)
 _SORT_ORDERS = closed_literal_values(SortOrder)
 _COLLECTION_SORTS = closed_literal_values(CollectionSort)
 _COLLECTION_UPLOAD_SORTS = closed_literal_values(CollectionUploadSort)
@@ -1042,6 +1044,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         idempotency_key: CollectionUploadIdempotencyKey,
         *,
         ingest_source: str | None = None,
+        description: CollectionDescription | None = None,
         archive_store: ArchiveStoreName | None = None,
         event_context: Mapping[str, Any] | None = None,
         provenance_mode: ProvenanceMode = "captured",
@@ -1065,6 +1068,11 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             payload["custody_mode"] = normalized_custody_mode
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
+        if description is not None:
+            try:
+                payload["description"] = _COLLECTION_DESCRIPTION.validate_python(description)
+            except ValidationError as exc:
+                raise BadRequest(str(exc)) from exc
         if archive_store is not None:
             payload["archive_store"] = _archive_store_name(archive_store)
         if event_context is not None:
@@ -1461,6 +1469,30 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         return self._json(
             "GET",
             f"/v1/collections/{str(_collection_id(collection_id))}",
+        )
+
+    def replace_collection_description(
+        self,
+        collection_id: CollectionId,
+        description: CollectionDescription | None,
+        *,
+        expected_identity: str,
+    ) -> dict[str, Any]:
+        normalized_description: str | None = None
+        if description is not None:
+            try:
+                normalized_description = _COLLECTION_DESCRIPTION.validate_python(description)
+            except ValidationError as exc:
+                raise BadRequest(str(exc)) from exc
+        return self._json(
+            "PUT",
+            f"/v1/collections/{str(_collection_id(collection_id))}/description",
+            json={"description": normalized_description},
+            headers={
+                "If-Match": quote_sha256_identity(
+                    _sha256_identity(expected_identity, "description identity")
+                )
+            },
         )
 
     def list_collection_archive_copies(
