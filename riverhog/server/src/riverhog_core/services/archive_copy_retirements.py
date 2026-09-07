@@ -24,7 +24,6 @@ from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
     RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
@@ -568,13 +567,6 @@ def _build_plan(
         )
         .order_by(ArchiveCopyRetirementRecord.store)
     ).all()
-    metadata_publication = db.scalar(
-        select(CollectionMetadataPublicationRecord.collection_id).where(
-            CollectionMetadataPublicationRecord.collection_id == collection_id,
-            CollectionMetadataPublicationRecord.store == store,
-            CollectionMetadataPublicationRecord.state == "publishing",
-        )
-    )
     terminal_retrieval_count = int(
         db.scalar(
             select(func.count(func.distinct(RetrievalJobRecord.id)))
@@ -612,8 +604,6 @@ def _build_plan(
         f"archive copy retirement is active: {retirement_store}"
         for retirement_store in other_retirements
     )
-    if metadata_publication is not None:
-        blockers.append(f"collection metadata publication is active: {store}")
     if not retained:
         blockers.append("retirement would remove the collection's last complete archive copy")
 

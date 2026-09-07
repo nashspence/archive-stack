@@ -5,18 +5,22 @@ from collections.abc import Iterable
 from riverhog_application_access import permission_resources as access_permission_resources
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import and_, exists, false, or_, select, true
+from sqlalchemy import and_, exists, false, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     COLLECTION_PREFIX,
-    TAG_PREFIX,
+    GROUP_PREFIX,
     ApplicationPrincipal,
 )
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionRecord, CollectionTagRecord
+from riverhog_core.catalog_models import (
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
+    CollectionRecord,
+)
 from riverhog_core.catalog_workflow_models import CollectionTransformCapabilityArtifactRecord
 from riverhog_core.runtime_config import RuntimeConfig
 
@@ -76,13 +80,20 @@ def require_collection_access(
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources or f"{COLLECTION_PREFIX}{collection_id}" in resources:
         return
-    allowed_tags = tag_ids(resources)
+    allowed_groups = group_ids(resources)
     if (
-        allowed_tags
+        allowed_groups
         and session.scalar(
-            select(CollectionTagRecord.collection_id)
-            .where(CollectionTagRecord.collection_id == collection_id)
-            .where(CollectionTagRecord.tag_id.in_(allowed_tags))
+            select(CollectionAccessGroupMembershipRecord.collection_id)
+            .join(
+                CollectionAccessGroupRecord,
+                CollectionAccessGroupRecord.id == CollectionAccessGroupMembershipRecord.group_id,
+            )
+            .where(
+                CollectionAccessGroupMembershipRecord.collection_id == collection_id,
+                CollectionAccessGroupMembershipRecord.group_id.in_(allowed_groups),
+                CollectionAccessGroupRecord.status == "active",
+            )
             .limit(1)
         )
         is not None
@@ -94,17 +105,13 @@ def require_collection_access(
 def require_collection_create_access(
     principal: ApplicationPrincipal | None,
     permission: str,
-    tags: Iterable[str],
 ) -> None:
     if principal is None:
         return
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources:
         return
-    requested = {f"{TAG_PREFIX}{tag}" for tag in tags}
-    if requested and requested <= resources:
-        return
-    raise NotFound("collection tags are not available")
+    raise NotFound("collection creation is not available")
 
 
 def collection_access_filter(
@@ -121,19 +128,27 @@ def collection_access_filter(
     if ALL_RESOURCES in resources:
         return published
     allowed_collection_ids = collection_ids(resources)
-    allowed_tag_ids = tag_ids(resources)
+    allowed_group_ids = group_ids(resources)
     filters: list[ColumnElement[bool]] = []
     capability_filter = _capability_collection_filter(column, principal)
     if capability_filter is not None:
         filters.append(capability_filter)
     if allowed_collection_ids:
         filters.append(column.in_(allowed_collection_ids))
-    if allowed_tag_ids:
+    if allowed_group_ids:
         filters.append(
             exists(
-                select(1).where(
-                    CollectionTagRecord.collection_id == column,
-                    CollectionTagRecord.tag_id.in_(allowed_tag_ids),
+                select(1)
+                .select_from(CollectionAccessGroupMembershipRecord)
+                .join(
+                    CollectionAccessGroupRecord,
+                    CollectionAccessGroupRecord.id
+                    == CollectionAccessGroupMembershipRecord.group_id,
+                )
+                .where(
+                    CollectionAccessGroupMembershipRecord.collection_id == column,
+                    CollectionAccessGroupMembershipRecord.group_id.in_(allowed_group_ids),
+                    CollectionAccessGroupRecord.status == "active",
                 )
             )
         )
@@ -176,33 +191,6 @@ def _capability_collection_filter(
     )
 
 
-def tag_access_filter(
-    column: ColumnElement[str] | InstrumentedAttribute[str],
-    principal: ApplicationPrincipal | None,
-    permission: str,
-) -> ColumnElement[bool]:
-    if principal is None:
-        return true()
-    resources = permission_resources(principal, permission)
-    if ALL_RESOURCES in resources:
-        return true()
-    allowed_tag_ids = tag_ids(resources)
-    allowed_collection_ids = collection_ids(resources)
-    filters: list[ColumnElement[bool]] = []
-    if allowed_tag_ids:
-        filters.append(column.in_(allowed_tag_ids))
-    if allowed_collection_ids:
-        filters.append(
-            exists(
-                select(1).where(
-                    CollectionTagRecord.tag_id == column,
-                    CollectionTagRecord.collection_id.in_(allowed_collection_ids),
-                )
-            )
-        )
-    return or_(*filters) if filters else false()
-
-
 def permission_resources(principal: ApplicationPrincipal, permission: str) -> set[str]:
     return access_permission_resources(principal.access, permission)
 
@@ -215,11 +203,11 @@ def collection_ids(resources: Iterable[str]) -> set[int]:
     }
 
 
-def tag_ids(resources: Iterable[str]) -> set[str]:
+def group_ids(resources: Iterable[str]) -> set[str]:
     return {
-        resource.removeprefix(TAG_PREFIX)
+        resource.removeprefix(GROUP_PREFIX)
         for resource in resources
-        if resource.startswith(TAG_PREFIX)
+        if resource.startswith(GROUP_PREFIX)
     }
 
 
@@ -230,6 +218,5 @@ __all__ = [
     "permission_resources",
     "require_collection_access",
     "require_collection_create_access",
-    "tag_ids",
-    "tag_access_filter",
+    "group_ids",
 ]

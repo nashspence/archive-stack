@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from riverhog_protocol.paths import normalize_tag
 from riverhog_provenance.common import require_urn_uuid
 
 CloseMode = Literal["stable", "explicit-flush"]
@@ -25,7 +24,6 @@ class SourceConfig(ConfigModel):
     id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,118}[a-z0-9])?$")
     root: Path
     ingest_source: str = Field(min_length=1, max_length=512)
-    tags: tuple[str, ...] = Field(min_length=1)
     archive_store: str | None = Field(default=None, min_length=1, max_length=160)
     close_mode: CloseMode = "stable"
     stable_seconds: int = Field(default=30, ge=1, le=7 * 24 * 60 * 60)
@@ -41,14 +39,6 @@ class SourceConfig(ConfigModel):
         if not expanded.is_absolute():
             raise ValueError("FTP adapter source root must be absolute")
         return expanded.resolve()
-
-    @field_validator("tags")
-    @classmethod
-    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(sorted({normalize_tag(item) for item in value}))
-        if normalized != value:
-            raise ValueError("FTP adapter tags must be unique and canonically ordered")
-        return value
 
     @model_validator(mode="after")
     def complete_policy(self) -> Self:

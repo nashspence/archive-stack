@@ -11,13 +11,11 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
-from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -48,12 +46,9 @@ def _seed(path: Path) -> None:
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
             )
@@ -94,21 +89,6 @@ def _seed(path: Path) -> None:
                     verified_at="2026-01-01T00:00:00.000000Z",
                 )
             )
-        session.add(
-            CollectionMetadataPublicationRecord(
-                collection_id=1,
-                store="deep",
-                desired_revision=1,
-                published_revision=1,
-                state="published",
-                attempt_count=1,
-                next_attempt_at="2026-01-01T00:00:00.000000Z",
-                object_path="collections/1/metadata.json.age",
-                stored_bytes=7,
-                stored_sha256="d" * 64,
-                published_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
 
 
 def _stores(*, include_b2: bool = False) -> ArchiveStoreRegistry:
@@ -132,8 +112,8 @@ def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema
 
     assert response.store == "deep"
     assert response.collections == 1
-    assert response.objects == 3
-    assert response.stored_bytes == 37
+    assert response.objects == 2
+    assert response.stored_bytes == 30
     assert response.read_priority == 1
     assert response.write_target is True
 

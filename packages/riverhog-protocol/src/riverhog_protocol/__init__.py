@@ -115,7 +115,6 @@ from riverhog_protocol.derivation_evidence import verify_derivation_evidence
 from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.lifecycle_events import (
     COLLECTION_FINALIZED,
-    COLLECTION_TAGS_CHANGED,
     COLLECTION_WAKE_EVENT_TYPES,
     MAX_LIFECYCLE_EVENT_SEQUENCE,
     RIVERHOG_EVENT_TYPES,
@@ -134,6 +133,8 @@ from riverhog_protocol.list_controls import (
     ArchiveCopyState,
     ArchiveStoreSort,
     ClaimState,
+    CollectionAccessGroupSort,
+    CollectionAccessGroupStatus,
     CollectionSort,
     CollectionUploadSort,
     CollectionUploadState,
@@ -146,7 +147,6 @@ from riverhog_protocol.list_controls import (
     RetrievalCacheState,
     SearchSort,
     SortOrder,
-    TagSort,
 )
 from riverhog_protocol.paths import CollectionId, CollectionIdParameter, validate_collection_id
 from riverhog_protocol.portable_collection import (
@@ -276,7 +276,6 @@ __all__ += [
     "TransformCapabilityCreateDocument",
     "TransformCapabilityDocument",
     "COLLECTION_FINALIZED",
-    "COLLECTION_TAGS_CHANGED",
     "COLLECTION_WAKE_EVENT_TYPES",
     "MAX_LIFECYCLE_EVENT_SEQUENCE",
     "RIVERHOG_EVENT_TYPES",
@@ -292,6 +291,8 @@ __all__ += [
     "ArchiveCopySort",
     "ArchiveCopyState",
     "ArchiveStoreSort",
+    "CollectionAccessGroupSort",
+    "CollectionAccessGroupStatus",
     "CollectionSort",
     "CollectionUploadSort",
     "CollectionUploadState",
@@ -303,5 +304,4 @@ __all__ += [
     "RetrievalCacheState",
     "SearchSort",
     "SortOrder",
-    "TagSort",
 ]

@@ -5,7 +5,7 @@ import secrets
 from collections.abc import Iterator, Sequence
 from typing import Literal
 
-from riverhog_age import encrypt_age_scrypt, iter_decrypt_age_scrypt
+from riverhog_age import iter_decrypt_age_scrypt
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     DeleteObjectRequest,
@@ -32,7 +32,6 @@ from riverhog_core.ports.archive_store import (
     ArchiveReadStatus,
     ArchiveVerificationError,
     CollectionArchiveIdentity,
-    MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
@@ -125,59 +124,6 @@ class StorageAdapterArchiveStore:
             raise RuntimeError(
                 "collection archive deletion could not be verified: " + ", ".join(remaining)
             )
-
-    def publish_collection_metadata(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        manifest: bytes,
-        passphrase_id: str,
-    ) -> MutableManifestReceipt:
-        self._put_archive_root_guidance()
-        object_path = f"{_archive_prefix(archive_storage_prefix)}/metadata.json.age"
-        plaintext_sha256 = hashlib.sha256(manifest).hexdigest()
-        identity = {
-            "collection-metadata-format": "riverhog-collection-metadata/v1",
-            "riverhog-collection-id": str(collection_id),
-            "riverhog-encryption": "age-v1-scrypt",
-            "riverhog-passphrase-id": passphrase_id,
-            _PLAINTEXT_BYTES_METADATA: str(len(manifest)),
-            _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
-        }
-        existing = self._head(
-            object_path=object_path,
-            revision=None,
-            placement="immediate",
-        )
-        if existing is not None and _metadata_contains(existing, identity):
-            stored_sha256 = _required_stored_sha256(existing, object_path=object_path)
-            return MutableManifestReceipt(
-                object_path=existing.object_path,
-                revision=existing.revision,
-                stored_bytes=existing.stored_bytes,
-                stored_sha256=stored_sha256,
-                published_at=existing.completed_at,
-            )
-        ciphertext = encrypt_age_scrypt(
-            manifest,
-            self._config.archive_passphrase_for(passphrase_id),
-            log_n=self._config.archive_scrypt_work_factor,
-        )
-        receipt = self._put_small(
-            object_path=object_path,
-            content=ciphertext,
-            content_type="application/vnd.riverhog.collection-metadata+age",
-            identity=identity,
-            mode="replace_current",
-        )
-        return MutableManifestReceipt(
-            object_path=receipt.object_path,
-            revision=receipt.revision,
-            stored_bytes=receipt.stored_bytes,
-            stored_sha256=receipt.stored_sha256,
-            published_at=receipt.completed_at,
-        )
 
     def read_archive_artifact(
         self,

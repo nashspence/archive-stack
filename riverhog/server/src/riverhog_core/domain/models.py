@@ -66,9 +66,7 @@ class ArchiveStoreListPage:
 class CollectionSummary:
     id: CollectionId
     created_at: str
-    tag_count: int
     content_identity: str
-    tag_set_identity: str
     archive_root_sha256: str
     encryption_format: str
     passphrase_id: str
@@ -85,7 +83,6 @@ class CollectionListPage:
     sort: str
     order: str
     query: str | None
-    tag: str | None
     encryption_format: str | None
     passphrase_id: str | None
     collections: list[CollectionSummary]

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import riverhog_api_client
 import riverhog_api_client.client as riverhog_client_module
+import riverhog_core.services.access_groups as access_group_service_module
 import riverhog_core.services.app_keys as app_key_service_module
 import riverhog_core.services.archive_copies as archive_copy_service_module
 import riverhog_core.services.archive_stores as archive_store_service_module
@@ -18,7 +19,6 @@ import riverhog_core.services.download_allowances as quota_service_module
 import riverhog_core.services.provenance as provenance_service_module
 import riverhog_core.services.retrieval as retrieval_service_module
 import riverhog_core.services.search as search_service_module
-import riverhog_core.services.tags as tag_service_module
 import stove0_api_client.client as stove0_client_module
 import stove0_core.persistence as stove0_persistence_module
 from fastapi import FastAPI
@@ -72,6 +72,8 @@ from riverhog_protocol import (
     ArchiveCopyState,
     ArchiveStoreSort,
     ClaimState,
+    CollectionAccessGroupSort,
+    CollectionAccessGroupStatus,
     CollectionRootIdentity,
     CollectionRootIdentityDocument,
     CollectionSort,
@@ -87,7 +89,6 @@ from riverhog_protocol import (
     RetrievalFileReferenceDocument,
     SearchSort,
     SortOrder,
-    TagSort,
 )
 from riverhog_protocol.errors import BadRequest
 from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
@@ -391,15 +392,15 @@ READ_COLLECTION_OPERATIONS = {
             "list_collection_provenance",
             "list_collection_provenance_journal_agents",
             "list_collection_archive_copies",
-            "get_collection_tags",
-            "list_collection_upload_session_tags",
+            "list_collection_access_group_members",
+            "list_collection_access_groups",
+            "list_collection_access_groups_for_collection",
             "list_collection_upload_session_files",
             "list_collection_upload_sessions",
             "list_collections",
             "list_download_quotas",
             "list_processing_claims",
             "list_retrieval_cache_objects",
-            "list_tags",
             "search",
             "trace_collection_file_provenance",
         },
@@ -469,9 +470,17 @@ PUBLIC_QUERY_SELECTORS = {
         },
         "list_collection_provenance_journal_agents": {"page_size", "page_token"},
         "list_collection_archive_copies": {"page_size", "page_token"},
-        "get_collection_tags": {"page_size", "page_token"},
         "get_portable_collection_inventory": {"cursor", "limit"},
-        "list_collection_upload_session_tags": {"page_size", "page_token"},
+        "list_collection_access_group_members": {"page_size", "page_token"},
+        "list_collection_access_groups": {
+            "order",
+            "page_size",
+            "page_token",
+            "q",
+            "sort",
+            "status",
+        },
+        "list_collection_access_groups_for_collection": {"page_size", "page_token"},
         "list_collection_upload_session_files": {"page_size", "page_token"},
         "list_collection_upload_sessions": {
             "order",
@@ -480,7 +489,6 @@ PUBLIC_QUERY_SELECTORS = {
             "q",
             "sort",
             "state",
-            "tag",
         },
         "list_collections": {
             "encryption_format",
@@ -490,7 +498,6 @@ PUBLIC_QUERY_SELECTORS = {
             "page_token",
             "q",
             "sort",
-            "tag",
         },
         "list_download_quotas": {
             "active",
@@ -524,10 +531,8 @@ PUBLIC_QUERY_SELECTORS = {
             "sort",
             "source_store",
             "state",
-            "tag",
         },
         "list_retrieval_plan_files": {"page_size", "start_ordinal"},
-        "list_tags": {"order", "page_size", "page_token", "q", "sort"},
         "plan_collection_deletion": {"retirement_claim_id"},
         "resourcesync_change_list": {"after"},
         "search": {"collection", "order", "page_size", "page_token", "q", "sort"},
@@ -552,6 +557,8 @@ NAMED_ENUM_QUERY_SELECTOR_TYPES = {
     "ArchiveCopySort": ArchiveCopySort,
     "ArchiveCopyState": ArchiveCopyState,
     "ArchiveStoreSort": ArchiveStoreSort,
+    "CollectionAccessGroupSort": CollectionAccessGroupSort,
+    "CollectionAccessGroupStatus": CollectionAccessGroupStatus,
     "CollectionSort": CollectionSort,
     "CollectionUploadSort": CollectionUploadSort,
     "CollectionUploadState": CollectionUploadState,
@@ -562,7 +569,6 @@ NAMED_ENUM_QUERY_SELECTOR_TYPES = {
     "RetrievalCacheState": RetrievalCacheState,
     "SearchSort": SearchSort,
     "SortOrder": SortOrder,
-    "TagSort": TagSort,
 }
 INLINE_ENUM_QUERY_SELECTOR_TYPES = {
     ("riverhog", "list_collection_provenance", "sort"): ProvenanceSort,
@@ -758,6 +764,7 @@ def test_official_client_never_drops_a_supplied_query_by_truthiness() -> None:
 
 def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
     modules = (
+        access_group_service_module,
         app_key_service_module,
         archive_copy_service_module,
         archive_store_service_module,
@@ -768,7 +775,6 @@ def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
         provenance_service_module,
         retrieval_service_module,
         search_service_module,
-        tag_service_module,
         stove0_persistence_module,
     )
     observed: set[tuple[str, str]] = set()
@@ -889,6 +895,7 @@ def test_official_client_selector_validation_projects_public_vocabularies() -> N
         "_ARCHIVE_COPY_SORTS": ArchiveCopySort,
         "_ARCHIVE_COPY_STATES": ArchiveCopyState,
         "_ARCHIVE_STORE_SORTS": ArchiveStoreSort,
+        "_COLLECTION_ACCESS_GROUP_SORTS": CollectionAccessGroupSort,
         "_COLLECTION_SORTS": CollectionSort,
         "_COLLECTION_UPLOAD_SORTS": CollectionUploadSort,
         "_COLLECTION_UPLOAD_STATES": CollectionUploadState,
@@ -900,7 +907,6 @@ def test_official_client_selector_validation_projects_public_vocabularies() -> N
         "_RETRIEVAL_CACHE_STATES": RetrievalCacheState,
         "_SEARCH_SORTS": SearchSort,
         "_SORT_ORDERS": SortOrder,
-        "_TAG_SORTS": TagSort,
     }
     for attribute, vocabulary in riverhog_controls.items():
         assert getattr(riverhog_client_module, attribute) == closed_literal_values(vocabulary)
@@ -950,8 +956,8 @@ def test_service_selector_validation_projects_public_vocabularies() -> None:
         (app_key_service_module, "_KEY_SORT_FIELDS", ApplicationKeySort),
         (app_key_service_module, "_ACCESS_SORT_FIELDS", ApplicationAccessSort),
         (app_key_service_module, "_SORT_ORDERS", SortOrder),
-        (tag_service_module, "_SORT_FIELDS", TagSort),
-        (tag_service_module, "_SORT_ORDERS", SortOrder),
+        (access_group_service_module, "_SORT_FIELDS", CollectionAccessGroupSort),
+        (access_group_service_module, "_SORT_ORDERS", SortOrder),
         (quota_service_module, "_KEY_QUOTA_SORT_FIELDS", DownloadQuotaSort),
         (quota_service_module, "_SORT_ORDERS", SortOrder),
         (workflow_service_module, "_CLAIM_SORT_NAMES", ProcessingClaimSort),
@@ -1075,7 +1081,7 @@ def test_collection_upload_authority_and_binary_headers_are_exact() -> None:
     assert upload_identity["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
 
 
-def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -> None:
+def test_official_clients_reject_invalid_crud_controls_and_access_group_identities() -> None:
     riverhog = ApiClient()
     stove0 = Stove0ApiClient()
     try:
@@ -1087,14 +1093,14 @@ def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -
             riverhog.list_app_key_access(resource="provider:internal")  # type: ignore[arg-type]
         with pytest.raises(BadRequest, match="processing-claim state must be one of"):
             riverhog.list_processing_claims(state="unknown")  # type: ignore[arg-type]
-        with pytest.raises(BadRequest, match="tag must be canonical"):
-            riverhog.create_tag("Not Canonical")
+        with pytest.raises(BadRequest, match="lowercase SHA-256"):
+            riverhog.get_collection_access_group("not-a-group")
         with pytest.raises(BadRequest, match="does not accept a scoped resource"):
             riverhog.add_app_key_access(
                 "example",
                 "0" * 16,
                 permission="keys:manage",
-                resource="tag:incoming",
+                resource=f"group:{'a' * 64}",
             )
         with pytest.raises(BadRequest, match="lowercase SHA-256"):
             riverhog.get_processing_claim("not-a-claim")  # type: ignore[arg-type]

@@ -32,7 +32,6 @@ def format_collections(payload: Mapping[str, object]) -> str:
             f"created={collection.get('created_at', 'unknown')}  "
             f"files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
-            f"tags={collection.get('tag_count', 0)}  "
             f"encryption={collection.get('encryption_format', 'unknown')}:"
             f"{collection.get('passphrase_id', 'unknown')}  "
             f"archive-copies={collection.get('archive_copy_count', 0)}"
@@ -48,8 +47,7 @@ def format_local_collections(payload: Mapping[str, object]) -> str:
             f"status={collection.get('status', 'unknown')}  "
             f"created={collection.get('created_at', 'unknown')}  "
             f"files={collection.get('files', 0)}  "
-            f"bytes={_bytes(collection.get('bytes'))}  "
-            f"tags={collection.get('tag_count', 0)}"
+            f"bytes={_bytes(collection.get('bytes'))}"
         )
     return "\n".join(lines)
 
@@ -60,7 +58,6 @@ def format_local_collection(payload: Mapping[str, object]) -> str:
             f"local collection {payload.get('collection_id', 'unknown')}",
             f"status: {payload.get('status', 'unknown')}",
             f"created: {payload.get('created_at', 'unknown')}",
-            f"tags: {payload.get('tag_count', 0)}",
             f"files: {payload.get('files', 0)}",
             f"bytes: {_bytes(payload.get('bytes'))}",
         ]
@@ -73,7 +70,6 @@ def format_collection_summary(
     lines = [
         f"collection {payload.get('id', 'unknown')}",
         f"created: {payload.get('created_at', 'unknown')}",
-        f"tags: {payload.get('tag_count', 0)}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
@@ -284,8 +280,7 @@ def format_collection_uploads(payload: Mapping[str, object]) -> str:
             f"{upload.get('files', 0)}:{_bytes(custody_bytes)}  "
             f"mode={upload.get('custody_mode', 'unknown')}  "
             f"encryption={upload.get('encryption_format', 'unknown')}:"
-            f"{upload.get('passphrase_id', 'unknown')}  "
-            f"tags={upload.get('tag_count', 0)}"
+            f"{upload.get('passphrase_id', 'unknown')}"
         )
     return "\n".join(lines)
 
@@ -356,98 +351,40 @@ def format_app_access_set(payload: Mapping[str, object]) -> str:
     )
 
 
-def format_tag(payload: Mapping[str, object]) -> str:
-    return "\n".join(
-        [
-            f"tag: {payload.get('id', 'unknown')}",
-            f"created by: {payload.get('created_by_app', 'unknown')}/"
-            f"{payload.get('created_by_key_id') or 'bootstrap'}",
-            f"created: {payload.get('created_at', 'unknown')}",
-            f"collections: {payload.get('collections', 0)}",
-        ]
-    )
-
-
-def format_tags(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "tags")]
-    for tag in _items(payload, "tags"):
+def format_collection_access_groups(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "groups")]
+    for group in _items(payload, "groups"):
         lines.append(
-            f"- {tag.get('id', 'unknown')}  collections={tag.get('collections', 0)}  "
-            f"created={tag.get('created_at', 'unknown')}"
+            f"- {group.get('id', 'unknown')}  status={group.get('status', 'unknown')}  "
+            f"collections={group.get('collection_count', 0)}  "
+            f"label={group.get('display_label') or 'none'}"
         )
     return "\n".join(lines)
 
 
-def format_tag_deletion_plan(payload: Mapping[str, object]) -> str:
-    lines = [
-        str(payload.get("warning", "Deleting this tag removes its catalog definition.")),
-        "",
-        f"tag deletion plan: {payload.get('tag', 'unknown')}",
-        f"status: {payload.get('status', 'unknown')}",
-    ]
-    dependencies = payload.get("dependencies")
-    if isinstance(dependencies, Mapping):
-        for label, key in (
-            ("collections", "collections"),
-            ("upload sessions", "upload_sessions"),
-            ("active app-key access", "app_key_access"),
-            ("pending metadata publications", "metadata_publications"),
-        ):
-            summary = dependencies.get(key)
-            if not isinstance(summary, Mapping):
-                continue
-            samples = summary.get("sample")
-            sample_text = (
-                ", ".join(str(item) for item in samples)
-                if isinstance(samples, Sequence) and not isinstance(samples, (str, bytes))
-                else ""
-            )
-            suffix = f" (sample: {sample_text})" if sample_text else ""
-            if summary.get("truncated"):
-                suffix += " (sample truncated)"
-            lines.append(f"{label}: {summary.get('count', 0)}{suffix}")
-    blockers = payload.get("blockers")
-    if isinstance(blockers, Sequence) and not isinstance(blockers, (str, bytes)):
-        lines.extend(f"blocked: {blocker}" for blocker in blockers)
-    if payload.get("expires_at"):
-        lines.append(f"plan expires: {payload['expires_at']}")
-    if payload.get("challenge"):
-        lines.append(f"confirmation challenge: {payload['challenge']}")
+def format_collection_access_group_members(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "members")]
+    lines.extend(
+        f"- {member.get('collection_id', 'unknown')}  added={member.get('added_at', 'unknown')}"
+        for member in _items(payload, "members")
+    )
     return "\n".join(lines)
 
 
-def format_tag_deletion_result(payload: Mapping[str, object]) -> str:
+def format_collection_access_groups_for_collection(payload: Mapping[str, object]) -> str:
+    return format_collection_access_groups(payload)
+
+
+def format_collection_access_group_membership(payload: Mapping[str, object]) -> str:
     return "\n".join(
         [
-            f"tag deletion: {payload.get('status', 'unknown')}",
-            f"tag: {payload.get('tag', 'unknown')}",
+            f"access group: {payload.get('group_id', 'unknown')}",
+            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"present: {payload.get('present', False)}",
+            f"changed: {payload.get('changed', False)}",
+            f"authorization revision: {payload.get('authorization_revision', 'unknown')}",
         ]
     )
-
-
-def format_collection_tags(payload: Mapping[str, object]) -> str:
-    tags = payload.get("tags")
-    values = (
-        [str(tag.get("tag", "unknown")) if isinstance(tag, Mapping) else str(tag) for tag in tags]
-        if isinstance(tags, list)
-        else []
-    )
-    if not values:
-        return "\n".join(
-            [
-                f"collection {payload.get('collection_id', 'unknown')}",
-                f"metadata revision: {payload.get('metadata_revision', 'unknown')}",
-                f"inventory identity: {payload.get('inventory_identity', 'unknown')}",
-                f"tag count: {payload.get('tag_count', 0)}",
-            ]
-        )
-    lines = [
-        "tags:",
-    ]
-    lines.extend(f"- {tag}" for tag in values)
-    if not values:
-        lines.append("- none")
-    return "\n".join(lines)
 
 
 def format_download_quota(payload: Mapping[str, object]) -> str:
@@ -626,7 +563,6 @@ def format_retrieval_cache_object(payload: Mapping[str, object]) -> str:
             f"new archive lease expires: {payload.get('new_archive_expires_at') or 'none'}",
             f"lease categories: {leases}",
             f"retrieval job leases: {payload.get('retrieval_job_leases', 0)}",
-            f"tags: {payload.get('tag_count', 0)}",
         ]
     )
 

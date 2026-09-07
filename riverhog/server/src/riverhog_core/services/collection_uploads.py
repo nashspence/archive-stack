@@ -54,10 +54,8 @@ from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import (
     normalize_collection_id,
-    normalize_tag,
     relpath_search_key,
     relpath_sort_key,
-    tag_set_identity,
     text_search_key,
 )
 from riverhog_protocol.raw_ingress import (
@@ -91,7 +89,7 @@ from riverhog_provenance.journal import (
     resolve_incremental_journal_current_state,
     validate_incremental_journal_entry,
 )
-from sqlalchemy import asc, case, desc, exists, func, insert, or_, select, true, update
+from sqlalchemy import asc, case, desc, exists, func, insert, or_, select, true
 from sqlalchemy.orm import Session, selectinload
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
@@ -123,7 +121,7 @@ from riverhog_core.browse import bounded_page, keyset_statement, validate_page_s
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
-    snapshot_catalog_event_collection_tags,
+    snapshot_catalog_event_collection_access_groups,
 )
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -132,14 +130,12 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectUploadRecord,
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
-    CollectionMetadataPublicationRecord,
     CollectionProvenanceEntityRecord,
     CollectionProvenanceExternalStateReferenceRecord,
     CollectionProvenanceJournalAgentRecord,
     CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
     CollectionRecord,
-    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadProvenanceJournalChunkRecord,
@@ -149,9 +145,7 @@ from riverhog_core.catalog_models import (
     CollectionUploadProvenanceValidationFactRecord,
     CollectionUploadRawPartDigestRecord,
     CollectionUploadRecord,
-    CollectionUploadTagRecord,
     RetrievalCacheLeaseRecord,
-    TagRecord,
 )
 from riverhog_core.catalog_workflow_models import (
     CollectionProcessingClaimInputRecord,
@@ -164,8 +158,8 @@ from riverhog_core.checkpoint_sha256 import CheckpointSHA256
 from riverhog_core.collection_access import (
     collection_ids,
     permission_resources,
+    require_collection_access,
     require_collection_create_access,
-    tag_ids,
 )
 from riverhog_core.collection_creation_identity import (
     CollectionUploadCreationIdentityDocument,
@@ -295,8 +289,6 @@ class SqlAlchemyCollectionUploadService:
         self,
         *,
         idempotency_key: str,
-        initial_tag: str | None,
-        tag_set_identity_sha256: str,
         ingest_source: str | None,
         archive_store: str | None,
         initiator: ApplicationPrincipal,
@@ -306,21 +298,12 @@ class SqlAlchemyCollectionUploadService:
         custody_mode: str = "producer-retained",
     ) -> dict[str, object]:
         key = _normalize_idempotency_key(idempotency_key)
-        normalized_initial_tag = normalize_tag(initial_tag) if initial_tag is not None else None
-        if normalized_initial_tag != initial_tag:
-            raise BadRequest("initial collection tag must be canonical")
-        if _SHA256_RE.fullmatch(tag_set_identity_sha256) is None:
-            raise BadRequest("collection tag-set identity is invalid")
         store_name = archive_store or self._config.archive_write_store
         try:
             archive_binding = self._archive_stores.require(store_name)
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
-        require_collection_create_access(
-            initiator,
-            COLLECTIONS_CREATE,
-            (() if normalized_initial_tag is None else (normalized_initial_tag,)),
-        )
+        require_collection_create_access(initiator, COLLECTIONS_CREATE)
         context_json = event_context_json(event_context)
         normalized_provenance_mode, normalized_omission_reason = _normalize_provenance_mode(
             provenance_mode,
@@ -328,7 +311,6 @@ class SqlAlchemyCollectionUploadService:
         )
         normalized_custody_mode = _normalize_custody_mode(custody_mode)
         creation_identity = _collection_upload_creation_identity(
-            tag_set_identity_sha256=tag_set_identity_sha256,
             ingest_source=ingest_source,
             archive_store=store_name,
             event_context_json=context_json,
@@ -342,7 +324,6 @@ class SqlAlchemyCollectionUploadService:
                 session,
                 initiator=initiator,
                 idempotency_key=key,
-                tag_set_identity_sha256=tag_set_identity_sha256,
                 ingest_source=ingest_source,
                 archive_store=archive_store,
             )
@@ -393,15 +374,12 @@ class SqlAlchemyCollectionUploadService:
                     raise Conflict("collection upload discard is in progress")
                 return _upload_payload(session, upload, resumed=True)
 
-            if normalized_initial_tag is not None:
-                _require_tags(session, (normalized_initial_tag,))
             now = utc_timestamp_now()
             checkpoint = new_incremental_volume_planner(policy=self._policy)
             upload = CollectionUploadRecord(
                 idempotency_key=key,
                 creation_identity_sha256=creation_identity.creation_identity_sha256,
                 archive_generation=secrets.token_hex(32),
-                tag_set_identity=tag_set_identity_sha256,
                 ingest_source=ingest_source,
                 search_text=text_search_key(ingest_source or ""),
                 provenance_mode=normalized_provenance_mode,
@@ -435,14 +413,6 @@ class SqlAlchemyCollectionUploadService:
             )
             session.add(upload)
             session.flush()
-            if normalized_initial_tag is not None:
-                session.add(
-                    CollectionUploadTagRecord(
-                        collection_id=upload.collection_id,
-                        tag_id=normalized_initial_tag,
-                    )
-                )
-            session.flush()
             return _upload_payload(session, upload, resumed=False)
 
     def require_access(self, collection_id: int, principal: ApplicationPrincipal) -> None:
@@ -452,16 +422,12 @@ class SqlAlchemyCollectionUploadService:
             if upload is not None:
                 if upload.initiated_by_app != principal.app:
                     raise NotFound(f"collection upload not found: {normalized}")
-                _require_upload_tag_access(
-                    session,
-                    principal,
-                    normalized,
-                )
+                require_collection_create_access(principal, COLLECTIONS_CREATE)
                 return
             collection = session.get(CollectionRecord, normalized)
             if collection is None or collection.created_by_app != principal.app:
                 raise NotFound(f"collection upload not found: {normalized}")
-            _require_collection_tag_create_access(session, principal, normalized)
+            require_collection_create_access(principal, COLLECTIONS_CREATE)
 
     def require_read_access(self, collection_id: int, principal: ApplicationPrincipal) -> None:
         """Allow the owning producer or a collection-scoped deletion operator to inspect."""
@@ -471,11 +437,7 @@ class SqlAlchemyCollectionUploadService:
             upload = session.get(CollectionUploadRecord, normalized)
             if upload is not None:
                 if upload.initiated_by_app == principal.app:
-                    _require_upload_tag_access(
-                        session,
-                        principal,
-                        normalized,
-                    )
+                    require_collection_create_access(principal, COLLECTIONS_CREATE)
                     return
                 if _upload_visible_to_deleter(session, upload, principal):
                     return
@@ -484,148 +446,21 @@ class SqlAlchemyCollectionUploadService:
             if collection is None:
                 raise NotFound(f"collection upload not found: {normalized}")
             if collection.created_by_app == principal.app:
-                _require_collection_tag_create_access(session, principal, normalized)
+                require_collection_create_access(principal, COLLECTIONS_CREATE)
                 return
-            resources = permission_resources(principal, COLLECTIONS_DELETE)
-            allowed_tags = tag_ids(resources)
-            if (
-                ALL_RESOURCES in resources
-                or normalized in collection_ids(resources)
-                or (
-                    allowed_tags
-                    and session.scalar(
-                        select(CollectionTagRecord.collection_id)
-                        .where(CollectionTagRecord.collection_id == normalized)
-                        .where(CollectionTagRecord.tag_id.in_(allowed_tags))
-                        .limit(1)
-                    )
-                    is not None
-                )
-            ):
-                return
-            raise NotFound(f"collection upload not found: {normalized}")
-
-    def list_tags(
-        self,
-        collection_id: int,
-        *,
-        page_size: int,
-        position: tuple[str | int | bool | bytes | None, ...] | None,
-    ) -> dict[str, object]:
-        normalized_id = _collection_id(collection_id)
-        with read_snapshot(self._session_factory) as session:
-            if session.get(CollectionUploadRecord, normalized_id) is None:
-                raise NotFound(f"collection upload session not found: {normalized_id}")
-            rows, next_position = bounded_page(
-                list(
-                    session.scalars(
-                        keyset_statement(
-                            select(CollectionUploadTagRecord.tag_id).where(
-                                CollectionUploadTagRecord.collection_id == normalized_id
-                            ),
-                            columns=(CollectionUploadTagRecord.tag_id,),
-                            position=position,
-                            order="asc",
-                            page_size=page_size,
-                        )
-                    )
-                ),
-                page_size=page_size,
-                position_of=lambda value: (value,),
+            require_collection_access(
+                session,
+                principal,
+                COLLECTIONS_DELETE,
+                normalized,
             )
-            return {
-                "collection_id": normalized_id,
-                "page_size": page_size,
-                "_next_position": next_position,
-                "tags": [{"tag": value} for value in rows],
-            }
-
-    def iter_tags(self, collection_id: int) -> Iterator[dict[str, object]]:
-        normalized_id = _collection_id(collection_id)
-
-        def generate() -> Iterator[dict[str, object]]:
-            with read_snapshot(self._session_factory) as session:
-                if session.get(CollectionUploadRecord, normalized_id) is None:
-                    raise NotFound(f"collection upload session not found: {normalized_id}")
-                result = session.scalars(
-                    select(CollectionUploadTagRecord.tag_id)
-                    .where(CollectionUploadTagRecord.collection_id == normalized_id)
-                    .order_by(CollectionUploadTagRecord.tag_id)
-                ).yield_per(100)
-                for value in result:
-                    yield {"tag": value}
-
-        return generate()
-
-    def add_tag(
-        self,
-        collection_id: int,
-        tag: str,
-        *,
-        principal: ApplicationPrincipal,
-    ) -> dict[str, object]:
-        normalized_id = _collection_id(collection_id)
-        normalized_tag = normalize_tag(tag)
-        if normalized_tag != tag:
-            raise BadRequest("collection upload tag must be canonical")
-        require_collection_create_access(principal, COLLECTIONS_CREATE, (normalized_tag,))
-        with session_scope(self._session_factory) as session:
-            upload = session.scalar(
-                select(CollectionUploadRecord)
-                .where(CollectionUploadRecord.collection_id == normalized_id)
-                .with_for_update()
-            )
-            if upload is None:
-                raise NotFound(f"collection upload session not found: {normalized_id}")
-            if upload.state != "open":
-                raise Conflict("collection upload tags are sealed")
-            _require_tags(session, (normalized_tag,))
-            existing = session.get(CollectionUploadTagRecord, (normalized_id, normalized_tag))
-            if existing is None:
-                session.add(
-                    CollectionUploadTagRecord(
-                        collection_id=normalized_id,
-                        tag_id=normalized_tag,
-                    )
-                )
-                _touch_upload(upload, config=self._config)
-                session.flush()
-            return {
-                "collection_id": normalized_id,
-                "tag_count": _upload_tag_count(session, normalized_id),
-            }
-
-    def remove_tag(self, collection_id: int, tag: str) -> dict[str, object]:
-        normalized_id = _collection_id(collection_id)
-        normalized_tag = normalize_tag(tag)
-        if normalized_tag != tag:
-            raise BadRequest("collection upload tag must be canonical")
-        with session_scope(self._session_factory) as session:
-            upload = session.scalar(
-                select(CollectionUploadRecord)
-                .where(CollectionUploadRecord.collection_id == normalized_id)
-                .with_for_update()
-            )
-            if upload is None:
-                raise NotFound(f"collection upload session not found: {normalized_id}")
-            if upload.state != "open":
-                raise Conflict("collection upload tags are sealed")
-            record = session.get(CollectionUploadTagRecord, (normalized_id, normalized_tag))
-            if record is not None:
-                session.delete(record)
-                _touch_upload(upload, config=self._config)
-                session.flush()
-            return {
-                "collection_id": normalized_id,
-                "tag_count": _upload_tag_count(session, normalized_id),
-            }
 
     def require_discard_access(
         self,
         collection_id: int,
         principal: ApplicationPrincipal,
     ) -> None:
-        """Require deletion authority scoped to this upload identity or one of its tags."""
+        """Require deletion authority scoped to this upload identity."""
 
         normalized = _collection_id(collection_id)
         with session_scope(self._session_factory) as session:
@@ -1467,7 +1302,6 @@ class SqlAlchemyCollectionUploadService:
         page_size: int,
         position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
-        tag: str | None,
         state: str | None,
         sort: str,
         order: str,
@@ -1476,7 +1310,7 @@ class SqlAlchemyCollectionUploadService:
         _validate_upload_list(page_size=page_size, sort=sort, order=order)
         with read_snapshot(self._session_factory) as session:
             statement, key_columns = _upload_list_statement(
-                q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
+                q=q, state=state, sort=sort, order=order, principal=principal
             )
             rows, next_position = bounded_page(
                 list(
@@ -1499,7 +1333,7 @@ class SqlAlchemyCollectionUploadService:
                 "sort": sort,
                 "order": order,
                 "query": q,
-                "filters": {"tag": tag, "state": state},
+                "filters": {"state": state},
                 "uploads": [
                     _upload_list_payload(
                         session,
@@ -1515,7 +1349,6 @@ class SqlAlchemyCollectionUploadService:
         self,
         *,
         q: str | None,
-        tag: str | None,
         state: str | None,
         sort: str,
         order: str,
@@ -1523,7 +1356,7 @@ class SqlAlchemyCollectionUploadService:
     ) -> Iterator[dict[str, object]]:
         _validate_upload_list(page_size=100, sort=sort, order=order)
         statement, key_columns = _upload_list_statement(
-            q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
+            q=q, state=state, sort=sort, order=order, principal=principal
         )
         direction = asc if order == "asc" else desc
         statement = statement.order_by(
@@ -2252,8 +2085,6 @@ class SqlAlchemyCollectionUploadService:
                 _advance_catalog_provenance_relations(session, upload)
             elif phase == "bindings":
                 _advance_catalog_bindings(session, upload)
-            elif phase == "tags":
-                _advance_catalog_tags(session, upload)
             elif phase == "archive-objects":
                 self._advance_catalog_archive_objects(session, upload)
             elif phase == "file-objects":
@@ -2286,14 +2117,11 @@ class SqlAlchemyCollectionUploadService:
                     creation_custody_mode=upload.custody_mode,
                     archive_generation=upload.archive_generation,
                     content_identity=upload.catalog_content_identity,
-                    tag_set_identity=upload.tag_set_identity,
                     encryption_format=upload.encryption_format,
                     passphrase_id=upload.passphrase_id,
                     provenance_mode=provenance_mode,
                     provenance_identity=upload.provenance_identity,
                     inventory_identity=upload.catalog_inventory_identity,
-                    metadata_revision=1,
-                    metadata_updated_at=now,
                     ingest_source=upload.ingest_source,
                     created_by_app=upload.initiated_by_app,
                     created_by_key_id=upload.initiated_by_key_id,
@@ -2543,16 +2371,6 @@ class SqlAlchemyCollectionUploadService:
         if collection is None:
             raise RuntimeError("catalog collection projection is unavailable")
         now = utc_timestamp_now()
-        session.add(
-            CollectionMetadataPublicationRecord(
-                collection_id=upload.collection_id,
-                store=upload.archive_store,
-                desired_revision=1,
-                state="pending",
-                attempt_count=0,
-                next_attempt_at=now,
-            )
-        )
         catalog_event = begin_catalog_event(
             session,
             change="created",
@@ -2560,7 +2378,7 @@ class SqlAlchemyCollectionUploadService:
             occurred_at=now,
             inventory_identity=collection.inventory_identity,
         )
-        snapshot_catalog_event_collection_tags(
+        snapshot_catalog_event_collection_access_groups(
             session,
             event=catalog_event,
             phase="after",
@@ -3503,7 +3321,7 @@ def _advance_catalog_bindings(session: Session, upload: CollectionUploadRecord) 
     if not rows:
         if next_order != upload.file_count:
             raise RuntimeError("catalog provenance bindings are incomplete")
-        upload.catalog_phase = "tags"
+        upload.catalog_phase = "archive-objects"
         upload.catalog_cursor_json = "{}"
         return
     session.execute(
@@ -3521,41 +3339,6 @@ def _advance_catalog_bindings(session: Session, upload: CollectionUploadRecord) 
         ],
     )
     _set_catalog_cursor(upload, {"next_file_order": int(rows[-1].file_order) + 1})
-
-
-def _advance_catalog_tags(session: Session, upload: CollectionUploadRecord) -> None:
-    cursor = _catalog_cursor(upload)
-    after = cursor.get("after_tag")
-    statement = select(CollectionUploadTagRecord).where(
-        CollectionUploadTagRecord.collection_id == upload.collection_id
-    )
-    if isinstance(after, str):
-        statement = statement.where(CollectionUploadTagRecord.tag_id > after)
-    rows = list(session.scalars(statement.order_by(CollectionUploadTagRecord.tag_id).limit(100)))
-    if not rows:
-        upload.catalog_phase = "archive-objects"
-        upload.catalog_cursor_json = "{}"
-        return
-    now = utc_timestamp_now()
-    session.execute(
-        insert(CollectionTagRecord),
-        [
-            {
-                "collection_id": upload.collection_id,
-                "tag_id": row.tag_id,
-                "assigned_by_app": upload.initiated_by_app,
-                "assigned_by_key_id": upload.initiated_by_key_id,
-                "assigned_at": now,
-            }
-            for row in rows
-        ],
-    )
-    session.execute(
-        update(TagRecord)
-        .where(TagRecord.id.in_([row.tag_id for row in rows]))
-        .values(collection_count=TagRecord.collection_count + 1)
-    )
-    _set_catalog_cursor(upload, {"after_tag": rows[-1].tag_id})
 
 
 def _final_authority(upload: CollectionUploadRecord) -> dict[str, dict[str, object]]:
@@ -3675,7 +3458,6 @@ def _normalize_idempotency_key(value: str) -> str:
 
 def _collection_upload_creation_identity(
     *,
-    tag_set_identity_sha256: str,
     ingest_source: str | None,
     archive_store: str,
     event_context_json: str | None,
@@ -3688,7 +3470,6 @@ def _collection_upload_creation_identity(
         raise RuntimeError("normalized upload event context is not an object")
     return CollectionUploadCreationIdentityDocument.seal(
         CollectionUploadCreationIdentityPayload(
-            tag_set_identity=tag_set_identity_sha256,
             ingest_source=ingest_source,
             archive_store=archive_store,
             event_context=event_context,
@@ -3704,7 +3485,6 @@ def _require_transform_output_intent(
     *,
     initiator: ApplicationPrincipal,
     idempotency_key: str,
-    tag_set_identity_sha256: str,
     ingest_source: str | None,
     archive_store: str | None,
 ) -> None:
@@ -3730,7 +3510,6 @@ def _require_transform_output_intent(
         raise Forbidden("transform output intent is not active")
     if (
         idempotency_key != execution_id
-        or tag_set_identity_sha256 != tag_set_identity(())
         or ingest_source != f"transform:{execution_id}"
         or archive_store is not None
     ):
@@ -3920,13 +3699,6 @@ def _require_transform_output_authority(
     )
     if missing_file is not None:
         raise Conflict(f"transform disposition output file is absent: {missing_file}")
-
-
-def _require_tags(session: Session, tags: Sequence[str]) -> None:
-    found = set(session.scalars(select(TagRecord.id).where(TagRecord.id.in_(tags))))
-    missing = sorted(set(tags) - found)
-    if missing:
-        raise BadRequest(f"collection tags do not exist: {', '.join(missing)}")
 
 
 def _normalize_file(
@@ -4812,8 +4584,6 @@ def _seal_open_collection_upload(
     config: RuntimeConfig,
 ) -> None:
     collection_id = upload.collection_id
-    if _upload_tag_set_identity(session, collection_id) != upload.tag_set_identity:
-        raise Conflict("collection upload tag set differs from creation identity")
     incomplete_raw = session.scalar(
         select(CollectionUploadFileRecord.path)
         .where(
@@ -5095,68 +4865,6 @@ def _require_pending_pack_matches_registration(
     actual = [(row.path, row.bytes, row.sha256) for row in rows]
     if actual != expected:
         raise Conflict("collection upload volume plans differ from registered files")
-
-
-def _upload_tag_count(session: Session, collection_id: int) -> int:
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(CollectionUploadTagRecord)
-            .where(CollectionUploadTagRecord.collection_id == collection_id)
-        )
-        or 0
-    )
-
-
-def _upload_tag_set_identity(session: Session, collection_id: int) -> str:
-    tags = session.scalars(
-        select(CollectionUploadTagRecord.tag_id)
-        .where(CollectionUploadTagRecord.collection_id == collection_id)
-        .order_by(CollectionUploadTagRecord.tag_id)
-    ).yield_per(100)
-    return tag_set_identity(tags)
-
-
-def _require_upload_tag_access(
-    session: Session,
-    principal: ApplicationPrincipal,
-    collection_id: int,
-) -> None:
-    resources = permission_resources(principal, COLLECTIONS_CREATE)
-    if ALL_RESOURCES in resources:
-        return
-    allowed_tags = tag_ids(resources)
-    if not allowed_tags:
-        raise NotFound("collection tags are not available")
-    unauthorized = session.scalar(
-        select(CollectionUploadTagRecord.tag_id)
-        .where(CollectionUploadTagRecord.collection_id == collection_id)
-        .where(CollectionUploadTagRecord.tag_id.not_in(allowed_tags))
-        .limit(1)
-    )
-    if unauthorized is not None:
-        raise NotFound("collection tags are not available")
-
-
-def _require_collection_tag_create_access(
-    session: Session,
-    principal: ApplicationPrincipal,
-    collection_id: int,
-) -> None:
-    resources = permission_resources(principal, COLLECTIONS_CREATE)
-    if ALL_RESOURCES in resources:
-        return
-    allowed_tags = tag_ids(resources)
-    if not allowed_tags:
-        raise NotFound("collection tags are not available")
-    unauthorized = session.scalar(
-        select(CollectionTagRecord.tag_id)
-        .where(CollectionTagRecord.collection_id == collection_id)
-        .where(CollectionTagRecord.tag_id.not_in(allowed_tags))
-        .limit(1)
-    )
-    if unauthorized is not None:
-        raise NotFound("collection tags are not available")
 
 
 def _ready_for_finalization(session: Session, upload: CollectionUploadRecord) -> bool:
@@ -5962,7 +5670,6 @@ def _validate_upload_list(*, page_size: int, sort: str, order: str) -> None:
 def _upload_list_statement(
     *,
     q: str | None,
-    tag: str | None,
     state: str | None,
     sort: str,
     order: str,
@@ -5973,25 +5680,10 @@ def _upload_list_statement(
     filters: list[Any] = [_upload_read_filter(principal)]
     if q:
         pattern = f"%{text_search_key(q)}%"
-        matching_ids = (
-            select(CollectionUploadRecord.collection_id)
-            .where(CollectionUploadRecord.search_text.like(pattern))
-            .union(
-                select(CollectionUploadTagRecord.collection_id).where(
-                    CollectionUploadTagRecord.tag_id.like(pattern)
-                )
-            )
+        matching_ids = select(CollectionUploadRecord.collection_id).where(
+            CollectionUploadRecord.search_text.like(pattern)
         )
         filters.append(CollectionUploadRecord.collection_id.in_(matching_ids))
-    if tag:
-        filters.append(
-            exists(
-                select(1).where(
-                    CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
-                    CollectionUploadTagRecord.tag_id == tag,
-                )
-            )
-        )
     if state:
         filters.append(CollectionUploadRecord.state == state)
     statement = select(
@@ -6044,7 +5736,6 @@ def _upload_list_payload(
     return {
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
-        "tag_count": _upload_tag_count(session, upload.collection_id),
         "ingest_source": upload.ingest_source,
         "archive_store": upload.archive_store,
         "encryption_format": upload.encryption_format,
@@ -6076,22 +5767,8 @@ def _upload_visible_to_deleter(
     upload: CollectionUploadRecord,
     principal: ApplicationPrincipal,
 ) -> bool:
-    if principal.allows_collection(COLLECTIONS_DELETE, upload.collection_id):
-        return True
-    allowed_tags = tag_ids(permission_resources(principal, COLLECTIONS_DELETE))
-    if not allowed_tags:
-        return False
-    return (
-        session.scalar(
-            select(CollectionUploadTagRecord.tag_id)
-            .where(
-                CollectionUploadTagRecord.collection_id == upload.collection_id,
-                CollectionUploadTagRecord.tag_id.in_(allowed_tags),
-            )
-            .limit(1)
-        )
-        is not None
-    )
+    del session
+    return principal.allows_collection(COLLECTIONS_DELETE, upload.collection_id)
 
 
 def _upload_read_filter(principal: ApplicationPrincipal) -> Any:
@@ -6103,16 +5780,6 @@ def _upload_read_filter(principal: ApplicationPrincipal) -> Any:
     allowed_collections = collection_ids(resources)
     if allowed_collections:
         filters.append(CollectionUploadRecord.collection_id.in_(allowed_collections))
-    allowed_tags = tag_ids(resources)
-    if allowed_tags:
-        filters.append(
-            exists(
-                select(1).where(
-                    CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
-                    CollectionUploadTagRecord.tag_id.in_(allowed_tags),
-                )
-            )
-        )
     return or_(*filters)
 
 
@@ -6264,7 +5931,6 @@ def _upload_payload(
     payload: dict[str, object] = {
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
-        "tag_count": _upload_tag_count(session, upload.collection_id),
         "ingest_source": upload.ingest_source,
         "provenance_mode": upload.provenance_mode,
         "provenance_identity": None,
@@ -6318,14 +5984,6 @@ def _finalized_payload(
         )
         .limit(1)
     )
-    tag_count = int(
-        session.scalar(
-            select(func.count())
-            .select_from(CollectionTagRecord)
-            .where(CollectionTagRecord.collection_id == collection.id)
-        )
-        or 0
-    )
     archive_copy_count = int(
         session.scalar(
             select(func.count())
@@ -6355,9 +6013,7 @@ def _finalized_payload(
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
-        "tag_count": tag_count,
         "content_identity": collection.content_identity,
-        "tag_set_identity": collection.tag_set_identity,
         "archive_root_sha256": manifest_sha256,
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
@@ -6369,7 +6025,6 @@ def _finalized_payload(
     payload: dict[str, object] = {
         "collection_id": collection.id,
         "created_at": collection.created_at,
-        "tag_count": tag_count,
         "ingest_source": collection.ingest_source,
         "provenance_mode": collection.provenance_mode,
         "provenance_identity": collection.provenance_identity,

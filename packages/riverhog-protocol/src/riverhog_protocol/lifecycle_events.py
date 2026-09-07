@@ -21,7 +21,6 @@ from riverhog_protocol.storage_names import ArchiveStoreName
 
 RIVERHOG_EVENT_TYPE_PREFIX = "io.riverhog.riverhog."
 COLLECTION_FINALIZED = RIVERHOG_EVENT_TYPE_PREFIX + "collection.finalized"
-COLLECTION_TAGS_CHANGED = RIVERHOG_EVENT_TYPE_PREFIX + "collection.tags_changed"
 COLLECTION_DELETED = RIVERHOG_EVENT_TYPE_PREFIX + "collection.deleted"
 ARCHIVE_COPY_REQUESTED = RIVERHOG_EVENT_TYPE_PREFIX + "archive_copy.requested"
 ARCHIVE_COPY_COMPLETED = RIVERHOG_EVENT_TYPE_PREFIX + "archive_copy.completed"
@@ -39,7 +38,6 @@ RETRIEVAL_FAILED = RIVERHOG_EVENT_TYPE_PREFIX + "retrieval.failed"
 RIVERHOG_EVENT_TYPES = frozenset(
     {
         COLLECTION_FINALIZED,
-        COLLECTION_TAGS_CHANGED,
         COLLECTION_DELETED,
         ARCHIVE_COPY_REQUESTED,
         ARCHIVE_COPY_COMPLETED,
@@ -55,7 +53,7 @@ RIVERHOG_EVENT_TYPES = frozenset(
         RETRIEVAL_FAILED,
     }
 )
-COLLECTION_WAKE_EVENT_TYPES = frozenset({COLLECTION_FINALIZED, COLLECTION_TAGS_CHANGED})
+COLLECTION_WAKE_EVENT_TYPES = frozenset({COLLECTION_FINALIZED})
 MAX_LIFECYCLE_EVENT_SEQUENCE = 2**63 - 1
 
 
@@ -111,7 +109,6 @@ class RiverhogEventData(RiverhogEventModel):
 class CollectionEventData(RiverhogEventData):
     collection_id: CollectionId
     collection_created_at: str = Field(min_length=1, max_length=64)
-    collection_tag_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_collection(self) -> Self:
@@ -175,7 +172,6 @@ class RetrievalEventData(RiverhogEventData):
     state: RetrievalState
     collection_id: CollectionId | None = None
     collection_created_at: str | None = Field(default=None, min_length=1, max_length=64)
-    collection_tag_count: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_collections(self) -> Self:
@@ -186,9 +182,8 @@ class RetrievalEventData(RiverhogEventData):
             raise ValueError("single-collection retrieval event requires its collection identity")
         if len(ids) != 1 and self.collection_id is not None:
             raise ValueError("multi-collection retrieval event cannot have a singular identity")
-        if self.collection_created_at is not None or self.collection_tag_count is not None:
-            if self.collection_id is None:
-                raise ValueError("retrieval collection projection has no singular collection")
+        if self.collection_created_at is not None and self.collection_id is None:
+            raise ValueError("retrieval collection projection has no singular collection")
         return self
 
 
@@ -249,11 +244,6 @@ class RiverhogCloudEvent(CloudEvent):
 class CollectionFinalizedEvent(RiverhogCloudEvent):
     type: Literal["io.riverhog.riverhog.collection.finalized"]
     data: CollectionFinalizedData
-
-
-class CollectionTagsChangedEvent(RiverhogCloudEvent):
-    type: Literal["io.riverhog.riverhog.collection.tags_changed"]
-    data: CollectionEventData
 
 
 class CollectionDeletedEvent(RiverhogCloudEvent):
@@ -323,7 +313,6 @@ class RetrievalFailedEvent(RiverhogCloudEvent):
 
 type RiverhogLifecycleEvent = Annotated[
     CollectionFinalizedEvent
-    | CollectionTagsChangedEvent
     | CollectionDeletedEvent
     | ArchiveCopyRequestedEvent
     | ArchiveCopyCompletedEvent
@@ -387,7 +376,6 @@ __all__ = [
     "ARCHIVE_COPY_REQUESTED",
     "COLLECTION_DELETED",
     "COLLECTION_FINALIZED",
-    "COLLECTION_TAGS_CHANGED",
     "COLLECTION_WAKE_EVENT_TYPES",
     "RETRIEVAL_CANCELED",
     "RETRIEVAL_COMPLETED",

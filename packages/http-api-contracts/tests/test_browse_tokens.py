@@ -39,7 +39,7 @@ def test_browse_token_round_trips_opaque_binary_position_across_restart() -> Non
 @pytest.mark.parametrize(
     ("operation", "principal", "selectors", "message"),
     (
-        ("list_tags", {"app": "reader", "key_id": "key-1"}, {}, "operation"),
+        ("list_collections", {"app": "reader", "key_id": "key-1"}, {}, "operation"),
         ("list_files", {"app": "other", "key_id": "key-2"}, {}, "principal"),
         (
             "list_files",

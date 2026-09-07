@@ -45,6 +45,8 @@ from riverhog_protocol import (
     ArchiveCopyStoreSelectionDocument,
     ArchiveStoreName,
     ArchiveStoreSort,
+    CollectionAccessGroupSort,
+    CollectionAccessGroupStatus,
     CollectionId,
     CollectionSort,
     CollectionUploadArtifactCustodyReceiptDocument,
@@ -75,7 +77,6 @@ from riverhog_protocol import (
     RetrievalFileReferenceSetDocument,
     SearchSort,
     SortOrder,
-    TagSort,
     validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
@@ -92,8 +93,6 @@ from riverhog_protocol.lifecycle_events import LifecycleEventCursor, RiverhogEve
 from riverhog_protocol.paths import (
     CanonicalRelPath,
     normalize_collection_id,
-    tag_set_identity,
-    validate_canonical_tag,
 )
 from riverhog_provenance_contracts import ProvenanceJournalId
 
@@ -144,7 +143,7 @@ _ARCHIVE_STORE_SORTS = closed_literal_values(ArchiveStoreSort)
 _APPLICATION_SORTS = closed_literal_values(ApplicationSort)
 _APPLICATION_KEY_SORTS = closed_literal_values(ApplicationKeySort)
 _APPLICATION_ACCESS_SORTS = closed_literal_values(ApplicationAccessSort)
-_TAG_SORTS = closed_literal_values(TagSort)
+_COLLECTION_ACCESS_GROUP_SORTS = closed_literal_values(CollectionAccessGroupSort)
 _DOWNLOAD_QUOTA_SORTS = closed_literal_values(DownloadQuotaSort)
 _ARCHIVE_COPY_SORTS = closed_literal_values(ArchiveCopySort)
 _ARCHIVE_COPY_STATES = closed_literal_values(ArchiveCopyState)
@@ -171,13 +170,6 @@ def _page_params(*, page_size: int, page_token: str | None) -> dict[str, object]
     if page_token is not None:
         params["page_token"] = page_token
     return params
-
-
-def _canonical_tag(value: str) -> str:
-    try:
-        return validate_canonical_tag(value)
-    except ValueError as exc:
-        raise BadRequest(str(exc)) from exc
 
 
 def _sha256_identity(value: str, label: str) -> str:
@@ -290,13 +282,6 @@ def _canonical_relpath(value: str) -> str:
         return _CANONICAL_RELPATH.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest("collection path must be canonical") from exc
-
-
-def _canonical_tags(values: Sequence[str]) -> list[str]:
-    tags = [_canonical_tag(value) for value in values]
-    if len(tags) != len(set(tags)):
-        raise BadRequest("collection tags must not contain duplicates")
-    return tags
 
 
 def _validated_collection_upload_idempotency_key(
@@ -934,7 +919,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page_size: int = 25,
         page_token: str | None = None,
         q: str | None = None,
-        tag: str | None = None,
         collection_id: CollectionId | None = None,
         source_store: ArchiveStoreName | None = None,
         cache_store: RetrievalCacheStoreName | None = None,
@@ -958,8 +942,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["page_token"] = page_token
         if q is not None:
             params["q"] = q
-        if tag is not None:
-            params["tag"] = _canonical_tag(tag)
         if collection_id is not None:
             params["collection_id"] = _collection_id(collection_id)
         if source_store is not None:
@@ -1127,7 +1109,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def create_or_resume_collection_upload_session(
         self,
         idempotency_key: CollectionUploadIdempotencyKey,
-        tags: Sequence[str],
         *,
         ingest_source: str | None = None,
         archive_store: ArchiveStoreName | None = None,
@@ -1140,14 +1121,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             provenance_mode,
             provenance_omission_reason,
         )
-        normalized_tags = sorted(_canonical_tags(tags))
         payload: dict[str, Any] = {
             "idempotency_key": _validated_collection_upload_idempotency_key(idempotency_key),
-            "tag_set_identity": tag_set_identity(normalized_tags),
             "provenance_mode": provenance_mode,
         }
-        if normalized_tags:
-            payload["initial_tag"] = normalized_tags[0]
         normalized_custody_mode = _one_of(
             custody_mode,
             frozenset({"producer-retained", "custody-transfer"}),
@@ -1163,49 +1140,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             payload["event_context"] = dict(event_context)
         if provenance_omission_reason is not None:
             payload["provenance_omission_reason"] = provenance_omission_reason
-        opened = self._json("POST", "/v1/collection-upload-sessions", json=payload)
-        if opened.get("state") == "finalized":
-            return opened
-        collection_id = _collection_id(int(opened["collection_id"]))
-        for tag in normalized_tags:
-            self.add_collection_upload_session_tag(collection_id, tag)
-        opened["tag_count"] = len(normalized_tags)
-        return opened
-
-    def list_collection_upload_session_tags(
-        self,
-        collection_id: CollectionId,
-        *,
-        page_size: int = 25,
-        page_token: str | None = None,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags",
-            params=_page_params(page_size=page_size, page_token=page_token),
-        )
-
-    def add_collection_upload_session_tag(
-        self,
-        collection_id: CollectionId,
-        tag: str,
-    ) -> dict[str, Any]:
-        return self._json(
-            "PUT",
-            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags/"
-            f"{quote(_canonical_tag(tag), safe='')}",
-        )
-
-    def remove_collection_upload_session_tag(
-        self,
-        collection_id: CollectionId,
-        tag: str,
-    ) -> dict[str, Any]:
-        return self._json(
-            "DELETE",
-            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags/"
-            f"{quote(_canonical_tag(tag), safe='')}",
-        )
+        return self._json("POST", "/v1/collection-upload-sessions", json=payload)
 
     def register_collection_upload_session_files(
         self,
@@ -1435,7 +1370,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page_token: str | None = None,
         q: str | None = None,
         state: CollectionUploadState | None = None,
-        tag: str | None = None,
         sort: CollectionUploadSort = "created_at",
         order: SortOrder = "desc",
     ) -> dict[str, Any]:
@@ -1458,8 +1392,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 _COLLECTION_UPLOAD_STATES,
                 "collection-upload state",
             )
-        if tag is not None:
-            params["tag"] = _canonical_tag(tag)
         return self._json("GET", "/v1/collection-upload-sessions", params=params)
 
     def complete_collection_upload_session(
@@ -1992,7 +1924,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page_size: int = 25,
         page_token: str | None = None,
         q: str | None = None,
-        tag: str | None = None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
         sort: CollectionSort = "id",
@@ -2013,8 +1944,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         if q is not None:
             params["q"] = q
-        if tag is not None:
-            params["tag"] = _canonical_tag(tag)
         if encryption_format:
             params["encryption_format"] = encryption_format
         if passphrase_id:
@@ -2212,48 +2141,78 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             json=_riverhog_application_access_grant_payload(permission, resource),
         )
 
-    def create_tag(self, tag: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/tags", json={"id": _canonical_tag(tag)})
+    def create_collection_access_group(
+        self,
+        *,
+        idempotency_key: str,
+        display_label: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"idempotency_key": idempotency_key}
+        if display_label is not None:
+            payload["display_label"] = display_label
+        return self._json("POST", "/v1/collection-access-groups", json=payload)
 
-    def get_tag(self, tag: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/tags/{quote(_canonical_tag(tag), safe='')}")
+    def get_collection_access_group(self, group_id: str) -> dict[str, Any]:
+        return self._json(
+            "GET", f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}"
+        )
 
-    def list_tags(
+    def list_collection_access_groups(
         self,
         *,
         page_size: int = 25,
         page_token: str | None = None,
         q: str | None = None,
-        sort: TagSort = "id",
+        status: CollectionAccessGroupStatus | None = None,
+        sort: CollectionAccessGroupSort = "id",
         order: SortOrder = "asc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             **_page_params(page_size=page_size, page_token=page_token),
             "sort": _one_of(
                 sort,
-                _TAG_SORTS,
-                "tag sort",
+                _COLLECTION_ACCESS_GROUP_SORTS,
+                "collection-access-group sort",
             ),
             "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q is not None:
             params["q"] = q
-        return self._json("GET", "/v1/tags", params=params)
+        if status is not None:
+            params["status"] = _one_of(
+                status,
+                frozenset({"active", "disabled"}),
+                "collection-access-group status",
+            )
+        return self._json("GET", "/v1/collection-access-groups", params=params)
 
-    def plan_tag_deletion(self, tag: str) -> dict[str, Any]:
+    def update_collection_access_group(
+        self,
+        group_id: str,
+        *,
+        display_label: str | None,
+        status: CollectionAccessGroupStatus,
+    ) -> dict[str, Any]:
         return self._json(
-            "POST",
-            f"/v1/tags/{quote(_canonical_tag(tag), safe='')}/deletion-plan",
+            "PUT",
+            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}",
+            json={"display_label": display_label, "status": status},
         )
 
-    def delete_tag(self, tag: str, *, challenge: str) -> dict[str, Any]:
+    def list_collection_access_group_members(
+        self,
+        group_id: str,
+        *,
+        page_size: int = 25,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
         return self._json(
-            "POST",
-            f"/v1/tags/{quote(_canonical_tag(tag), safe='')}/delete",
-            json={"challenge": challenge},
+            "GET",
+            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections",
+            params=_page_params(page_size=page_size, page_token=page_token),
         )
 
-    def get_collection_tags(
+    def list_collection_access_groups_for_collection(
         self,
         collection_id: CollectionId,
         *,
@@ -2262,51 +2221,30 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     ) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/collections/{_collection_id(collection_id)}/tags",
+            f"/v1/collections/{_collection_id(collection_id)}/access-groups",
             params=_page_params(page_size=page_size, page_token=page_token),
         )
 
-    def replace_collection_tags(
+    def add_collection_access_group_member(
         self,
+        group_id: str,
         collection_id: CollectionId,
-        tags: Sequence[str],
-        *,
-        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        normalized_id = _collection_id(collection_id)
-        payload: dict[str, Any] = {"tags": _canonical_tags(tags)}
-        if event_context is not None:
-            payload["event_context"] = dict(event_context)
-        return self._json("PUT", f"/v1/collections/{normalized_id}/tags", json=payload)
-
-    def add_collection_tag(
-        self,
-        collection_id: CollectionId,
-        tag: str,
-        *,
-        event_context: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload = {} if event_context is None else {"event_context": dict(event_context)}
         return self._json(
-            "POST",
-            f"/v1/collections/{_collection_id(collection_id)}/tags/"
-            f"{quote(_canonical_tag(tag), safe='')}",
-            json=payload,
+            "PUT",
+            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections/"
+            f"{_collection_id(collection_id)}",
         )
 
-    def remove_collection_tag(
+    def remove_collection_access_group_member(
         self,
+        group_id: str,
         collection_id: CollectionId,
-        tag: str,
-        *,
-        event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload = {} if event_context is None else {"event_context": dict(event_context)}
         return self._json(
             "DELETE",
-            f"/v1/collections/{_collection_id(collection_id)}/tags/"
-            f"{quote(_canonical_tag(tag), safe='')}",
-            json=payload,
+            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections/"
+            f"{_collection_id(collection_id)}",
         )
 
     def get_download_quota(self) -> dict[str, Any]:

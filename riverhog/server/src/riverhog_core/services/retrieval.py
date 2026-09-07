@@ -60,7 +60,6 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
-    CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
@@ -552,7 +551,6 @@ class SqlAlchemyRetrievalService:
         page_size: int,
         position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
-        tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
         cache_store: str | None = None,
@@ -568,7 +566,6 @@ class SqlAlchemyRetrievalService:
         now = format_utc_timestamp(utc_now())
         statement, key_columns, normalized_filters, needle = _cache_list_statement(
             q=q,
-            tag=tag,
             collection_id=collection_id,
             source_store=source_store,
             cache_store=cache_store,
@@ -610,14 +607,12 @@ class SqlAlchemyRetrievalService:
                     protected_until=protected_until,
                     new_archive_expires_at=new_archive_expires_at,
                     retrieval_job_leases=int(retrieval_job_leases or 0),
-                    tag_count=int(tag_count),
                 )
                 for (
                     current,
                     protected_until,
                     new_archive_expires_at,
                     retrieval_job_leases,
-                    tag_count,
                 ) in rows
             ],
         }
@@ -626,7 +621,6 @@ class SqlAlchemyRetrievalService:
         self,
         *,
         q: str | None,
-        tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
         cache_store: str | None = None,
@@ -641,7 +635,6 @@ class SqlAlchemyRetrievalService:
         now = format_utc_timestamp(utc_now())
         statement, _, _, _ = _cache_list_statement(
             q=q,
-            tag=tag,
             collection_id=collection_id,
             source_store=source_store,
             cache_store=cache_store,
@@ -662,14 +655,12 @@ class SqlAlchemyRetrievalService:
                     protected_until,
                     new_archive_expires_at,
                     job_leases,
-                    tag_count,
                 ) in partition:
                     yield _cache_object_payload(
                         current,
                         protected_until=protected_until,
                         new_archive_expires_at=new_archive_expires_at,
                         retrieval_job_leases=int(job_leases or 0),
-                        tag_count=int(tag_count),
                     )
 
     def get_cache_object(
@@ -711,14 +702,6 @@ class SqlAlchemyRetrievalService:
                 protected_until=protected_until,
                 new_archive_expires_at=new_archive_expires_at,
                 retrieval_job_leases=int(retrieval_job_leases or 0),
-                tag_count=int(
-                    session.scalar(
-                        select(func.count())
-                        .select_from(CollectionTagRecord)
-                        .where(CollectionTagRecord.collection_id == normalized_id)
-                    )
-                    or 0
-                ),
             )
 
     def plan(
@@ -2377,7 +2360,6 @@ def _normalize_restore_policy(value: str) -> str:
 def _cache_list_statement(
     *,
     q: str | None,
-    tag: str | None,
     collection_id: int | None,
     source_store: str | None,
     cache_store: str | None,
@@ -2421,22 +2403,13 @@ def _cache_list_statement(
         and normalized_expires_after > normalized_expires_before
     ):
         raise BadRequest("expires_after must not be later than expires_before")
-    normalized_tag = tag.strip().casefold() if tag and tag.strip() else None
     needle = q.strip().casefold() if q and q.strip() else None
     protected_until, new_archive_expires_at, retrieval_job_leases = _cache_lease_projections(now)
-    tag_count = (
-        select(func.count())
-        .select_from(CollectionTagRecord)
-        .where(CollectionTagRecord.collection_id == RetrievalCacheObjectRecord.collection_id)
-        .correlate(RetrievalCacheObjectRecord)
-        .scalar_subquery()
-    )
     statement = select(
         RetrievalCacheObjectRecord,
         protected_until.label("protected_until"),
         new_archive_expires_at.label("new_archive_expires_at"),
         retrieval_job_leases.label("retrieval_job_leases"),
-        tag_count.label("tag_count"),
     ).where(
         collection_access_filter(RetrievalCacheObjectRecord.collection_id, principal, CATALOG_READ)
     )
@@ -2460,15 +2433,6 @@ def _cache_list_statement(
         statement = statement.where(protected_until <= normalized_expires_before)
     if normalized_expires_after is not None:
         statement = statement.where(protected_until >= normalized_expires_after)
-    if normalized_tag is not None:
-        statement = statement.where(
-            exists(
-                select(1).where(
-                    CollectionTagRecord.collection_id == RetrievalCacheObjectRecord.collection_id,
-                    CollectionTagRecord.tag_id == normalized_tag,
-                )
-            )
-        )
     if needle is not None:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         search_filters: list[Any] = [
@@ -2500,7 +2464,6 @@ def _cache_list_statement(
         )
     )
     normalized_filters: dict[str, object] = {
-        "tag": normalized_tag,
         "collection_id": normalized_collection_id,
         "source_store": normalized_store,
         "cache_store": normalized_cache_store,
@@ -2599,7 +2562,6 @@ def _cache_object_payload(
     protected_until: str | None,
     new_archive_expires_at: str | None,
     retrieval_job_leases: int,
-    tag_count: int,
 ) -> dict[str, object]:
     categories: list[str] = []
     if new_archive_expires_at is not None:
@@ -2620,7 +2582,6 @@ def _cache_object_payload(
         "new_archive_expires_at": new_archive_expires_at,
         "lease_categories": categories,
         "retrieval_job_leases": retrieval_job_leases,
-        "tag_count": tag_count,
     }
 
 

@@ -16,10 +16,10 @@ Contracts define packages; architecture records ownership.
 - **Provenance authority.** Per-file provenance is append-only custody history. Journals remain
   exact prefixes across handoffs; clients capture or continue them by default, and omissions require
   a reason. Journals and their index are authoritative; database rows are a rebuildable projection.
-- **Collection views.** Collections are immutable namespaces and deletion units; tags are mutable.
-  Applications own derived materializations.
+- **Collection views.** Collections are immutable namespaces and deletion units. Access groups are
+  mutable authorization state; applications own descriptive indexes and derived materializations.
 - **Deployment configuration.** Deployments own identity, credentials, destinations, topology, and
-  private policy.
+  policy.
 
 ## Boundary model
 
@@ -27,7 +27,7 @@ Contracts define packages; architecture records ownership.
   implementation-neutral tooling; reference contracts and support stay with their family.
   Non-reference release units do not depend on references; reference images, qualification, and
   tests compose them explicitly.
-- **Public contracts.** Runtime integration uses published HTTP and CloudEvents contracts.
+- **Public contracts.** Integration uses published HTTP and CloudEvents contracts.
   Shared models own identities. Exact HTTP/OpenAPI contracts own CRUD and official client JSON.
   The generated contract freeze inventories external extents from executable authorities.
 - **Riverhog platform.** Server owns archive construction, publication, copies, retrieval, and
@@ -49,7 +49,7 @@ Workspace checks enforce ownership boundaries.
 ## Repository map
 
 - [`riverhog/server`](../riverhog/server/): archive service.
-- [`riverhog/client`](../riverhog/client/): official client.
+- [`riverhog/client`](../riverhog/client/): client.
 - [`riverhog/recovery`](../riverhog/recovery/): permissively licensed independent recovery tool.
 - [`reference/gogurt`](../reference/gogurt/): Gogurt references.
 - [`reference/riverhog`](../reference/riverhog/): Riverhog references.

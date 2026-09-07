@@ -19,7 +19,6 @@ from riverhog_core.collection_creation_identity import (
     CollectionUploadCreationIdentityDocument,
     CollectionUploadCreationIdentityPayload,
 )
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import inspect
 
 from tests.unit.db_helpers import sqlite_url
@@ -27,7 +26,6 @@ from tests.unit.db_helpers import sqlite_url
 
 def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
     base = CollectionUploadCreationIdentityPayload(
-        tag_set_identity=tag_set_identity(("derived",)),
         ingest_source="transform:fixture",
         archive_store="archive",
         event_context={"source": "fixture"},
@@ -37,7 +35,6 @@ def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
     )
     sealed = CollectionUploadCreationIdentityDocument.seal(base)
     alternatives = (
-        base.model_copy(update={"tag_set_identity": tag_set_identity(("other",))}),
         base.model_copy(update={"ingest_source": "transform:other"}),
         base.model_copy(update={"archive_store": "secondary"}),
         base.model_copy(update={"event_context": {"source": "other"}}),
@@ -174,10 +171,10 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     assert {
         column["name"] for column in inspector.get_columns("collection_upload_provenance_journals")
     } >= {"accepted_bytes", "next_chunk_ordinal"}
-    assert {column["name"] for column in inspector.get_columns("catalog_event_tags")} == {
+    assert {column["name"] for column in inspector.get_columns("catalog_event_access_groups")} == {
         "sequence",
         "phase",
-        "tag_id",
+        "group_id",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_plan_files")} == {
         "plan_id",
@@ -229,8 +226,6 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     assert collection_columns["creation_custody_mode"]["nullable"] is False
     assert collection_columns["content_identity"]["nullable"] is False
     assert collection_columns["inventory_identity"]["nullable"] is False
-    assert collection_columns["metadata_revision"]["nullable"] is False
-    assert collection_columns["metadata_updated_at"]["nullable"] is False
     upload_file_columns = {
         column["name"]: column for column in inspector.get_columns("collection_upload_files")
     }

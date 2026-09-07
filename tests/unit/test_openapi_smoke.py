@@ -68,9 +68,11 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/download-quota",
         "/v1/download-quotas",
         "/v1/search",
-        "/v1/tags",
-        "/v1/tags/{tag}",
-        "/v1/collections/{collection_id}/tags",
+        "/v1/collection-access-groups",
+        "/v1/collection-access-groups/{group_id}",
+        "/v1/collection-access-groups/{group_id}/collections",
+        "/v1/collection-access-groups/{group_id}/collections/{collection_id}",
+        "/v1/collections/{collection_id}/access-groups",
     }.issubset(paths)
     assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]
     assert "delete" in paths["/v1/archive/copies/{collection_id}/{destination_store}"]
@@ -316,7 +318,6 @@ def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
         "page_size",
         "page_token",
         "q",
-        "tag",
         "collection_id",
         "source_store",
         "state",
@@ -398,9 +399,7 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
         CollectionSummary(
             id=CollectionId(42),
             created_at="2026-07-26T20:00:00.000000Z",
-            tag_count=1,
             content_identity="1" * 64,
-            tag_set_identity="3" * 64,
             archive_root_sha256="2" * 64,
             encryption_format="age-v1-scrypt",
             passphrase_id="openapi-test-key-v1",

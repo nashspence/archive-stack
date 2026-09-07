@@ -16,7 +16,6 @@ from riverhog_core.app_permissions import (
     PROVENANCE_READ,
     ApplicationAccess,
     ApplicationPrincipal,
-    tag_resource,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -35,7 +34,6 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
-    TagRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
 from riverhog_core.collection_plan import CollectionVolumePolicy
@@ -58,7 +56,6 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_identity
-from riverhog_protocol.paths import tag_set_identity
 from riverhog_protocol.raw_ingress import ordered_raw_part_commitment
 from riverhog_provenance import (
     FileProvenanceBinding,
@@ -90,16 +87,10 @@ _DELETER = ApplicationPrincipal(
     access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, ALL_RESOURCES)}),
 )
 
-_DOCS_DELETER = ApplicationPrincipal(
-    app="docs-operator",
-    key_id="key-docs-operator",
-    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, tag_resource("docs"))}),
-)
-
 _OTHER_DELETER = ApplicationPrincipal(
     app="other-operator",
-    key_id="key-other-operator",
-    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, tag_resource("other"))}),
+    key_id="key-other",
+    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, "collection:999")}),
 )
 
 
@@ -219,8 +210,6 @@ def test_provenance_append_persists_next_ordinal_across_retry_and_restart(
     service, config = _service(tmp_path)
     opened = service.create_or_resume(
         idempotency_key="bounded-provenance-append",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -314,14 +303,6 @@ def _service_with_archive_objects(
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     config = RuntimeConfig(database_url=database_url, archive_scrypt_work_factor=1)
     initialize_db(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at="2026-08-08T00:00:00.000000Z",
-            )
-        )
     archive_store = MemoryArchiveStore()
     resumable = MemoryResumableStore()
     root = MemoryImmutableStore()
@@ -370,14 +351,6 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
 def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: Path) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
     initialize_db(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at="2026-08-08T00:00:00.000000Z",
-            )
-        )
     passphrases = {
         "collection-test-key-v1": "first archive secret",
         "collection-test-key-v2": "second archive secret",
@@ -405,8 +378,6 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
 
     first = service("collection-test-key-v1").create_or_resume(
         idempotency_key="before-rotation",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -417,8 +388,6 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
     rotated = service("collection-test-key-v2")
     resumed = rotated.create_or_resume(
         idempotency_key="before-rotation",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -463,8 +432,6 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
     archive_store.new_archive_prefix = "archives/memory/reencrypted-copy"
     after_rotation = rotated.create_or_resume(
         idempotency_key="after-rotation",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -513,14 +480,6 @@ def test_restore_required_ingress_commits_encrypted_cache_with_initial_lease(
         archive_stores={"archive": archive},
     )
     initialize_db(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at="2026-08-08T00:00:00.000000Z",
-            )
-        )
     archive_resumable = MemoryResumableStore()
     cache = _MemoryResumableCache()
     binding = replace(
@@ -546,8 +505,6 @@ def test_restore_required_ingress_commits_encrypted_cache_with_initial_lease(
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(
         idempotency_key="deep-cache-upload",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -670,8 +627,6 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     )
     opened = service.create_or_resume(
         idempotency_key="mixed-provenance-upload",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -955,14 +910,9 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         )
 
 
-@pytest.mark.parametrize(
-    "tags",
-    [pytest.param(("docs",), id="tagged"), pytest.param((), id="untagged")],
-)
 @pytest.mark.parametrize("custody_mode", ("producer-retained", "custody-transfer"))
 def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     tmp_path: Path,
-    tags: tuple[str, ...],
     custody_mode: str,
 ) -> None:
     service, config, _resumable, immutable = _service_with_archive_objects(tmp_path)
@@ -971,8 +921,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
 
     opened = service.create_or_resume(
         idempotency_key="upload-1",
-        initial_tag=(tags[0] if tags else None),
-        tag_set_identity_sha256=tag_set_identity(sorted(tags)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -981,18 +929,12 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         provenance_omission_reason="fixture does not exercise source observation",
         custody_mode=custody_mode,
     )
-    assert opened["tag_count"] == len(tags)
-    assert service.list_tags(int(opened["collection_id"]), page_size=100, position=None)[
-        "tags"
-    ] == [{"tag": tag} for tag in tags]
     assert opened["custody_mode"] == custody_mode
     assert (opened["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     collection_id = int(opened["collection_id"])
     with pytest.raises(Conflict, match="idempotency identity changed"):
         service.create_or_resume(
             idempotency_key="upload-1",
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source="other-fixture",
             archive_store=None,
             initiator=_CREATOR,
@@ -1063,7 +1005,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert queued["archive_next_attempt_at"] is not None
     finalized = _process_until(service, collection_id)
     assert finalized["state"] == "finalized"
-    assert finalized["tag_count"] == len(tags)
     assert finalized["custody"] == {"state": "complete"}
     assert finalized["custody_mode"] == custody_mode
     assert (
@@ -1087,9 +1028,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         assert (collection.file_count, collection.file_bytes) == (1, len(content))
         file = session.get(CollectionFileRecord, (collection_id, "document.txt"))
         assert file is not None and file.provenance_status == "omitted"
-        docs = session.get(TagRecord, "docs")
-        assert docs is not None
-        assert docs.collection_count == (1 if tags else 0)
         objects = list(
             session.query(CollectionArchiveObjectRecord)
             .filter(CollectionArchiveObjectRecord.collection_id == collection_id)
@@ -1130,8 +1068,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
 
     resumed = service.create_or_resume(
         idempotency_key="upload-1",
-        initial_tag=(tags[0] if tags else None),
-        tag_set_identity_sha256=tag_set_identity(sorted(tags)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1142,28 +1078,12 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     )
     assert resumed["collection_id"] == collection_id
     assert resumed["state"] == "finalized"
-    changed_tags = () if tags else ("docs",)
-    with pytest.raises(Conflict, match="idempotency identity changed"):
-        service.create_or_resume(
-            idempotency_key="upload-1",
-            initial_tag=(changed_tags[0] if changed_tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(changed_tags)),
-            ingest_source="fixture",
-            archive_store=None,
-            initiator=_CREATOR,
-            event_context=None,
-            provenance_mode="omitted",
-            provenance_omission_reason="fixture does not exercise source observation",
-            custody_mode=custody_mode,
-        )
     changed_custody_mode = (
         "custody-transfer" if custody_mode == "producer-retained" else "producer-retained"
     )
     with pytest.raises(Conflict, match="idempotency identity changed"):
         service.create_or_resume(
             idempotency_key="upload-1",
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source="fixture",
             archive_store=None,
             initiator=_CREATOR,
@@ -1175,8 +1095,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     with pytest.raises(Conflict, match="idempotency identity changed"):
         service.create_or_resume(
             idempotency_key="upload-1",
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source="other-fixture",
             archive_store=None,
             initiator=_CREATOR,
@@ -1188,8 +1106,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     with pytest.raises(Conflict, match="idempotency identity changed"):
         service.create_or_resume(
             idempotency_key="upload-1",
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source="fixture",
             archive_store=None,
             initiator=_CREATOR,
@@ -1201,8 +1117,6 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     with pytest.raises(Conflict, match="idempotency identity changed"):
         service.create_or_resume(
             idempotency_key="upload-1",
-            initial_tag=(tags[0] if tags else None),
-            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source="fixture",
             archive_store=None,
             initiator=_CREATOR,
@@ -1221,8 +1135,6 @@ def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(
         idempotency_key="leased-final-tail",
-        initial_tag=None,
-        tag_set_identity_sha256=tag_set_identity(()),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1251,8 +1163,6 @@ def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
 
     resumed = service.create_or_resume(
         idempotency_key="leased-final-tail",
-        initial_tag=None,
-        tag_set_identity_sha256=tag_set_identity(()),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1298,8 +1208,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
     contents = {"a.txt": b"first", "b.txt": b"second"}
     opened = service.create_or_resume(
         idempotency_key="custody-transfer",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1349,9 +1257,7 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         assert (upload.custodied_file_count, upload.custodied_file_bytes) == (1, 5)
 
     service.require_read_access(collection_id, _DELETER)
-    service.require_read_access(collection_id, _DOCS_DELETER)
     service.require_discard_access(collection_id, _DELETER)
-    service.require_discard_access(collection_id, _DOCS_DELETER)
     with pytest.raises(NotFound):
         service.require_read_access(collection_id, _OTHER_DELETER)
     with pytest.raises(NotFound):
@@ -1362,7 +1268,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
                 page_size=100,
                 position=None,
                 q=None,
-                tag=None,
                 state=None,
                 sort="id",
                 order="asc",
@@ -1377,22 +1282,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
                 page_size=100,
                 position=None,
                 q=None,
-                tag=None,
-                state=None,
-                sort="id",
-                order="asc",
-                principal=_DOCS_DELETER,
-            )["uploads"]
-        )
-        == 1
-    )
-    assert (
-        len(
-            service.list(
-                page_size=100,
-                position=None,
-                q=None,
-                tag=None,
                 state=None,
                 sort="id",
                 order="asc",
@@ -1412,8 +1301,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
 
     resumed = service.create_or_resume(
         idempotency_key="custody-transfer",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1484,8 +1371,6 @@ def test_failed_orphan_cleanup_remains_visible_and_exactly_retryable(
     service, config = _service(tmp_path)
     opened = service.create_or_resume(
         idempotency_key="failed-discard",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1544,8 +1429,6 @@ def test_completion_uses_the_incremental_commitment_without_inventory_rescan(
     )
     opened = service.create_or_resume(
         idempotency_key="bounded-completion",
-        initial_tag=None,
-        tag_set_identity_sha256=tag_set_identity(()),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1590,8 +1473,6 @@ def test_completion_requires_volume_plans_to_match_registered_file_identities(
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(
         idempotency_key="stale-plan-upload",
-        initial_tag=None,
-        tag_set_identity_sha256=tag_set_identity(()),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1645,8 +1526,6 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
     part_count, part_commitment = ordered_raw_part_commitment((sha256,))
     opened = service.create_or_resume(
         idempotency_key="raw-source-identity",
-        initial_tag=None,
-        tag_set_identity_sha256=tag_set_identity(()),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -1704,8 +1583,6 @@ def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(
         idempotency_key="restart-upload",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_CREATOR,

@@ -180,7 +180,7 @@ def test_application_authentication_uses_the_public_error_contract() -> None:
             forbidden = await client.post(
                 "/v1/collection-upload-sessions",
                 headers={"Authorization": "Bearer reader-token"},
-                json={"idempotency_key": "example", "tags": ["example"]},
+                json={"idempotency_key": "example"},
             )
             assert forbidden.status_code == 403
             assert forbidden.json() == {

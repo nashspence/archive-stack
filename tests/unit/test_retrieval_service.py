@@ -12,19 +12,19 @@ from riverhog_api_client.source_hashing import hash_raw_source_chunks
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     RETRIEVAL_MANAGE,
-    TAG_PREFIX,
     ApplicationAccess,
     ApplicationPrincipal,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
     CollectionArchiveFileObjectRecord,
     RetrievalJobRecord,
     RetrievalPlanObjectRecord,
     RetrievalPlanPlacementRecord,
     RetrievalPlanRecord,
-    TagRecord,
 )
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
@@ -36,7 +36,6 @@ from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import CollectionUploadRawDigestBatchDocument
 from riverhog_protocol.errors import Conflict, NotFound, PreconditionFailed
 from riverhog_protocol.manifest import collection_content_identity
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import select
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
@@ -46,6 +45,7 @@ from tests.unit.test_archive_root import MemoryImmutableStore
 from tests.unit.test_pack_upload import MemoryResumableStore
 
 MIB = 1024 * 1024
+GROUP_ID = "a" * 64
 
 
 class MemoryArchiveRangeStore:
@@ -313,15 +313,6 @@ def _seed_collection(
         retrieval_pending_timeout=pending_timeout or timedelta(hours=72),
     )
     initialize_db(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at="2026-08-08T00:00:00.000000Z",
-            )
-        )
-
     resumable = MemoryResumableStore()
     ranges = MemoryArchiveRangeStore(resumable)
     root_store = MemoryImmutableStore()
@@ -348,8 +339,6 @@ def _seed_collection(
     )
     opened = uploads.create_or_resume(
         idempotency_key="upload-1",
-        initial_tag="docs",
-        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_creator(),
@@ -428,6 +417,29 @@ def _seed_collection(
         assert uploads.process_due_finalizations(limit=1) == 1
     else:
         raise AssertionError("bounded collection finalization did not terminate")
+
+    with session_scope(make_session_factory(database_url)) as session:
+        session.add(
+            CollectionAccessGroupRecord(
+                id=GROUP_ID,
+                creation_idempotency_key="docs",
+                created_by_app="fixture",
+                display_label="docs",
+                status="active",
+                authorization_revision=1,
+                created_at="2026-08-08T00:00:00.000000Z",
+                updated_at="2026-08-08T00:00:00.000000Z",
+                collection_count=1,
+            )
+        )
+        session.add(
+            CollectionAccessGroupMembershipRecord(
+                collection_id=collection_id,
+                group_id=GROUP_ID,
+                added_by_app="fixture",
+                added_at="2026-08-08T00:00:00.000000Z",
+            )
+        )
 
     retrieval = SqlAlchemyRetrievalService(
         config,
@@ -1004,7 +1016,7 @@ def test_ready_retrieval_renewal_extends_its_cache_lease(tmp_path: Path) -> None
         assert service.cache_status()["protected_objects"] == 1
 
 
-def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -> None:
+def test_cache_status_list_and_show_respect_catalog_group_access(tmp_path: Path) -> None:
     cache = MemoryRetrievalCache()
     service, collection_id, _ranges, _store = _seed_collection(
         tmp_path,
@@ -1017,12 +1029,12 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
     permitted = ApplicationPrincipal(
         app="indexer",
         key_id="indexer-key",
-        access=frozenset({ApplicationAccess(CATALOG_READ, f"{TAG_PREFIX}docs")}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"group:{GROUP_ID}")}),
     )
     denied = ApplicationPrincipal(
         app="outsider",
         key_id="outsider-key",
-        access=frozenset({ApplicationAccess(CATALOG_READ, f"{TAG_PREFIX}other")}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"group:{'b' * 64}")}),
     )
 
     status = service.cache_status(principal=permitted)
@@ -1030,7 +1042,6 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
         page_size=25,
         position=None,
         q=None,
-        tag="docs",
         sort="cached_at",
         order="desc",
         principal=permitted,
@@ -1039,7 +1050,6 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
         page_size=25,
         position=None,
         q=None,
-        tag="docs",
         collection_id=collection_id,
         source_store="ARCHIVE",
         state="READY",
@@ -1062,7 +1072,6 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
     assert listed["_next_position"] is None
     assert filtered["objects"] == listed["objects"]
     assert filtered["filters"] == {
-        "tag": "docs",
         "collection_id": collection_id,
         "source_store": "archive",
         "cache_store": None,
@@ -1080,7 +1089,6 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
             page_size=25,
             position=None,
             q=None,
-            tag=None,
             sort="cached_at",
             order="desc",
             principal=denied,

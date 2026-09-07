@@ -8,7 +8,6 @@
       "id": "ftp-intake",
       "root": "/intake/ftp",
       "ingest_source": "ftp:example-intake",
-      "tags": ["example-intake", "stove0-video-archive"],
       "close_mode": "stable",
       "stable_seconds": 30,
       "max_files": 1000,

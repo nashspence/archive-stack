@@ -16,12 +16,10 @@ from riverhog_protocol import (
     PortableCollectionInventoryPage,
     portable_collection_inventory_identity,
 )
-from riverhog_protocol.errors import InvalidState
 from typer.testing import CliRunner
 
 COLLECTION_ID = 1
 CREATED_AT = "2026-07-19T20:55:09.123456Z"
-PROJECTION_NAME = "20260719T205509Z--1"
 CONTENT = b"locally materialized archive file\n"
 SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {
@@ -92,7 +90,6 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_protocol.errors", "NotFound"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
-        ("riverhog_protocol.paths", "normalize_tag"),
         ("riverhog_protocol.transport", "RETRIEVAL_FILE_BATCH_MAX"),
         ("riverhog_provenance", "list_provenance_observers"),
         ("riverhog_provenance", "resolve_provenance_observer"),
@@ -147,7 +144,6 @@ class FakeApi:
         self.job_state = "ready"
         self.selection = [(COLLECTION_ID, "notes/one.txt")]
         self.restore_paths: set[str] = set()
-        self.tags = ["docs"]
         self.catalog_revision = 0
 
     def __enter__(self) -> FakeApi:
@@ -180,28 +176,12 @@ class FakeApi:
             complete=True,
         )
 
-    def get_collection_tags(
-        self, collection_id: int, *, page_size: int, page_token: str | None
-    ) -> dict[str, object]:
-        assert collection_id == COLLECTION_ID
-        assert (page_size, page_token) == (100, None)
-        return {
-            "collection_id": collection_id,
-            "metadata_revision": 1,
-            "inventory_identity": _inventory()[2],
-            "tag_count": len(self.tags),
-            "page_size": page_size,
-            "next_page_token": None,
-            "tags": list(self.tags),
-        }
-
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
         _header, files, inventory_identity = _inventory()
         return {
             "id": collection_id,
             "created_at": CREATED_AT,
-            "tag_count": len(self.tags),
             "inventory_identity": inventory_identity,
             "files": len(files),
             "bytes": sum(file.bytes for file in files),
@@ -231,10 +211,6 @@ class FakeApi:
                 ],
             }
         return {"cursor": after, "changes": []}
-
-    def replace_tags(self, *tags: str) -> None:
-        self.tags = sorted(tags)
-        self.catalog_revision += 1
 
     def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
         self.selection = list(files)
@@ -375,19 +351,9 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     assert synced.exit_code == 0
     assert output.read_bytes() == CONTENT
     assert (target / str(COLLECTION_ID) / "notes/two.txt").read_bytes() == SECOND_CONTENT
-    projection = target / "by-tag" / "docs" / PROJECTION_NAME
-    assert projection.is_symlink()
-    assert projection.resolve() == target / str(COLLECTION_ID)
     assert api.downloaded_files == ["notes/one.txt", "notes/two.txt"]
     assert api.acknowledged == ["job-1"]
     assert runner.invoke(local_materialization.local_app, ["audit"]).exit_code == 0
-
-    projection.unlink()
-    audit = runner.invoke(local_materialization.local_app, ["audit"])
-    assert audit.exit_code == 1
-    assert f"projection missing: by-tag/docs/{PROJECTION_NAME}" in audit.stdout
-    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
-    assert projection.is_symlink()
 
     output.write_bytes(b"unexpected local bytes")
     repaired = runner.invoke(local_materialization.local_app, ["repair"])
@@ -404,7 +370,6 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
 
     assert after_deletion.exit_code == 0
     assert output.read_bytes() == CONTENT
-    assert projection.is_symlink()
     assert "remote-deleted" in listed.stdout
 
 
@@ -509,7 +474,6 @@ def test_local_removal_cancels_active_retrieval_before_changing_desired_state(
     removed = runner.invoke(local_materialization.local_app, ["remove", str(COLLECTION_ID)])
 
     assert removed.exit_code == 0
-    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
     assert api.canceled == ["job-1"]
     assert (
         runner.invoke(local_materialization.local_app, ["list"]).stdout
@@ -602,46 +566,6 @@ def test_local_evict_removes_retained_nested_collection_tree(
 
     assert evicted.exit_code == 0
     assert not (target / str(COLLECTION_ID)).exists()
-    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
-
-
-def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    target = tmp_path / "local"
-    api = FakeApi()
-    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
-    _prepare_local(target)
-    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
-    runner = CliRunner()
-
-    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
-    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
-    collection_dir = target / "1"
-
-    api.replace_tags("photos", "reviewed")
-    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
-
-    assert collection_dir.joinpath("notes/one.txt").read_bytes() == CONTENT
-    assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
-    for tag in ("photos", "reviewed"):
-        link = target / "by-tag" / tag / PROJECTION_NAME
-        assert link.is_symlink()
-        assert link.resolve() == collection_dir
-
-    api.replace_tags()
-    assert runner.invoke(local_materialization.local_app, ["sync"]).exit_code == 0
-
-    assert not (target / "by-tag" / "photos").exists()
-    assert not (target / "by-tag" / "reviewed").exists()
-    untagged = target / "untagged" / PROJECTION_NAME
-    assert untagged.is_symlink()
-    assert untagged.resolve() == collection_dir
-
-
-def test_local_projection_name_depends_only_on_immutable_collection_identity() -> None:
-    assert local_materialization._projection_name(COLLECTION_ID, CREATED_AT) == PROJECTION_NAME
 
 
 def test_local_list_uses_standard_human_json_and_id_views(
@@ -656,10 +580,10 @@ def test_local_list_uses_standard_human_json_and_id_views(
     runner = CliRunner()
     assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
 
-    human = runner.invoke(local_materialization.local_app, ["list", "--query", "docs"])
+    human = runner.invoke(local_materialization.local_app, ["list", "--query", "desired"])
     machine = runner.invoke(
         local_materialization.local_app,
-        ["list", "--query", "docs", "--json"],
+        ["list", "--query", "desired", "--json"],
     )
     identifiers = runner.invoke(
         local_materialization.local_app,
@@ -669,7 +593,6 @@ def test_local_list_uses_standard_human_json_and_id_views(
     assert human.exit_code == 0
     assert "local collections: 1 in this page; next page token: -" in human.stdout
     assert "status=desired" in human.stdout
-    assert "tags=1" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout) == {
         "collections": [
@@ -679,13 +602,12 @@ def test_local_list_uses_standard_human_json_and_id_views(
                 "created_at": CREATED_AT,
                 "files": 2,
                 "status": "desired",
-                "tag_count": 1,
             }
         ],
         "order": "asc",
         "page_size": 25,
         "next_page_token": None,
-        "query": "docs",
+        "query": "desired",
         "sort": "collection_id",
     }
     assert identifiers.exit_code == 0
@@ -719,11 +641,6 @@ def test_local_list_pages_and_sorts_database_aggregates(
                 files=_files,
                 next_cursor=None,
                 complete=True,
-            )
-            local_materialization._replace_local_tags(
-                db,
-                collection_id,
-                iter(({"tag": "docs"},)),
             )
         db.commit()
     finally:
@@ -773,24 +690,3 @@ def test_local_list_pages_and_sorts_database_aggregates(
     assert payload["collections"][0]["bytes"] == 200
     assert all_ids.exit_code == 0
     assert all_ids.stdout == "2\n3\n1\n"
-
-
-def test_local_projection_refuses_an_unmanaged_root_symlink(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    target = tmp_path / "local"
-    elsewhere = tmp_path / "elsewhere"
-    target.mkdir()
-    elsewhere.mkdir()
-    (target / "by-tag").symlink_to(elsewhere, target_is_directory=True)
-    api = FakeApi()
-    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
-    _prepare_local(target)
-    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
-
-    result = CliRunner().invoke(local_materialization.local_app, ["sync"])
-
-    assert result.exit_code == 1
-    assert isinstance(result.exception, InvalidState)
-    assert "projection root must not be a symlink" in str(result.exception)

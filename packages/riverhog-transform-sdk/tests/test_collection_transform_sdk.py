@@ -783,7 +783,6 @@ def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
         adapter_id="test-transform/v1",
         adapter_version="1",
         ingest_source="transform:test",
-        tags=("archive/camera",),
     ).publish_inputs((stream,), source_event_id="event-1")
 
     assert receipt.collection_id == 7
@@ -823,7 +822,6 @@ def test_producer_batches_large_exact_manifests_without_limiting_collection_size
         adapter_id="test-transform/v1",
         adapter_version="1",
         ingest_source="transform:test",
-        tags=("archive/audio",),
     ).publish_inputs(streams, source_event_id="event-many")
 
     assert receipt.collection_id == 7
@@ -907,7 +905,6 @@ def test_producer_builds_provenance_after_exact_stream_verification(
         adapter_id="test-transform/v1",
         adapter_version="1",
         ingest_source="transform:test",
-        tags=("archive/camera",),
     ).publish_inputs(
         (
             ProducerStream(
@@ -1120,7 +1117,6 @@ def test_producer_stream_rejects_mutation_between_hash_and_upload(
             adapter_id="test-transform/v1",
             adapter_version="1",
             ingest_source="transform:test",
-            tags=("archive/camera",),
         ).publish_inputs((stream,), source_event_id="event-1")
 
 
@@ -1159,7 +1155,6 @@ def test_producer_file_rejects_mutation_between_hash_and_upload(
             adapter_id="test-transform/v1",
             adapter_version="1",
             ingest_source="transform:test",
-            tags=("archive/camera",),
         ).publish(
             (ProducerFile(source=source, path="video/output.mkv"),),
             source_event_id="event-1",

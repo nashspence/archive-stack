@@ -10,23 +10,21 @@ from riverhog_application_access import (
     ARCHIVES_MANAGE,
     ARCHIVES_READ,
     CATALOG_READ,
+    COLLECTION_ACCESS_GROUPS_MANAGE,
     COLLECTION_PREFIX,
     COLLECTION_SCOPED_PERMISSIONS,
-    COLLECTION_TAGS_MANAGE,
     COLLECTION_TRANSFORMS_CONTROL,
     COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
     EVENTS_READ,
     EVENTS_READ_ALL,
+    GROUP_PREFIX,
     KEYS_MANAGE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
     QUOTAS_MANAGE,
     RETRIEVAL_MANAGE,
-    TAG_PREFIX,
-    TAGS_CREATE,
-    TAGS_DELETE,
     ApplicationAccess,
     ApplicationAccessError,
     access_covers,
@@ -34,8 +32,8 @@ from riverhog_application_access import (
     resource_covers,
 )
 from riverhog_application_access import collection_resource as _collection_resource
+from riverhog_application_access import group_resource as _group_resource
 from riverhog_application_access import normalize_access as _normalize_access
-from riverhog_application_access import tag_resource as _tag_resource
 from riverhog_protocol.errors import BadRequest
 
 
@@ -55,9 +53,9 @@ def collection_resource(collection_id: int) -> str:
         raise BadRequest(str(exc)) from exc
 
 
-def tag_resource(tag: str) -> str:
+def group_resource(group_id: str) -> str:
     try:
-        return _tag_resource(tag)
+        return _group_resource(group_id)
     except ApplicationAccessError as exc:
         raise BadRequest(str(exc)) from exc
 
@@ -69,6 +67,7 @@ class ApplicationPrincipal:
     access: frozenset[ApplicationAccess]
     unrestricted_delegation: bool = False
     artifact_scope_capability_id: str | None = None
+    authorization_view_identity: str | None = None
 
     @property
     def has_artifact_scope(self) -> bool:
@@ -85,8 +84,8 @@ class ApplicationPrincipal:
     def allows_collection(self, permission: str, collection_id: int) -> bool:
         return self.allows(permission, collection_resource(collection_id))
 
-    def allows_tag(self, permission: str, tag: str) -> bool:
-        return self.allows(permission, tag_resource(tag))
+    def allows_group(self, permission: str, group_id: str) -> bool:
+        return self.allows(permission, group_resource(group_id))
 
     def can_grant(self, access: Iterable[ApplicationAccess | tuple[str, str]]) -> bool:
         requested = normalize_access(access)
@@ -110,7 +109,7 @@ __all__ = [
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",
-    "COLLECTION_TAGS_MANAGE",
+    "COLLECTION_ACCESS_GROUPS_MANAGE",
     "COLLECTION_TRANSFORMS_CONTROL",
     "COLLECTION_TRANSFORMS_EXECUTE",
     "EVENTS_READ",
@@ -120,12 +119,10 @@ __all__ = [
     "PROVENANCE_READ",
     "QUOTAS_MANAGE",
     "RETRIEVAL_MANAGE",
-    "TAGS_CREATE",
-    "TAGS_DELETE",
-    "TAG_PREFIX",
+    "GROUP_PREFIX",
     "access_covers",
     "collection_resource",
     "normalize_access",
     "resource_covers",
-    "tag_resource",
+    "group_resource",
 ]

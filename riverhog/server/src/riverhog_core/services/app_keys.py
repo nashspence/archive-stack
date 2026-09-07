@@ -11,7 +11,13 @@ from riverhog_application_access import (
     validate_application_key_id,
     validate_application_name,
 )
-from riverhog_protocol import ApplicationAccessSort, ApplicationKeySort, ApplicationSort, SortOrder
+from riverhog_protocol import (
+    ApplicationAccessSort,
+    ApplicationKeySort,
+    ApplicationSort,
+    SortOrder,
+    canonical_json_sha256,
+)
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select, tuple_
 from sqlalchemy.orm import Session
@@ -31,10 +37,10 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
     AppKeyRecord,
+    CollectionAccessGroupRecord,
     CollectionRecord,
     KeyDownloadReservationRecord,
     RetrievalJobRecord,
-    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -122,10 +128,17 @@ class SqlAlchemyAppKeyService:
             if _status(record, now=now) != "active":
                 return None
             record.last_used_at = now
+            access = tuple(_record_access(session, record.id))
             return ApplicationPrincipal(
                 app=record.app,
                 key_id=record.id,
-                access=frozenset(_record_access(session, record.id)),
+                access=frozenset(access),
+                authorization_view_identity=_authorization_view_identity(
+                    session,
+                    app=record.app,
+                    key_id=record.id,
+                    access=access,
+                ),
             )
 
     def create(
@@ -911,16 +924,60 @@ def _require_access_targets(session: Session, access: Sequence[ApplicationAccess
     for current in access:
         if current.resource == "*":
             continue
-        if current.resource.startswith("tag:"):
-            tag = current.resource.removeprefix("tag:")
-            record = session.scalar(select(TagRecord).where(TagRecord.id == tag).with_for_update())
+        if current.resource.startswith("group:"):
+            group_id = current.resource.removeprefix("group:")
+            record = session.scalar(
+                select(CollectionAccessGroupRecord)
+                .where(CollectionAccessGroupRecord.id == group_id)
+                .with_for_update()
+            )
             if record is None:
-                raise NotFound(f"tag not found: {tag}")
+                raise NotFound(f"collection access group not found: {group_id}")
             continue
         collection_id = int(current.resource.removeprefix("collection:"))
         collection = session.get(CollectionRecord, collection_id)
         if collection is None or not collection.is_published:
             raise NotFound(f"collection not found: {collection_id}")
+
+
+def _authorization_view_identity(
+    session: Session,
+    *,
+    app: str,
+    key_id: str,
+    access: Sequence[ApplicationAccess],
+) -> str:
+    group_ids = sorted(
+        current.resource.removeprefix("group:")
+        for current in access
+        if current.resource.startswith("group:")
+    )
+    group_rows = {
+        str(group_id): (str(status), int(revision))
+        for group_id, status, revision in session.execute(
+            select(
+                CollectionAccessGroupRecord.id,
+                CollectionAccessGroupRecord.status,
+                CollectionAccessGroupRecord.authorization_revision,
+            ).where(CollectionAccessGroupRecord.id.in_(group_ids))
+        )
+    }
+    return canonical_json_sha256(
+        {
+            "format": "riverhog-authorization-view/v1",
+            "app": app,
+            "key_id": key_id,
+            "access": [_access_payload(current) for current in access],
+            "groups": [
+                {
+                    "id": group_id,
+                    "status": group_rows.get(group_id, ("missing", 0))[0],
+                    "authorization_revision": group_rows.get(group_id, ("missing", 0))[1],
+                }
+                for group_id in group_ids
+            ],
+        }
+    )
 
 
 def _require_key(session: Session, *, app: str, key_id: str) -> AppKeyRecord:

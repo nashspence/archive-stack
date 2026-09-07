@@ -422,7 +422,6 @@ class FtpAdapter:
             adapter_id="ftp/v1",
             adapter_version="1.0.0",
             ingest_source=source.ingest_source,
-            tags=source.tags,
             archive_store=source.archive_store,
             provenance_omission_reason=(
                 source.provenance_omission_reason

@@ -25,7 +25,6 @@ from riverhog_core.provenance_projection import provenance_journal_projection
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services import provenance as provenance_module
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
-from riverhog_protocol.paths import tag_set_identity
 from riverhog_provenance import (
     create_derivative_journal,
     create_observation_journal,
@@ -66,14 +65,11 @@ def _omitted_provenance_service(tmp_path: Path) -> SqlAlchemyProvenanceService:
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 provenance_mode="omitted",
                 provenance_identity=None,
                 inventory_identity="c" * 64,
-                metadata_revision=1,
-                metadata_updated_at=NOW,
                 created_by_app="fixture",
                 created_at=NOW,
                 file_count=0,
@@ -140,14 +136,11 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 provenance_mode="captured",
                 provenance_identity="b" * 64,
                 inventory_identity="c" * 64,
-                metadata_revision=1,
-                metadata_updated_at=NOW,
                 created_by_app="fixture",
                 created_at=NOW,
             )

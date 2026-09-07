@@ -28,6 +28,7 @@ from riverhog_protocol.lifecycle_events import (
     ARCHIVE_COPY_COMPLETED,
     ARCHIVE_COPY_ISSUE,
     ARCHIVE_COPY_REQUESTED,
+    COLLECTION_FINALIZED,
     MAX_LIFECYCLE_EVENT_SEQUENCE,
     RIVERHOG_EVENT_TYPES,
     validate_riverhog_event,
@@ -37,13 +38,21 @@ from time_formats import utc_timestamp_now
 from tests.unit.db_helpers import sqlite_url
 
 
-def _tag_event_data(collection_id: int, owner: str) -> dict[str, object]:
+def _collection_event_data(collection_id: int, owner: str) -> dict[str, object]:
     return {
         "collection_id": collection_id,
         "collection_created_at": utc_timestamp_now(),
-        "collection_tag_count": 0,
         "actor": {"app": "riverhog"},
         "initiator": {"app": owner},
+    }
+
+
+def _finalized_event_data(collection_id: int, owner: str) -> dict[str, object]:
+    return {
+        **_collection_event_data(collection_id, owner),
+        "files_total": 1,
+        "bytes_total": 2,
+        "archive_root_sha256": "a" * 64,
     }
 
 
@@ -84,7 +93,7 @@ def test_archive_copy_event_type_binds_its_exact_lifecycle_state(
     extra: dict[str, str],
 ) -> None:
     data = {
-        **_tag_event_data(1, "operator"),
+        **_collection_event_data(1, "operator"),
         "source_store": "source",
         "destination_store": "destination",
         "state": state,
@@ -108,16 +117,16 @@ def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None
     events = SqlAlchemyLifecycleEventService(config)
     events.emit(
         owner_app="alpha",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="1",
-        data=_tag_event_data(1, "alpha"),
+        data=_finalized_event_data(1, "alpha"),
         context_json='{"route":"phone"}',
     )
     events.emit(
         owner_app="alpha",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="2",
-        data=_tag_event_data(2, "alpha"),
+        data=_finalized_event_data(2, "alpha"),
         context_json='{"route":"desktop"}',
     )
     expires_at = "2026-08-02T00:00:00.000000Z"
@@ -146,9 +155,9 @@ def test_event_page_omits_expired_context_without_performing_cleanup(tmp_path: P
     events = SqlAlchemyLifecycleEventService(config)
     events.emit(
         owner_app="alpha",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="1",
-        data=_tag_event_data(1, "alpha"),
+        data=_finalized_event_data(1, "alpha"),
         context_json='{"route":"phone"}',
         context_expires_at="2000-01-01T00:00:00.000000Z",
     )
@@ -173,17 +182,17 @@ def test_expired_context_reclamation_is_bounded_and_restartable(tmp_path: Path) 
     for subject in ("1", "2", "3"):
         events.emit(
             owner_app="alpha",
-            type="collection.tags_changed",
+            type=COLLECTION_FINALIZED,
             subject=subject,
-            data=_tag_event_data(int(subject), "alpha"),
+            data=_finalized_event_data(int(subject), "alpha"),
             context_json='{"route":"phone"}',
             context_expires_at="2000-01-01T00:00:00.000000Z",
         )
     events.emit(
         owner_app="alpha",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="4",
-        data=_tag_event_data(4, "alpha"),
+        data=_finalized_event_data(4, "alpha"),
         context_json='{"route":"desktop"}',
         context_expires_at="2999-01-01T00:00:00.000000Z",
     )
@@ -232,15 +241,15 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
     )
     events.emit(
         owner_app="alpha",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="1",
-        data=_tag_event_data(1, "alpha"),
+        data=_finalized_event_data(1, "alpha"),
     )
     events.emit(
         owner_app="beta",
-        type="collection.tags_changed",
+        type=COLLECTION_FINALIZED,
         subject="2",
-        data=_tag_event_data(2, "beta"),
+        data=_finalized_event_data(2, "beta"),
     )
     container = SimpleNamespace(app_keys=app_keys, lifecycle_events=events)
     api = FastAPI()

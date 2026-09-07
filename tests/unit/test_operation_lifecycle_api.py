@@ -15,12 +15,12 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import CollectionUploadRecord
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
@@ -33,7 +33,6 @@ from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventServ
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
-from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_protocol import CollectionUploadUnitWorkDocument
 from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.collection_workflows import (
@@ -99,7 +98,9 @@ def _container(tmp_path: Path) -> ServiceContainer:
         collection_access=SqlAlchemyCollectionAccessService(
             config, session_factory=session_factory
         ),
-        tags=SqlAlchemyTagService(config, session_factory=session_factory),
+        access_groups=SqlAlchemyCollectionAccessGroupService(
+            config, session_factory=session_factory
+        ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
@@ -117,11 +118,6 @@ def _container(tmp_path: Path) -> ServiceContainer:
             session_factory=session_factory,
         ),
         search=SqlAlchemySearchService(config, session_factory=session_factory),
-        archive_maintenance=SqlAlchemyArchiveMaintenanceService(
-            config,
-            stores,
-            session_factory=session_factory,
-        ),
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             stores,
@@ -305,12 +301,29 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     rotated = operator.rotate_app_key("qualification-reader", delegated_id)
     operator.revoke_app_key("qualification-reader", str(rotated["id"]))
 
-    operator.create_tag("docs")
-    operator.create_tag("temporary")
-    assert operator.get_tag("docs")["id"] == "docs"
-    assert len(operator.list_tags(q="doc", page_size=100, page_token=None)["tags"]) == 1
-    tag_plan = operator.plan_tag_deletion("temporary")
-    operator.delete_tag("temporary", challenge=str(tag_plan["challenge"]))
+    docs_group = operator.create_collection_access_group(
+        idempotency_key="docs",
+        display_label="Documents",
+    )
+    temporary_group = operator.create_collection_access_group(
+        idempotency_key="temporary",
+        display_label="Temporary",
+    )
+    docs_group_id = str(docs_group["id"])
+    assert operator.get_collection_access_group(docs_group_id)["id"] == docs_group_id
+    assert (
+        len(
+            operator.list_collection_access_groups(q="document", page_size=100, page_token=None)[
+                "groups"
+            ]
+        )
+        == 1
+    )
+    operator.update_collection_access_group(
+        str(temporary_group["id"]),
+        display_label="Temporary",
+        status="disabled",
+    )
 
     source_root = tmp_path / "source"
     source_root.mkdir()
@@ -336,15 +349,11 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     opened = operator.create_or_resume_collection_upload_session(
         "qualification-upload",
-        ["docs"],
         ingest_source="disposable-test",
         archive_store="primary",
     )
     assert opened["resumed"] is False
     collection_id = int(opened["collection_id"])
-    operator.create_tag("staged")
-    operator.add_collection_upload_session_tag(collection_id, "staged")
-    operator.remove_collection_upload_session_tag(collection_id, "staged")
     assert (
         len(operator.list_collection_upload_sessions(page_size=100, page_token=None)["uploads"])
         == 1
@@ -415,8 +424,21 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     _finalize_upload(container, operator, collection_id)
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
+    operator.add_collection_access_group_member(docs_group_id, collection_id)
     assert (
-        len(operator.get_collection_tags(collection_id, page_size=100, page_token=None)["tags"])
+        len(
+            operator.list_collection_access_group_members(
+                docs_group_id, page_size=100, page_token=None
+            )["members"]
+        )
+        == 1
+    )
+    assert (
+        len(
+            operator.list_collection_access_groups_for_collection(
+                collection_id, page_size=100, page_token=None
+            )["groups"]
+        )
         == 1
     )
     assert (
@@ -427,10 +449,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
         == 1
     )
-    assert (
-        len(operator.list_collections(tag="docs", page_size=100, page_token=None)["collections"])
-        == 1
-    )
+    assert len(operator.list_collections(page_size=100, page_token=None)["collections"]) == 1
     assert (
         len(
             operator.search("document", collection=collection_id, page_size=100, page_token=None)[
@@ -439,13 +458,14 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
         == 1
     )
-    assert operator.get_collection_tags(collection_id, page_size=100, page_token=None)["tags"] == [
-        "docs"
-    ]
-    operator.create_tag("reviewed")
-    operator.add_collection_tag(collection_id, "reviewed")
-    operator.remove_collection_tag(collection_id, "docs")
-    operator.replace_collection_tags(collection_id, ["docs", "reviewed"])
+    operator.remove_collection_access_group_member(docs_group_id, collection_id)
+    assert (
+        operator.list_collection_access_group_members(
+            docs_group_id, page_size=100, page_token=None
+        )["members"]
+        == []
+    )
+    operator.add_collection_access_group_member(docs_group_id, collection_id)
 
     assert (
         len(
@@ -597,7 +617,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
 
     canceled_upload = operator.create_or_resume_collection_upload_session(
         "qualification-canceled-upload",
-        ["docs"],
         provenance_mode="omitted",
         provenance_omission_reason="qualification cancellation",
     )
@@ -608,7 +627,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
 
     orphaned_upload = operator.create_or_resume_collection_upload_session(
         "qualification-orphaned-upload",
-        ["docs"],
         provenance_mode="omitted",
         provenance_omission_reason="qualification orphan discard",
         custody_mode="custody-transfer",
@@ -958,7 +976,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             hashlib.sha256(b"unauthorized-output").hexdigest(),
-            [],
             ingest_source=f"transform:{execution_id}",
             provenance_mode="omitted",
             provenance_omission_reason="qualification transform evidence",
@@ -966,7 +983,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             execution_id,
-            [],
             ingest_source="transform:another-execution",
             provenance_mode="omitted",
             provenance_omission_reason="qualification transform evidence",
@@ -974,7 +990,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             execution_id,
-            [],
             ingest_source=f"transform:{execution_id}",
             archive_store="primary",
             provenance_mode="omitted",
@@ -982,14 +997,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
     target_session = target.create_or_resume_collection_upload_session(
         execution_id,
-        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )
     output_collection_id = int(target_session["collection_id"])
     replayed_target_session = target.create_or_resume_collection_upload_session(
         execution_id,
-        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )
@@ -1053,7 +1066,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert target.get_collection_upload_session(output_collection_id)["state"] == "finalized"
     replayed_output = target.create_or_resume_collection_upload_session(
         execution_id,
-        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )

@@ -30,12 +30,12 @@ from riverhog_core.runtime_config import (
     StorageAdapterRegistration,
     load_runtime_config,
 )
+from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
@@ -46,22 +46,20 @@ from riverhog_core.services.interfaces import (
     AppKeyService,
     ArchiveCopyRetirementService,
     ArchiveCopyService,
-    ArchiveMaintenanceService,
     ArchiveStoreService,
+    CollectionAccessGroupService,
     CollectionDeletionService,
     CollectionService,
     LifecycleEventService,
     ProvenanceService,
     RetrievalService,
     SearchService,
-    TagService,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.retrieval_cache import SqlAlchemyRetrievalCache
 from riverhog_core.services.search import SqlAlchemySearchService
-from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_core.stores.storage_adapter_archive_objects import (
     StorageAdapterArchiveObjectRangeStore,
     StorageAdapterArchiveResumableObjectStore,
@@ -79,14 +77,13 @@ from sqlalchemy import select
 class ServiceContainer:
     app_keys: AppKeyService
     collection_access: SqlAlchemyCollectionAccessService
-    tags: TagService
+    access_groups: CollectionAccessGroupService
     collections: CollectionService
     collection_uploads: SqlAlchemyCollectionUploadService
     collection_workflows: SqlAlchemyCollectionWorkflowService
     provenance: ProvenanceService
     collection_deletions: CollectionDeletionService
     search: SearchService
-    archive_maintenance: ArchiveMaintenanceService
     archive_copies: ArchiveCopyService
     archive_copy_retirements: ArchiveCopyRetirementService
     archive_stores: ArchiveStoreService
@@ -213,7 +210,9 @@ def _build_default_container(
             config,
             session_factory=session_factory,
         ),
-        tags=SqlAlchemyTagService(config, session_factory=session_factory),
+        access_groups=SqlAlchemyCollectionAccessGroupService(
+            config, session_factory=session_factory
+        ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
@@ -234,11 +233,6 @@ def _build_default_container(
             session_factory=session_factory,
         ),
         search=SqlAlchemySearchService(config, session_factory=session_factory),
-        archive_maintenance=SqlAlchemyArchiveMaintenanceService(
-            config,
-            archive_stores,
-            session_factory=session_factory,
-        ),
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,

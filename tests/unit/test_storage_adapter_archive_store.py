@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from riverhog_age import decrypt_age_scrypt
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     CollectionArchiveIdentity,
@@ -203,37 +202,13 @@ def _store(adapter: _MemoryAdapter) -> StorageAdapterArchiveStore:
     )
 
 
-def test_metadata_publication_keeps_archive_semantics_in_riverhog() -> None:
+def test_archive_store_uses_one_opaque_archive_namespace() -> None:
     adapter = _MemoryAdapter()
     store = _store(adapter)
-    manifest = b'{"format":"fixture/v1"}'
-    published = store.publish_collection_metadata(
-        collection_id=17,
-        archive_storage_prefix="archives/opaque",
-        manifest=manifest,
-        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
-    )
-    stored = adapter.objects[published.object_path]
-
-    config = RuntimeConfig()
-    assert (
-        decrypt_age_scrypt(
-            stored.content,
-            config.archive_passphrase_for(config.archive_active_passphrase_id),
-        )
-        == manifest
-    )
-    assert stored.placement == "immediate"
     assert store.read_mode() == "immediate"
     assert store.new_collection_archive_storage_prefix().startswith("archives/")
     assert not store.new_collection_archive_storage_prefix().startswith("archive/archives/")
-    assert set(adapter.objects) == {
-        "AGENTS.md",
-        "README.md",
-        "archives/opaque/metadata.json.age",
-    }
-    assert adapter.objects["README.md"].placement == "immediate"
-    assert adapter.objects["AGENTS.md"].placement == "immediate"
+    assert adapter.objects == {}
 
 
 def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None:

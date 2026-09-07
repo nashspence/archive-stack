@@ -30,14 +30,6 @@ INSERT INTO desired_collections VALUES(
     '2026-01-01T00:00:00.000000Z',
     0
 );
-CREATE TABLE desired_collection_tags (
-    collection_id INTEGER NOT NULL,
-    tag TEXT NOT NULL,
-    PRIMARY KEY (collection_id, tag),
-    FOREIGN KEY (collection_id) REFERENCES desired_collections(collection_id)
-        ON DELETE CASCADE
-);
-INSERT INTO desired_collection_tags VALUES(1, 'fixture');
 CREATE TABLE desired_files (
     collection_id INTEGER NOT NULL,
     path TEXT NOT NULL,

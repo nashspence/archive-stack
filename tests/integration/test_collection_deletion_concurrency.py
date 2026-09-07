@@ -25,26 +25,21 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
-    CollectionTagRecord,
     CollectionUploadRecord,
     RetrievalJobRecord,
     RetrievalPlanObjectRecord,
-    TagRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionDerivationRecord
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveStore,
     CollectionArchiveIdentity,
-    MutableManifestReceipt,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_retirements import (
     SqlAlchemyArchiveCopyRetirementService,
 )
-from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintenanceService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collection_workflows import SqlAlchemyCollectionWorkflowService
@@ -66,7 +61,6 @@ from riverhog_protocol.collection_workflows import (
     derivation_evidence_page_path,
 )
 from riverhog_protocol.errors import Conflict, NotFound
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import select, text
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
@@ -107,10 +101,7 @@ class BlockingArchiveStore:
     def __init__(self) -> None:
         self.delete_started = threading.Event()
         self.allow_delete = threading.Event()
-        self.metadata_started = threading.Event()
-        self.allow_metadata = threading.Event()
         self.deleted: list[tuple[str, ...]] = []
-        self.published_metadata: list[bytes] = []
 
     def read_mode(self) -> str:
         return "immediate"
@@ -126,28 +117,6 @@ class BlockingArchiveStore:
         if not self.allow_delete.wait(10):
             raise RuntimeError("timed out waiting to finish archive deletion")
         self.deleted.append(tuple(current.object_id for current in objects))
-
-    def publish_collection_metadata(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        manifest: bytes,
-        passphrase_id: str,
-    ) -> MutableManifestReceipt:
-        assert collection_id == COLLECTION_ID
-        assert passphrase_id == "fixture-archive-key-v1"
-        self.metadata_started.set()
-        if not self.allow_metadata.wait(10):
-            raise RuntimeError("timed out waiting to finish metadata publication")
-        self.published_metadata.append(manifest)
-        return MutableManifestReceipt(
-            object_path=f"{archive_storage_prefix}/metadata.json.age",
-            revision="metadata-version",
-            stored_bytes=len(manifest),
-            stored_sha256=hashlib.sha256(manifest).hexdigest(),
-            published_at="2026-07-18T00:00:00.000000Z",
-        )
 
     def verify_collection_archive(
         self,
@@ -174,16 +143,6 @@ class RetirementArchiveStore:
     ) -> None:
         assert objects
         self.deleted_collections.append(collection_id)
-
-    def publish_collection_metadata(
-        self,
-        *,
-        collection_id: int,
-        archive_storage_prefix: str,
-        manifest: bytes,
-        passphrase_id: str,
-    ) -> MutableManifestReceipt:
-        raise AssertionError("retirement path does not publish mutable metadata")
 
     def verify_collection_archive(
         self,
@@ -226,35 +185,16 @@ def _seed(database_url: str) -> None:
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="fixture",
-                created_at="2026-01-01T00:00:00.000000Z",
-                collection_count=1,
-            )
-        )
-        session.add(
             CollectionRecord(
                 id=COLLECTION_ID,
                 creation_idempotency_key="fixture-docs",
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
-                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="0" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-        session.add(
-            CollectionTagRecord(
-                collection_id=COLLECTION_ID,
-                tag_id="docs",
-                assigned_by_app="fixture",
-                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add(
@@ -312,8 +252,6 @@ def _seed(database_url: str) -> None:
 
 def _seed_second_input(database_url: str) -> CollectionRootIdentity:
     with session_scope(make_session_factory(database_url)) as session:
-        tag = session.get_one(TagRecord, "docs")
-        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=SECOND_COLLECTION_ID,
@@ -321,21 +259,10 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                 creation_identity_sha256="d" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="1" * 64,
-                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-        session.add(
-            CollectionTagRecord(
-                collection_id=SECOND_COLLECTION_ID,
-                tag_id="docs",
-                assigned_by_app="fixture",
-                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add(
@@ -696,8 +623,6 @@ def _seed_derived_output(
         disposition_set=disposition_set,
     )
     with session_scope(make_session_factory(database_url)) as session:
-        tag = session.get_one(TagRecord, "docs")
-        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=output_collection_id,
@@ -705,26 +630,15 @@ def _seed_derived_output(
                 creation_identity_sha256=("c" if output_collection_id == 2 else "b") * 64,
                 creation_custody_mode="producer-retained",
                 content_identity=("4" if output_collection_id == 2 else "5") * 64,
-                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity=("3" if output_collection_id == 2 else "4") * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 ingest_source=f"transform:{execution_id}",
                 created_by_app=f"transform:{execution_id}",
                 created_by_key_id=f"transform:{execution_id}",
                 created_at="2026-01-01T00:00:00.000000Z",
                 file_count=5,
                 file_bytes=len(CONTENT) + len(derivation.to_json_bytes()) + 2 + evidence_bytes,
-            )
-        )
-        session.add(
-            CollectionTagRecord(
-                collection_id=output_collection_id,
-                tag_id="docs",
-                assigned_by_app=f"transform:{execution_id}",
-                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add_all(
@@ -842,8 +756,6 @@ def _seed_multi_input_derived_output(
         disposition_set=disposition_set,
     )
     with session_scope(make_session_factory(database_url)) as session:
-        tag = session.get_one(TagRecord, "docs")
-        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=2,
@@ -851,12 +763,9 @@ def _seed_multi_input_derived_output(
                 creation_identity_sha256="c" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="4" * 64,
-                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="3" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 ingest_source=f"transform:{EXECUTION_ID}",
                 created_by_app=f"transform:{EXECUTION_ID}",
                 created_by_key_id=f"transform:{EXECUTION_ID}",
@@ -869,14 +778,6 @@ def _seed_multi_input_derived_output(
                     + 2
                     + evidence_bytes
                 ),
-            )
-        )
-        session.add(
-            CollectionTagRecord(
-                collection_id=2,
-                tag_id="docs",
-                assigned_by_app=f"transform:{EXECUTION_ID}",
-                assigned_at="2026-01-01T00:00:00.000000Z",
             )
         )
         session.add_all(
@@ -1213,8 +1114,6 @@ def test_postgres_exact_output_intent_creation_resumes_one_upload(
             uploads.append(
                 service.create_or_resume(
                     idempotency_key=EXECUTION_ID,
-                    initial_tag=None,
-                    tag_set_identity_sha256=tag_set_identity(()),
                     ingest_source=f"transform:{EXECUTION_ID}",
                     archive_store=None,
                     initiator=transform,
@@ -1650,100 +1549,6 @@ def test_postgres_multi_input_retirement_resumes_after_first_source_deletion(
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         assert session.get(CollectionRecord, SECOND_COLLECTION_ID) is None
         assert session.get(CollectionRecord, 2) is not None
-
-
-def test_metadata_publication_and_deletion_cannot_cross_collection_archive_operations(
-    database_url: str,
-) -> None:
-    _seed(database_url)
-    deletion, _retrieval, store = _services(database_url)
-    factory = make_session_factory(database_url)
-    with session_scope(factory) as session:
-        session.add(
-            CollectionMetadataPublicationRecord(
-                collection_id=COLLECTION_ID,
-                store="deep",
-                desired_revision=1,
-                state="pending",
-                attempt_count=0,
-                next_attempt_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-    publisher = SqlAlchemyArchiveMaintenanceService(
-        RuntimeConfig(database_url=database_url),
-        ArchiveStoreRegistry({"deep": _archive_store_binding(store)}),
-    )
-    deletion_plan = deletion.plan(COLLECTION_ID)
-    failures: list[BaseException] = []
-
-    def publish_metadata() -> None:
-        try:
-            assert publisher.process_due_metadata_publications(limit=1) == 1
-        except BaseException as exc:  # pragma: no cover - asserted by the parent thread
-            failures.append(exc)
-
-    thread = threading.Thread(target=publish_metadata)
-    thread.start()
-    assert store.metadata_started.wait(10)
-    try:
-        with pytest.raises(Conflict, match="plan changed"):
-            deletion.delete(
-                COLLECTION_ID,
-                challenge=str(deletion_plan["challenge"]),
-                initiator=DELETER,
-            )
-    finally:
-        store.allow_metadata.set()
-        thread.join(10)
-
-    assert not thread.is_alive()
-    assert failures == []
-    assert len(store.published_metadata) == 1
-    assert deletion.plan(COLLECTION_ID)["status"] == "ready"
-
-
-def test_deletion_marker_prevents_a_due_metadata_publication_claim(
-    database_url: str,
-) -> None:
-    _seed(database_url)
-    deletion, _retrieval, store = _services(database_url)
-    with session_scope(make_session_factory(database_url)) as session:
-        session.add(
-            CollectionMetadataPublicationRecord(
-                collection_id=COLLECTION_ID,
-                store="deep",
-                desired_revision=1,
-                state="pending",
-                attempt_count=0,
-                next_attempt_at="2026-01-01T00:00:00.000000Z",
-            )
-        )
-    publisher = SqlAlchemyArchiveMaintenanceService(
-        RuntimeConfig(database_url=database_url),
-        ArchiveStoreRegistry({"deep": _archive_store_binding(store)}),
-    )
-    challenge = str(deletion.plan(COLLECTION_ID)["challenge"])
-    failures: list[BaseException] = []
-
-    def delete_collection() -> None:
-        try:
-            deletion.delete(COLLECTION_ID, challenge=challenge, initiator=DELETER)
-            deletion.process_due(limit=1)
-        except BaseException as exc:  # pragma: no cover - asserted by the parent thread
-            failures.append(exc)
-
-    thread = threading.Thread(target=delete_collection)
-    thread.start()
-    assert store.delete_started.wait(10)
-    try:
-        assert publisher.process_due_metadata_publications(limit=1) == 0
-        assert store.published_metadata == []
-    finally:
-        store.allow_delete.set()
-        thread.join(10)
-
-    assert not thread.is_alive()
-    assert failures == []
 
 
 def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(

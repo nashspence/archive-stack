@@ -16,36 +16,38 @@ from riverhog_application_access import (
     ApplicationKeyId,
     ApplicationName,
     collection_resource,
+    group_resource,
     normalize_access,
     permission_resources,
-    tag_resource,
 )
+
+GROUP_ID = "a" * 64
 
 
 def test_public_access_contract_normalizes_and_covers_grants() -> None:
     access = normalize_access(
         (
             ApplicationAccess(EVENTS_READ_ALL),
-            ApplicationAccess(PROVENANCE_EXPORT, "tag:docs"),
+            ApplicationAccess(PROVENANCE_EXPORT, f"group:{GROUP_ID}"),
             ApplicationAccess(CATALOG_READ, "collection:42"),
         )
     )
 
     assert permission_resources(access, EVENTS_READ) == {"*"}
-    assert permission_resources(access, PROVENANCE_READ) == {"tag:docs"}
+    assert permission_resources(access, PROVENANCE_READ) == {f"group:{GROUP_ID}"}
     assert collection_resource(42) == "collection:42"
-    assert tag_resource("docs") == "tag:docs"
+    assert group_resource(GROUP_ID) == f"group:{GROUP_ID}"
 
 
 def test_public_access_models_enforce_grant_and_set_relationships() -> None:
     assert ApplicationAccessGrant(
         permission="collections:create",
-        resource="tag:incoming",
-    ).as_access() == ApplicationAccess("collections:create", "tag:incoming")
+        resource="*",
+    ).as_access() == ApplicationAccess("collections:create", "*")
 
     with pytest.raises(ApplicationAccessError, match="does not accept a scoped resource"):
-        ApplicationAccess("keys:manage", "tag:incoming")
-    with pytest.raises(ValueError, match="must target a tag"):
+        ApplicationAccess("keys:manage", f"group:{GROUP_ID}")
+    with pytest.raises(ValueError, match="does not accept a scoped resource"):
         ApplicationAccessGrant(
             permission="collections:create",
             resource="collection:1",

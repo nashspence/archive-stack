@@ -18,19 +18,21 @@ from riverhog_core.archive_safety import ARCHIVE_DATA_LOSS_WARNING
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_base import Base
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_events import begin_catalog_event
+from riverhog_core.catalog_events import (
+    begin_catalog_event,
+    snapshot_catalog_event_collection_access_groups,
+)
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
     ArchiveCopyRetirementRecord,
     CatalogEventRecord,
-    CatalogEventTagRecord,
+    CollectionAccessGroupMembershipRecord,
+    CollectionAccessGroupRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionFileRecord,
-    CollectionMetadataPublicationRecord,
     CollectionRecord,
-    CollectionTagRecord,
     CollectionUploadFileRecord,
     CollectionUploadRecord,
     RetrievalCacheLeaseRecord,
@@ -68,7 +70,6 @@ from riverhog_core.services.operation_plans import (
     plan_challenge,
 )
 from riverhog_core.services.retrieval_cache_accounting import adjust_cache_committed_bytes
-from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 
 _CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
@@ -291,50 +292,24 @@ class SqlAlchemyCollectionDeletionService:
                 is not None
             ):
                 return False
-            publication = session.scalar(
-                select(CollectionMetadataPublicationRecord)
-                .where(
-                    CollectionMetadataPublicationRecord.collection_id == collection_id,
-                    CollectionMetadataPublicationRecord.object_path.is_not(None),
+            archive = session.scalar(
+                select(CollectionArchiveObjectRecord)
+                .where(CollectionArchiveObjectRecord.collection_id == collection_id)
+                .order_by(
+                    CollectionArchiveObjectRecord.store,
+                    CollectionArchiveObjectRecord.object_order,
                 )
-                .order_by(CollectionMetadataPublicationRecord.store)
                 .limit(1)
             )
-            if publication is not None:
-                identity = _metadata_identity(publication)
-                store_name = publication.store
+            if archive is None:
+                active = session.get(CollectionDeletionRecord, collection_id)
+                if active is None:
+                    return False
+                plan = cast(dict[str, object], json.loads(active.plan_json))
+                challenge = active.challenge
             else:
-                archive = session.scalar(
-                    select(CollectionArchiveObjectRecord)
-                    .where(CollectionArchiveObjectRecord.collection_id == collection_id)
-                    .order_by(
-                        CollectionArchiveObjectRecord.store,
-                        CollectionArchiveObjectRecord.object_order,
-                    )
-                    .limit(1)
-                )
-                if archive is None:
-                    active = session.get(CollectionDeletionRecord, collection_id)
-                    if active is None:
-                        return False
-                    plan = cast(dict[str, object], json.loads(active.plan_json))
-                    challenge = active.challenge
-                else:
-                    identity = _archive_object_identity(archive)
-                    store_name = archive.store
-        if publication is not None:
-            self._delete_archive_identity(collection_id, store_name, identity)
-            with session_scope(self._session_factory) as session:
-                current_publication = session.get(
-                    CollectionMetadataPublicationRecord,
-                    (collection_id, store_name),
-                )
-                if (
-                    current_publication is not None
-                    and current_publication.object_path == identity.object_path
-                ):
-                    session.delete(current_publication)
-            return True
+                identity = _archive_object_identity(archive)
+                store_name = archive.store
         if archive is not None:
             self._delete_archive_identity(collection_id, store_name, identity)
             with session_scope(self._session_factory) as session:
@@ -410,6 +385,12 @@ class SqlAlchemyCollectionDeletionService:
                     inventory_identity=str(plan["inventory_identity"]),
                     published=False,
                 )
+                snapshot_catalog_event_collection_access_groups(
+                    session,
+                    event=created_event,
+                    phase="before",
+                    collection_id=collection_id,
+                )
                 event_sequence = created_event.sequence
                 plan[_CATALOG_EVENT_SEQUENCE_KEY] = event_sequence
                 active.plan_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
@@ -419,26 +400,26 @@ class SqlAlchemyCollectionDeletionService:
             current_event = session.get(CatalogEventRecord, event_sequence)
             if current_event is None or current_event.published:
                 raise RuntimeError("collection deletion catalog event is unavailable")
-            tags = list(
+            memberships = list(
                 session.scalars(
-                    select(CollectionTagRecord)
-                    .where(CollectionTagRecord.collection_id == collection_id)
-                    .order_by(CollectionTagRecord.tag_id)
+                    select(CollectionAccessGroupMembershipRecord)
+                    .where(CollectionAccessGroupMembershipRecord.collection_id == collection_id)
+                    .order_by(CollectionAccessGroupMembershipRecord.group_id)
                     .limit(_CATALOG_DELETE_BATCH)
                 )
             )
-            if tags:
-                tag_ids = tuple(current.tag_id for current in tags)
-                for tag_id in tag_ids:
-                    session.add(
-                        CatalogEventTagRecord(
-                            sequence=event_sequence,
-                            phase="before",
-                            tag_id=tag_id,
-                        )
+            if memberships:
+                group_ids = tuple(current.group_id for current in memberships)
+                session.execute(
+                    update(CollectionAccessGroupRecord)
+                    .where(CollectionAccessGroupRecord.id.in_(group_ids))
+                    .values(
+                        collection_count=CollectionAccessGroupRecord.collection_count - 1,
+                        authorization_revision=CollectionAccessGroupRecord.authorization_revision
+                        + 1,
                     )
-                adjust_tag_collection_counts(session, removed=tag_ids)
-                for current in tags:
+                )
+                for current in memberships:
                     session.delete(current)
                 return True
             if event_created:
@@ -655,10 +636,6 @@ class SqlAlchemyCollectionDeletionService:
                         "files": cast(int, plan["file_count"]),
                         "bytes": cast(int, plan["bytes"]),
                         "remote_storage_bytes": cast(int, plan["remote_storage_bytes"]),
-                        "collection_tag_count": cast(
-                            int,
-                            cast(dict[str, object], plan["metadata_rows"])["collection_tags"],
-                        ),
                     },
                     terminal=True,
                     initiator=ApplicationPrincipal(
@@ -736,13 +713,10 @@ def _build_plan(
     blockers = _active_blockers(session, collection_id, exempt_claim_id=exempt_claim_id)
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
-    metadata_publication_count = int(
+    access_group_count = int(
         session.scalar(
-            select(func.count())
-            .select_from(CollectionMetadataPublicationRecord)
-            .where(
-                CollectionMetadataPublicationRecord.collection_id == collection_id,
-                CollectionMetadataPublicationRecord.object_path.is_not(None),
+            select(func.count(CollectionAccessGroupMembershipRecord.group_id)).where(
+                CollectionAccessGroupMembershipRecord.collection_id == collection_id
             )
         )
         or 0
@@ -763,15 +737,7 @@ def _build_plan(
             "collections": 1,
             "collection_files": int(file_count),
             "collection_archive_copies": len(archives),
-            "collection_tags": int(
-                session.scalar(
-                    select(func.count(CollectionTagRecord.tag_id)).where(
-                        CollectionTagRecord.collection_id == collection_id
-                    )
-                )
-                or 0
-            ),
-            "collection_metadata_publications": metadata_publication_count,
+            "collection_access_group_memberships": access_group_count,
             "collection_uploads": int(upload is not None),
             "collection_upload_files": upload_file_count,
         },
@@ -887,26 +853,6 @@ def _active_blockers(
             ),
         )
     )
-    metadata_publications = list(
-        session.scalars(
-            select(CollectionMetadataPublicationRecord.store)
-            .where(
-                CollectionMetadataPublicationRecord.collection_id == collection_id,
-                CollectionMetadataPublicationRecord.state == "publishing",
-            )
-            .order_by(CollectionMetadataPublicationRecord.store)
-            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
-        )
-    )
-    blockers.extend(
-        _bounded_blocker_sample(
-            metadata_publications,
-            render=lambda store: f"collection metadata publication is active: {store}",
-            overflow=(
-                "additional collection metadata publications exist; list archive copies for details"
-            ),
-        )
-    )
     return blockers
 
 
@@ -946,21 +892,6 @@ def _archive_object_identity(record: CollectionArchiveObjectRecord) -> ArchiveOb
     )
 
 
-def _metadata_identity(record: CollectionMetadataPublicationRecord) -> ArchiveObjectIdentity:
-    assert record.object_path is not None
-    digest = record.stored_sha256 or "0" * 64
-    return ArchiveObjectIdentity(
-        object_id="metadata",
-        kind="metadata",
-        object_path=record.object_path,
-        plaintext_bytes=0,
-        stored_bytes=record.stored_bytes or 0,
-        sha256=digest,
-        stored_sha256=digest,
-        revision=record.revision,
-    )
-
-
 @cache
 def _collection_cascade_tables() -> tuple[Table, ...]:
     """Return collection-owned cascade tables in bounded deletion order."""
@@ -982,8 +913,7 @@ def _collection_cascade_tables() -> tuple[Table, ...]:
                     break
     excluded = {
         CollectionRecord.__tablename__,
-        CollectionTagRecord.__tablename__,
-        CollectionMetadataPublicationRecord.__tablename__,
+        CollectionAccessGroupMembershipRecord.__tablename__,
         CollectionArchiveObjectRecord.__tablename__,
         RetrievalCacheObjectRecord.__tablename__,
         RetrievalCacheLeaseRecord.__tablename__,

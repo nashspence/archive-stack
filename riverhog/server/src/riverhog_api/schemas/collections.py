@@ -29,7 +29,6 @@ from riverhog_protocol import (
 from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
 )
-from riverhog_protocol.paths import CanonicalTag
 from riverhog_protocol.transport import COLLECTION_DELETION_BLOCKERS_MAX
 from time_formats import format_utc_timestamp, parse_utc_timestamp
 
@@ -342,8 +341,6 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     )
 
     idempotency_key: CanonicalVisibleText = Field(max_length=200)
-    initial_tag: CanonicalTag | None = None
-    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     ingest_source: str | None = None
     archive_store: ArchiveStoreName | None = None
     event_context: EventContext | None = None
@@ -375,9 +372,7 @@ class CompleteCollectionUploadSessionRequest(RiverhogModel):
 class CollectionSummaryOut(RiverhogModel):
     id: CollectionId
     created_at: str
-    tag_count: int = Field(ge=0, strict=True)
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
@@ -393,7 +388,6 @@ class ListCollectionsResponse(RiverhogModel):
     sort: CollectionSort
     order: SortOrder
     query: str | None
-    tag: CanonicalTag | None
     encryption_format: str | None
     passphrase_id: str | None
     collections: list[CollectionSummaryOut]
@@ -538,28 +532,11 @@ class ListCollectionUploadSessionFilesResponse(RiverhogModel):
         return self
 
 
-class CollectionUploadTagOut(RiverhogModel):
-    tag: CanonicalTag
-
-
-class ListCollectionUploadSessionTagsResponse(RiverhogModel):
-    collection_id: CollectionId
-    page_size: int = Field(ge=1, le=100, strict=True)
-    next_page_token: BrowsePageToken | None
-    tags: list[CollectionUploadTagOut]
-
-
-class CollectionUploadTagMutationOut(RiverhogModel):
-    collection_id: CollectionId
-    tag_count: int = Field(ge=0, strict=True)
-
-
 class CollectionUploadListItemOut(RiverhogModel):
     model_config = ConfigDict(json_schema_extra={"allOf": cast(Any, _UPLOAD_CUSTODY_STATE_SCHEMA)})
 
     collection_id: CollectionId
     created_at: str | None
-    tag_count: int = Field(ge=0, strict=True)
     ingest_source: str | None
     archive_store: ArchiveStoreName
     encryption_format: str
@@ -594,7 +571,6 @@ class CollectionUploadListItemOut(RiverhogModel):
 
 
 class CollectionUploadListFiltersOut(RiverhogModel):
-    tag: CanonicalTag | None
     state: CollectionUploadState | None
 
 
@@ -644,7 +620,6 @@ class CollectionUploadSessionOut(RiverhogModel):
 
     collection_id: CollectionId
     created_at: str
-    tag_count: int = Field(ge=0, strict=True)
     ingest_source: str | None
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

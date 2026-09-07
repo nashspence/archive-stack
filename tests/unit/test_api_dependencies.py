@@ -9,7 +9,6 @@ from riverhog_api import deps
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionArchiveCopyRecord, CollectionRecord
 from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistration
-from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -72,14 +71,11 @@ def test_startup_rejects_a_persisted_key_id_without_its_secret(tmp_path: Path) -
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="removed-archive-key-v1",
                 provenance_mode="omitted",
                 provenance_identity=None,
                 inventory_identity="b" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-08-24T00:00:00.000000Z",
                 created_by_app="fixture",
                 created_at="2026-08-24T00:00:00.000000Z",
             )
@@ -104,14 +100,11 @@ def test_startup_rejects_an_uploaded_copy_without_recovery_descriptor(tmp_path: 
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="riverhog-dev-key-v1",
                 provenance_mode="omitted",
                 provenance_identity=None,
                 inventory_identity="b" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-08-24T00:00:00.000000Z",
                 created_by_app="fixture",
                 created_at="2026-08-24T00:00:00.000000Z",
             )

@@ -43,10 +43,6 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         requeue_interrupted_copies_for_startup=Mock(return_value=0),
         process_due=Mock(return_value=0),
     )
-    archive_maintenance = SimpleNamespace(
-        requeue_interrupted_metadata_publications_for_startup=Mock(return_value=0),
-        process_due_metadata_publications=Mock(return_value=0),
-    )
     collection_workflows = SimpleNamespace(
         requeue_interrupted_disposition_sets_for_startup=Mock(return_value=0),
         reap_expired_claims=Mock(return_value=0),
@@ -69,7 +65,6 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             collection_uploads=collection_uploads,
             collection_workflows=collection_workflows,
             archive_copies=archive_copies,
-            archive_maintenance=archive_maintenance,
             collection_deletions=collection_deletions,
             retrieval=retrieval,
             provenance=provenance,
@@ -121,10 +116,6 @@ def test_archive_maintenance_drains_bounded_progress_before_idle_interval() -> N
                 archive_copies=SimpleNamespace(
                     requeue_interrupted_copies_for_startup=zero,
                     process_due=zero,
-                ),
-                archive_maintenance=SimpleNamespace(
-                    requeue_interrupted_metadata_publications_for_startup=zero,
-                    process_due_metadata_publications=zero,
                 ),
                 collection_deletions=SimpleNamespace(process_due=zero),
                 retrieval=SimpleNamespace(

@@ -130,7 +130,6 @@ def create_adapter_contract_app() -> FastAPI:
                 id="qualification-source",
                 root=Path("/tmp/riverhog-operation-qualification"),
                 ingest_source="ftp:qualification",
-                tags=("qualification",),
                 provenance="omit",
                 provenance_omission_reason="Synthetic operation contract fixture.",
             ),

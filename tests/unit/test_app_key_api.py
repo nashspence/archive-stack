@@ -20,12 +20,11 @@ from riverhog_core.app_permissions import (
     RETRIEVAL_MANAGE,
 )
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import CollectionRecord, TagRecord
+from riverhog_core.catalog_models import CollectionRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_protocol.errors import BadRequest, Forbidden, Unauthorized
-from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -39,26 +38,15 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
     initialize_db(config.database_url)
     with session_scope(make_session_factory(config.database_url)) as session:
         session.add(
-            TagRecord(
-                id="docs",
-                created_by_app="bootstrap",
-                created_by_key_id=None,
-                created_at="2026-07-24T00:00:00.000000Z",
-            )
-        )
-        session.add(
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture-1",
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
-                tag_set_identity=tag_set_identity(()),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
-                metadata_revision=1,
-                metadata_updated_at="2026-07-24T00:00:00.000000Z",
                 created_by_app="fixture",
                 created_at="2026-07-24T00:00:00.000000Z",
             )
@@ -159,7 +147,7 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             outside_grant = await client.post(
                 "/v1/apps/reader/keys",
                 json={
-                    "access": [{"permission": CATALOG_READ, "resource": "tag:other"}],
+                    "access": [{"permission": CATALOG_READ, "resource": f"group:{'a' * 64}"}],
                 },
                 headers=manager_headers,
             )

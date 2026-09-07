@@ -14,7 +14,6 @@ def test_collection_list_ids_emits_one_pipeable_bounded_page(monkeypatch) -> Non
     class FakeClient:
         def list_collections(self, **kwargs: Any) -> dict[str, object]:
             assert kwargs["q"] == "camera"
-            assert kwargs["tag"] == "photos"
             assert kwargs["encryption_format"] == "age-v1-scrypt"
             assert kwargs["passphrase_id"] == "fixture-archive-key-v2"
             assert kwargs["page_size"] == 10
@@ -34,8 +33,6 @@ def test_collection_list_ids_emits_one_pipeable_bounded_page(monkeypatch) -> Non
             "list",
             "--query",
             "camera",
-            "--tag",
-            "photos",
             "--encryption-format",
             "age-v1-scrypt",
             "--passphrase-id",
@@ -59,7 +56,6 @@ def test_collection_upload_list_ids_forwards_bounded_page_and_filters(monkeypatc
                 "page_size": 25,
                 "page_token": None,
                 "q": "camera",
-                "tag": "photos",
                 "state": "uploading",
                 "sort": "created_at",
                 "order": "desc",
@@ -80,8 +76,6 @@ def test_collection_upload_list_ids_forwards_bounded_page_and_filters(monkeypatc
             "list",
             "--query",
             "camera",
-            "--tag",
-            "photos",
             "--state",
             "uploading",
             "--ids",

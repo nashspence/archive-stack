@@ -30,8 +30,6 @@ from riverhog_api.schemas.provenance import (
 )
 from riverhog_api.schemas.retrieval import RetrievalJobOut, RetrievalPlanFileOut
 from riverhog_api.schemas.search import SearchFileOut
-from riverhog_api.schemas.tags import TagDeletionPlanOut
-from riverhog_protocol.paths import tag_set_identity
 
 
 def _collection_deletion(status: str, challenge: str | None, blockers: list[str]) -> dict[str, Any]:
@@ -51,24 +49,6 @@ def _collection_deletion(status: str, challenge: str | None, blockers: list[str]
         "metadata_rows": {},
         "blockers": blockers,
         "billing_note": "billing",
-    }
-
-
-def _tag_deletion(status: str, challenge: str | None, blockers: list[str]) -> dict[str, Any]:
-    dependency = {"count": 0, "sample": [], "truncated": False}
-    return {
-        "status": status,
-        "tag": "incoming",
-        "warning": "warning",
-        "expires_at": "2026-08-25T00:00:00.000000Z",
-        "challenge": challenge,
-        "dependencies": {
-            "collections": dependency,
-            "upload_sessions": dependency,
-            "app_key_access": dependency,
-            "metadata_publications": dependency,
-        },
-        "blockers": blockers,
     }
 
 
@@ -131,8 +111,6 @@ def test_upload_discard_readiness_requires_orphaned_custody_but_orphans_may_be_b
     (
         (CollectionDeletionPlanOut, _collection_deletion("ready", None, [])),
         (CollectionDeletionPlanOut, _collection_deletion("blocked", "challenge", ["busy"])),
-        (TagDeletionPlanOut, _tag_deletion("ready", None, [])),
-        (TagDeletionPlanOut, _tag_deletion("blocked", "challenge", ["busy"])),
         (ArchiveCopyRetirementPlanOut, _retirement("ready", None, [])),
         (ArchiveCopyRetirementPlanOut, _retirement("blocked", "challenge", ["busy"])),
     ),
@@ -252,7 +230,6 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     payload = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tag_count": 0,
         "ingest_source": None,
         "provenance_mode": "omitted",
         "provenance_identity": None,
@@ -399,8 +376,6 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
             "collection": {
                 "id": 1,
                 "created_at": "2026-08-25T00:00:00.000000Z",
-                "tag_count": 0,
-                "tag_set_identity": tag_set_identity(()),
                 "content_identity": "a" * 64,
                 "archive_root_sha256": "b" * 64,
                 "encryption_format": "age-x25519/v1",
@@ -549,7 +524,6 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
@@ -615,7 +589,6 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
@@ -647,7 +620,6 @@ def test_upload_session_list_complete_states_require_complete_custody(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",

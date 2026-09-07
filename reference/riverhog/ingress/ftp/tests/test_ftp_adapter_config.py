@@ -23,7 +23,6 @@ def _write_config(path: Path, root: Path, *, host_id: str) -> None:
                         "id": "ftp",
                         "root": str(root),
                         "ingest_source": "ftp:fixture",
-                        "tags": ["ftp"],
                     }
                 ],
             }
@@ -58,17 +57,14 @@ def test_adapter_secrets_accept_exactly_one_direct_or_file_source(
         load_config(config_path)
 
 
-def test_source_grouping_policy_has_no_hidden_collection_or_tag_ceiling(tmp_path: Path) -> None:
-    tags = tuple(f"fixture-tag-{index:03}" for index in range(129))
+def test_source_grouping_policy_has_no_hidden_collection_ceiling(tmp_path: Path) -> None:
     source = SourceConfig(
         id="large-source",
         root=tmp_path,
         ingest_source="ftp:large-fixture",
-        tags=tags,
         max_files=100_001,
     )
 
-    assert source.tags == tags
     assert source.max_files == 100_001
 
 
@@ -165,7 +161,6 @@ def test_capture_requires_one_explicit_connected_observer_provider(tmp_path: Pat
         id="ftp",
         root=tmp_path / "ftp",
         ingest_source="ftp:fixture",
-        tags=("ftp",),
     )
     values = {
         "host_id": "urn:uuid:00000000-0000-4000-8000-000000000675",
@@ -192,7 +187,6 @@ def test_omission_does_not_accept_an_unused_observer_setting(tmp_path: Path) -> 
         id="ftp",
         root=tmp_path / "ftp",
         ingest_source="ftp:fixture",
-        tags=("ftp",),
         provenance="omit",
         provenance_omission_reason="Fixture explicitly omits provenance.",
     )

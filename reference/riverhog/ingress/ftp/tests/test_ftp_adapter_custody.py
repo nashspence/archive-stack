@@ -31,7 +31,6 @@ def _config(tmp_path: Path) -> FtpAdapterConfig:
                 id="camera-a",
                 root=tmp_path / "landing",
                 ingest_source="ftp:camera-a",
-                tags=("camera-a", "intake"),
                 stable_seconds=1,
                 max_files=10,
                 max_bytes=1024 * 1024,

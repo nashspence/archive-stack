@@ -61,7 +61,6 @@ def _composition(tmp_path: Path) -> FtpAdapterComposition:
                 id="camera-a",
                 root=tmp_path / "landing",
                 ingest_source="ftp:camera-a",
-                tags=("camera-a",),
                 provenance="omit",
                 provenance_omission_reason="Fixture has no host provenance.",
             ),

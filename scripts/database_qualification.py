@@ -28,8 +28,8 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
-from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_protocol import PortableCollectionIdentityBuilder
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
 from sqlalchemy import select, text
@@ -568,11 +568,11 @@ def _measure_http_path(
     application_name: str,
 ) -> dict[str, object]:
     config = RuntimeConfig(database_url=database_url)
-    tags = SqlAlchemyTagService(config)
+    access_groups = SqlAlchemyCollectionAccessGroupService(config)
     retrieval = SqlAlchemyRetrievalService(config, _qualification_archive_stores(), None)
     container = SimpleNamespace(
         app_keys=_QualificationAppKeys(),
-        tags=tags,
+        access_groups=access_groups,
         retrieval=retrieval,
         browse_tokens=BrowseTokenCodec(
             signing_key=b"riverhog-database-qualification-browse-key-v1",
@@ -591,24 +591,24 @@ def _measure_http_path(
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
-        tag_rows = 0
+        group_rows = 0
         page_token: str | None = None
         while True:
-            payload = api.list_tags(
+            payload = api.list_collection_access_groups(
                 page_size=100,
                 page_token=page_token,
                 sort="id",
                 order="asc",
             )
-            tag_rows += len(payload.get("tags", []))
+            group_rows += len(payload.get("groups", []))
             next_page_token = payload.get("next_page_token")
             if next_page_token is None:
                 break
             if not isinstance(next_page_token, str) or not next_page_token:
-                raise QualificationError("tag browse returned an invalid page token")
+                raise QualificationError("access-group browse returned an invalid page token")
             page_token = next_page_token
-        tags_ms = (time.perf_counter() - started) * 1000
-        _current, tags_peak = tracemalloc.get_traced_memory()
+        groups_ms = (time.perf_counter() - started) * 1000
+        _current, groups_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
         gc.collect()
@@ -633,14 +633,14 @@ def _measure_http_path(
         inventory_ms = (time.perf_counter() - started) * 1000
         _current, inventory_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        if max(tags_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
+        if max(groups_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
             raise QualificationError("full HTTP path exceeded its application-memory budget")
 
         headers = {"Authorization": "Bearer qualification-token"}
         with httpx.Client(base_url=base_url, headers=headers, timeout=30) as raw_client:
             with raw_client.stream(
                 "GET",
-                "/v1/tags",
+                "/v1/collection-access-groups",
                 params={"page_size": 100, "sort": "id", "order": "asc"},
             ) as response:
                 response.raise_for_status()
@@ -659,10 +659,10 @@ def _measure_http_path(
             )
         if transactions_while_consumer_paused or transactions_after_disconnect:
             raise QualificationError("HTTP consumer lifetime retained a database transaction")
-        first = api.list_tags(page_size=1, sort="id", order="asc")
+        first = api.list_collection_access_groups(page_size=1, sort="id", order="asc")
         restart_token = first.get("next_page_token")
         if not isinstance(restart_token, str) or not restart_token:
-            raise QualificationError("tag browse did not issue a restart token")
+            raise QualificationError("access-group browse did not issue a restart token")
     finally:
         api.close()
         _stop_http_server(server, thread)
@@ -675,7 +675,7 @@ def _measure_http_path(
             timeout=30,
         ) as client:
             restart_response = client.get(
-                "/v1/tags",
+                "/v1/collection-access-groups",
                 params={
                     "page_size": 1,
                     "page_token": restart_token,
@@ -685,15 +685,15 @@ def _measure_http_path(
             )
             restart_response.raise_for_status()
             restarted_payload = restart_response.json()
-            if not restarted_payload.get("tags"):
+            if not restarted_payload.get("groups"):
                 raise QualificationError("restart browse token omitted its next row")
     finally:
         _stop_http_server(restarted, restarted_thread)
     return {
         "official_client_bounded_pages": {
-            "rows": tag_rows,
-            "total_ms": round(tags_ms, 3),
-            "peak_application_bytes": tags_peak,
+            "rows": group_rows,
+            "total_ms": round(groups_ms, 3),
+            "peak_application_bytes": groups_peak,
         },
         "official_client_inventory": {
             "rows": inventory_rows,

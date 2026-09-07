@@ -24,7 +24,6 @@ from riverhog_protocol import (
     ProcessingClaimId,
     SortOrder,
 )
-from riverhog_protocol.paths import CanonicalTag
 from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.concurrency import run_in_threadpool
 
@@ -53,7 +52,6 @@ from riverhog_api.schemas.collections import (
     CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
-    CollectionUploadTagMutationOut,
     CollectionUploadUnitOut,
     CollectionUploadWorkBatchOut,
     CompleteCollectionUploadSessionRequest,
@@ -64,7 +62,6 @@ from riverhog_api.schemas.collections import (
     ListCollectionsResponse,
     ListCollectionUploadSessionFilesResponse,
     ListCollectionUploadSessionsResponse,
-    ListCollectionUploadSessionTagsResponse,
     RegisterCollectionUploadSessionFilesRequest,
 )
 
@@ -121,7 +118,6 @@ def list_collections(
     q: BrowseQueryParameter = None,
     sort: Annotated[CollectionSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
-    tag: Annotated[CanonicalTag | None, Query()] = None,
     encryption_format: str | None = Query(None),
     passphrase_id: str | None = Query(None),
 ) -> ListCollectionsResponse:
@@ -129,7 +125,6 @@ def list_collections(
         q=q,
         sort=sort,
         order=order,
-        tag=tag,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
     )
@@ -143,7 +138,6 @@ def list_collections(
             selectors=selectors,
         ),
         q=q,
-        tag=tag,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
         sort=sort,
@@ -208,12 +202,11 @@ def list_collection_upload_sessions(
     page_size: int = Query(25, ge=1, le=100),
     page_token: BrowsePageTokenQuery = None,
     q: BrowseQueryParameter = None,
-    tag: Annotated[CanonicalTag | None, Query()] = None,
     state: Annotated[CollectionUploadState | None, Query()] = None,
     sort: Annotated[CollectionUploadSort, Query()] = "created_at",
     order: Annotated[SortOrder, Query()] = "desc",
 ) -> ListCollectionUploadSessionsResponse:
-    selectors = canonical_selectors(q=q, tag=tag, state=state, sort=sort, order=order)
+    selectors = canonical_selectors(q=q, state=state, sort=sort, order=order)
     payload = container.collection_uploads.list(
         page_size=page_size,
         position=page_position(
@@ -224,7 +217,6 @@ def list_collection_upload_sessions(
             selectors=selectors,
         ),
         q=q,
-        tag=tag,
         state=state,
         sort=sort,
         order=order,
@@ -253,8 +245,6 @@ def create_or_resume_collection_upload_session(
 ) -> CreateOrResumeCollectionUploadSessionOut:
     payload = container.collection_uploads.create_or_resume(
         idempotency_key=request.idempotency_key,
-        initial_tag=request.initial_tag,
-        tag_set_identity_sha256=request.tag_set_identity,
         ingest_source=request.ingest_source,
         archive_store=request.archive_store,
         initiator=principal,
@@ -264,83 +254,6 @@ def create_or_resume_collection_upload_session(
         custody_mode=request.custody_mode,
     )
     return CreateOrResumeCollectionUploadSessionOut.model_validate(payload)
-
-
-@router.get(
-    "/collection-upload-sessions/{collection_id}/tags",
-    response_model=ListCollectionUploadSessionTagsResponse,
-    openapi_extra={
-        **mutable_browse_operation(),
-        **operation_interface("client-only-primitive"),
-    },
-)
-def list_collection_upload_session_tags(
-    collection_id: CollectionIdParameter,
-    container: ContainerDep,
-    principal: CollectionCreator,
-    page_size: int = Query(25, ge=1, le=100),
-    page_token: BrowsePageTokenQuery = None,
-) -> ListCollectionUploadSessionTagsResponse:
-    container.collection_uploads.require_access(collection_id, principal)
-    selectors = canonical_selectors(collection_id=collection_id)
-    payload = container.collection_uploads.list_tags(
-        collection_id,
-        page_size=page_size,
-        position=page_position(
-            container,
-            principal,
-            operation="list_collection_upload_session_tags",
-            page_token=page_token,
-            selectors=selectors,
-        ),
-    )
-    return ListCollectionUploadSessionTagsResponse.model_validate(
-        page_payload(
-            payload,
-            container=container,
-            principal=principal,
-            operation="list_collection_upload_session_tags",
-            selectors=selectors,
-        )
-    )
-
-
-@router.put(
-    "/collection-upload-sessions/{collection_id}/tags/{tag}",
-    response_model=CollectionUploadTagMutationOut,
-    openapi_extra=operation_interface("client-only-primitive"),
-)
-def add_collection_upload_session_tag(
-    collection_id: CollectionIdParameter,
-    tag: CanonicalTag,
-    container: ContainerDep,
-    principal: CollectionCreator,
-) -> CollectionUploadTagMutationOut:
-    container.collection_uploads.require_access(collection_id, principal)
-    return CollectionUploadTagMutationOut.model_validate(
-        container.collection_uploads.add_tag(
-            collection_id,
-            tag,
-            principal=principal,
-        )
-    )
-
-
-@router.delete(
-    "/collection-upload-sessions/{collection_id}/tags/{tag}",
-    response_model=CollectionUploadTagMutationOut,
-    openapi_extra=operation_interface("client-only-primitive"),
-)
-def remove_collection_upload_session_tag(
-    collection_id: CollectionIdParameter,
-    tag: CanonicalTag,
-    container: ContainerDep,
-    principal: CollectionCreator,
-) -> CollectionUploadTagMutationOut:
-    container.collection_uploads.require_access(collection_id, principal)
-    return CollectionUploadTagMutationOut.model_validate(
-        container.collection_uploads.remove_tag(collection_id, tag)
-    )
 
 
 @router.post(

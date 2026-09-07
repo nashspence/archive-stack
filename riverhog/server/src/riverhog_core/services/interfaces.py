@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Protocol
 
 from riverhog_protocol import (
+    CollectionAccessGroupStatus,
     PortableCollectionFile,
     PortableCollectionHeader,
     PortableCollectionInventoryPage,
@@ -36,7 +37,6 @@ class CollectionService(Protocol):
         page_size: int,
         position: BrowsePosition,
         q: str | None,
-        tag: str | None = None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
         sort: str = "id",
@@ -47,7 +47,6 @@ class CollectionService(Protocol):
         self,
         *,
         q: str | None,
-        tag: str | None = None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
         sort: str = "id",
@@ -177,76 +176,70 @@ class ProvenanceService(Protocol):
     def process_due_verifications(self, *, limit: int = 1) -> int: ...
 
 
-class TagService(Protocol):
+class CollectionAccessGroupService(Protocol):
     def create(
         self,
-        tag: str,
         *,
+        idempotency_key: str,
+        display_label: str | None,
         creator: ApplicationPrincipal,
     ) -> JsonObject: ...
     def get(
         self,
-        tag: str,
-        *,
-        principal: ApplicationPrincipal,
+        group_id: str,
     ) -> JsonObject: ...
-    def plan_deletion(self, tag: str) -> JsonObject: ...
-    def delete(self, tag: str, *, challenge: str) -> JsonObject: ...
+    def update(
+        self,
+        group_id: str,
+        *,
+        display_label: str | None,
+        status: CollectionAccessGroupStatus,
+    ) -> JsonObject: ...
     def list(
         self,
         *,
         page_size: int,
         position: BrowsePosition,
         q: str | None,
+        status: CollectionAccessGroupStatus | None,
         sort: str,
         order: str,
-        principal: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def iter_tags(
+    def iter_groups(
         self,
         *,
         q: str | None,
+        status: CollectionAccessGroupStatus | None,
         sort: str,
         order: str,
-        principal: ApplicationPrincipal,
     ) -> Iterator[JsonObject]: ...
-    def list_collection_tags(
+    def list_members(
+        self,
+        group_id: str,
+        *,
+        page_size: int,
+        position: BrowsePosition,
+    ) -> JsonObject: ...
+    def list_collection_groups(
         self,
         collection_id: int,
         *,
         page_size: int,
         position: BrowsePosition,
+    ) -> JsonObject: ...
+    def add_member(
+        self,
+        group_id: str,
+        collection_id: int,
+        *,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def iter_collection_tags(
+    def remove_member(
         self,
+        group_id: str,
         collection_id: int,
         *,
         principal: ApplicationPrincipal,
-    ) -> Iterator[JsonObject]: ...
-    def add_collection_tag(
-        self,
-        collection_id: int,
-        tag: str,
-        *,
-        principal: ApplicationPrincipal,
-        event_context: dict[str, object] | None = None,
-    ) -> JsonObject: ...
-    def replace_collection_tags(
-        self,
-        collection_id: int,
-        tags: Sequence[str],
-        *,
-        principal: ApplicationPrincipal,
-        event_context: dict[str, object] | None = None,
-    ) -> JsonObject: ...
-    def remove_collection_tag(
-        self,
-        collection_id: int,
-        tag: str,
-        *,
-        principal: ApplicationPrincipal,
-        event_context: dict[str, object] | None = None,
     ) -> JsonObject: ...
 
 
@@ -326,7 +319,6 @@ class RetrievalService(Protocol):
         page_size: int,
         position: BrowsePosition,
         q: str | None,
-        tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
         cache_store: str | None = None,
@@ -342,7 +334,6 @@ class RetrievalService(Protocol):
         self,
         *,
         q: str | None,
-        tag: str | None,
         collection_id: int | None = None,
         source_store: str | None = None,
         cache_store: str | None = None,
@@ -592,11 +583,6 @@ class SearchService(Protocol):
         collection: int | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[JsonObject]: ...
-
-
-class ArchiveMaintenanceService(Protocol):
-    def requeue_interrupted_metadata_publications_for_startup(self) -> int: ...
-    def process_due_metadata_publications(self, *, limit: int = 10) -> int: ...
 
 
 class ArchiveCopyService(Protocol):

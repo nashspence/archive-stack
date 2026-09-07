@@ -24,7 +24,6 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
             {
                 "id": 42,
                 "created_at": "2026-07-26T18:43:00.000000Z",
-                "tags": ["family", "sony-a6700"],
                 "files": 2,
                 "bytes": 100,
                 "remote_storage_bytes": 128,
@@ -61,7 +60,6 @@ def test_collection_show_human_and_json_use_one_identical_api_response(monkeypat
     payload = {
         "id": 42,
         "created_at": "2026-07-26T18:43:00.000000Z",
-        "tags": ["family"],
         "files": 1,
         "bytes": 100,
         "remote_storage_bytes": 128,
@@ -161,7 +159,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "new_archive_expires_at": "2026-08-14T00:00:00.000000Z",
         "lease_categories": ["new_archive"],
         "retrieval_job_leases": 0,
-        "tag_count": 1,
     }
     page = {
         "page_size": 25,
@@ -172,7 +169,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "order": "desc",
         "query": None,
         "filters": {
-            "tag": "photos",
             "collection_id": "42",
             "source_store": "deep",
             "cache_store": "local",
@@ -234,8 +230,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "retrieval",
         "cache",
         "list",
-        "--tag",
-        "photos",
         "--collection",
         "42",
         "--source-store",
@@ -269,7 +263,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
     assert human_show.exit_code == 0
     assert "state: ready" in human_show.stdout
     assert "cache store: local" in human_show.stdout
-    assert "tags: 1" in human_show.stdout
     assert json.loads(json_show.stdout) == cached
     assert human_status.exit_code == json_status.exit_code == 0
     assert "retrieval cache" in human_status.stdout
@@ -282,7 +275,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "page_size": 25,
                 "page_token": None,
                 "q": None,
-                "tag": "photos",
                 "collection_id": 42,
                 "source_store": "deep",
                 "cache_store": "local",
@@ -300,7 +292,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "page_size": 25,
                 "page_token": None,
                 "q": None,
-                "tag": "photos",
                 "collection_id": 42,
                 "source_store": "deep",
                 "cache_store": "local",

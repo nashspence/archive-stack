@@ -20,7 +20,6 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collections import SqlAlchemyCollectionService
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -44,14 +43,11 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     creation_identity_sha256=f"{collection_id:064x}",
                     creation_custody_mode="producer-retained",
                     content_identity=f"{collection_id:064x}",
-                    tag_set_identity=tag_set_identity(()),
                     encryption_format="age-v1-scrypt",
                     passphrase_id=f"fixture-archive-key-v{1 if collection_id % 2 else 2}",
                     provenance_mode="omitted",
                     provenance_identity=None,
                     inventory_identity=f"{collection_id:064x}",
-                    metadata_revision=1,
-                    metadata_updated_at=NOW,
                     created_by_app="fixture",
                     created_at=NOW,
                 )
