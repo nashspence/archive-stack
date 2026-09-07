@@ -58,6 +58,7 @@ updates:
       - /riverhog/server
       - /reference/riverhog/storage/aws
       - /reference/riverhog/storage/backblaze
+      - /reference/riverhog/storage/filesystem
       - /tests
       - /utilities/mango-fish
     schedule:

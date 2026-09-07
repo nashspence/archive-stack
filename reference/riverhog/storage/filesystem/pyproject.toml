@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-storage-adapter-filesystem"
+version = "0.1.0"
+description = "Optional nonnormative Linux filesystem storage reference for Riverhog."
+requires-python = ">=3.12"
+license = "CAL-1.0"
+license-files = ["LICENSE"]
+readme = { text = "Optional nonnormative Riverhog v1 reference component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "riverhog-storage-adapter-asgi-support>=0.1,<0.2",
+  "riverhog-storage-adapter-protocol>=0.1,<0.2",
+  "time-formats>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+riverhog-storage-adapter-filesystem = "riverhog_storage_adapter_filesystem.app:main"
+
+[tool.uv.sources]
+riverhog-storage-adapter-asgi-support = { workspace = true }
+riverhog-storage-adapter-protocol = { workspace = true }
+time-formats = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_storage_adapter_filesystem"]

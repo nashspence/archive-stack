@@ -73,12 +73,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 73
+    assert len(projects) == 74
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 3,
-        "reference_component": 36,
+        "reference_component": 37,
         "reusable_library": 25,
         "internal_build_unit": 5,
     }
@@ -91,6 +91,7 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "riverhog-server",
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
+        "riverhog-storage-adapter-filesystem",
         "gogurt-linux-listener-host",
         "gogurt-linux-mounted-volume",
         "gogurt-macos-listener-host",
@@ -441,7 +442,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 73
+    assert len(plan["python"]) == 74
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert plan["reference_policy"] == module.REFERENCE_POLICY

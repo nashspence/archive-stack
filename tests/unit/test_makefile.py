@@ -159,8 +159,19 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     dynamic_archive_store_names = {
         name for name in configured_names if name.startswith("RIVERHOG_ARCHIVE_STORE_")
     }
+    cache_store_settings = (
+        "_ADAPTER_URL",
+        "_ADAPTER_TOKEN_FILE",
+        "_ADAPTER_ALLOW_INSECURE_HTTP",
+        "_ADAPTER_MAX_CONNECTIONS",
+        "_ADAPTER_TIMEOUT_SECONDS",
+        "_ADMISSION_ENABLED",
+        "_ADMISSION_BUDGET_BYTES",
+    )
     dynamic_cache_store_names = {
-        name for name in configured_names if name.startswith("RIVERHOG_RETRIEVAL_CACHE_LOCAL_")
+        name
+        for name in configured_names
+        if name.startswith("RIVERHOG_RETRIEVAL_CACHE_") and name.endswith(cache_store_settings)
     }
     assert all(
         name in runtime_source
@@ -571,6 +582,7 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "riverhog-ftp-adapter",
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
+        "riverhog-storage-adapter-filesystem",
         "stove0",
         "stove0-exiftool-observer",
         "stove0-ffprobe-sampling-observer",

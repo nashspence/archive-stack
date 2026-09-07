@@ -43,10 +43,14 @@ def test_provider_qualification_runs_isolated_storage_adapter_images() -> None:
     assert services["b2-retrieval-cache-adapter"]["image"] == (
         "riverhog-storage-adapter-backblaze:dev"
     )
+    assert services["qualification-filesystem-cache-adapter"]["image"] == (
+        "riverhog-storage-adapter-filesystem:dev"
+    )
     assert set(services["app"]["depends_on"]) == {
         "aws-deep-archive-adapter",
         "b2-archive-adapter",
         "b2-retrieval-cache-adapter",
+        "qualification-filesystem-cache-adapter",
     }
     for name in (
         "aws-deep-archive-adapter",
@@ -598,6 +602,7 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
         "riverhog",
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
+        "riverhog-storage-adapter-filesystem",
     } == {item.strip() for item in image_build["with"]["targets"].split(",")}
     assert "RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH" in key_material["run"]
     assert 'test -z "${RIVERHOG_DATABASE_URL:-}"' in deployment_env["run"]

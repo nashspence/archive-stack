@@ -70,8 +70,10 @@ STORAGE_REFERENCE_QUALIFICATION = {
     "distributions": [
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
+        "riverhog-storage-adapter-filesystem",
     ],
     "cases": [
+        "filesystem-retrieval-cache",
         "b2-archive",
         "b2-retrieval-cache",
         "aws-deep-archive",
@@ -133,6 +135,12 @@ RUNTIME_IMAGE_TARGETS = {
         "description": "Optional nonnormative Backblaze B2 storage reference for Riverhog.",
         "distributions": ["riverhog-storage-adapter-backblaze"],
         "repository": "ghcr.io/nashspence/riverhog-storage-adapter-backblaze",
+    },
+    "riverhog-storage-adapter-filesystem": {
+        "role": "reference",
+        "description": "Optional nonnormative Linux filesystem storage reference for Riverhog.",
+        "distributions": ["riverhog-storage-adapter-filesystem"],
+        "repository": "ghcr.io/nashspence/riverhog-storage-adapter-filesystem",
     },
     "mango-fish": {
         "role": "product",

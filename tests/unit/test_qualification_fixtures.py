@@ -84,6 +84,7 @@ def test_every_checked_qualification_input_runs_through_its_real_consumer(
     assert set(release["qualification"]["storage_reference"]["cases"]) == {
         *(bucket.logical_name for bucket in qualification.buckets),
         "aws-cloudfront-egress",
+        "filesystem-retrieval-cache",
     }
 
     contract_script = REPO_ROOT / "scripts/contract_freeze.py"

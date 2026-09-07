@@ -43,6 +43,7 @@ QUALIFICATION_MONTHLY_DOWNLOAD_QUOTA_BYTES = 2 * 1024 * MIB
 QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE = "1h"
 QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS = 60 * 60
 QUALIFICATION_OPPORTUNISTIC_LEASE_SECONDS = 15 * 60
+QUALIFICATION_FILESYSTEM_CACHE_BUDGET_BYTES = MIB
 QUALIFICATION_CACHE_SWEEP_INTERVAL = "30s"
 QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS = 30
 QUALIFICATION_RESTORE_POLL_INTERVAL = "1m"
@@ -114,6 +115,7 @@ _REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
             "new-archive-lease-observed",
             "opportunistic-cache-retrieval",
             "retrieval-policy-effective-values",
+            "filesystem-cache-local-placement-and-b2-overflow",
         }
     ),
     "restore-requested": frozenset(
@@ -2182,7 +2184,8 @@ def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, o
             "transport": "signed-https",
         },
         "retrieval_cache": {
-            "qualified_store": "b2-cache",
+            "qualified_stores": ["filesystem-cache", "b2-cache"],
+            "filesystem_admission_budget_bytes": QUALIFICATION_FILESYSTEM_CACHE_BUDGET_BYTES,
             "placement_accounting": "exact-reserved-and-committed-bytes",
             "new_archive_insertion": True,
             "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
@@ -2408,7 +2411,17 @@ def write_runtime_environment(
         "RIVERHOG_BROWSE_REQUIRE_EXPLICIT_SIGNING_KEY": "true",
         "RIVERHOG_PUBLIC_BASE_URL": "",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY": "48h",
-        "RIVERHOG_RETRIEVAL_CACHE_STORES": "b2-cache",
+        "RIVERHOG_RETRIEVAL_CACHE_STORES": "filesystem-cache,b2-cache",
+        "RIVERHOG_RETRIEVAL_CACHE_FILESYSTEM_CACHE_ADAPTER_URL": (
+            "http://qualification-filesystem-cache-adapter:8080"
+        ),
+        "RIVERHOG_RETRIEVAL_CACHE_FILESYSTEM_CACHE_ADAPTER_TOKEN_FILE": (
+            "/run/secrets/riverhog-storage-adapter.token"
+        ),
+        "RIVERHOG_RETRIEVAL_CACHE_FILESYSTEM_CACHE_ADAPTER_ALLOW_INSECURE_HTTP": "true",
+        "RIVERHOG_RETRIEVAL_CACHE_FILESYSTEM_CACHE_ADMISSION_BUDGET_BYTES": (
+            str(QUALIFICATION_FILESYSTEM_CACHE_BUDGET_BYTES)
+        ),
         "RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_URL": ("http://b2-retrieval-cache-adapter:8080"),
         "RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_TOKEN_FILE": (
             "/run/secrets/riverhog-storage-adapter.token"
@@ -2968,16 +2981,37 @@ def _assert_retrieval_cache_surface(
     if int(status.get("objects", 0)) <= 0 or int(status.get("protected_objects", 0)) <= 0:
         raise QualificationError("retrieval-cache status omitted protected objects")
     stores = status.get("stores")
-    expected_store_status = {
-        "cache_store": "b2-cache",
+    if not isinstance(stores, list) or len(stores) != 2:
+        raise QualificationError("retrieval-cache status omitted exact placement accounting")
+    local, overflow = stores
+    if not isinstance(local, dict) or not isinstance(overflow, dict):
+        raise QualificationError("retrieval-cache status returned invalid store accounting")
+    expected_local = {
+        "cache_store": "filesystem-cache",
         "priority": 1,
+        "admission_enabled": True,
+        "admission_budget_bytes": QUALIFICATION_FILESYSTEM_CACHE_BUDGET_BYTES,
+        "reserved_bytes": 0,
+        "committed_bytes": local.get("committed_bytes"),
+    }
+    expected_overflow = {
+        "cache_store": "b2-cache",
+        "priority": 2,
         "admission_enabled": True,
         "admission_budget_bytes": None,
         "reserved_bytes": 0,
-        "committed_bytes": int(status.get("stored_bytes", -1)),
+        "committed_bytes": overflow.get("committed_bytes"),
     }
-    if stores != [expected_store_status]:
-        raise QualificationError("retrieval-cache status omitted exact placement accounting")
+    if local != expected_local or overflow != expected_overflow:
+        raise QualificationError("retrieval-cache status returned unexpected store accounting")
+    local_bytes = int(local.get("committed_bytes", 0))
+    overflow_bytes = int(overflow.get("committed_bytes", 0))
+    if not 0 < local_bytes <= QUALIFICATION_FILESYSTEM_CACHE_BUDGET_BYTES:
+        raise QualificationError("filesystem cache did not retain bounded local content")
+    if overflow_bytes <= 0:
+        raise QualificationError("B2 cache did not receive elastic overflow content")
+    if local_bytes + overflow_bytes != int(status.get("stored_bytes", -1)):
+        raise QualificationError("retrieval-cache store accounting differs from its total")
     policy = status.get("policy")
     expected_policy = {
         "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
@@ -2989,44 +3023,47 @@ def _assert_retrieval_cache_surface(
     }
     if policy != expected_policy:
         raise QualificationError("retrieval-cache status omitted effective qualification policy")
-    selected: list[dict[str, Any]] = []
-    page_token: str | None = None
-    while True:
-        result = api.list_retrieval_cache_objects(
-            page_size=100,
-            page_token=page_token,
-            collection_id=collection_id,
-            source_store=source_store,
-            cache_store="b2-cache",
-            sort="object_id",
-            order="asc",
-        )
-        selected.extend(
-            item
-            for item in result.get("objects", [])
-            if int(item.get("collection_id", 0)) == collection_id
-            and item.get("source_store") == source_store
-            and item.get("cache_store") == "b2-cache"
-        )
-        next_page_token = result.get("next_page_token")
-        if next_page_token is None:
-            break
-        if not isinstance(next_page_token, str) or not next_page_token:
-            raise QualificationError("retrieval-cache list returned an invalid page token")
-        page_token = next_page_token
-    if not selected:
-        raise QualificationError(f"retrieval-cache list omitted {source_store} objects")
     object_ids: list[str] = []
-    for item in selected:
-        if expected_lease_category not in item.get("lease_categories", []):
-            raise QualificationError(
-                f"retrieval-cache object omitted its {expected_lease_category} lease"
+    for cache_store in ("filesystem-cache", "b2-cache"):
+        selected: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            result = api.list_retrieval_cache_objects(
+                page_size=100,
+                page_token=page_token,
+                collection_id=collection_id,
+                source_store=source_store,
+                cache_store=cache_store,
+                sort="object_id",
+                order="asc",
             )
-        object_id = str(item.get("object_id", ""))
-        shown = api.get_retrieval_cache_object(collection_id, source_store, object_id)
-        if shown != item:
-            raise QualificationError("retrieval-cache list and show representations differ")
-        object_ids.append(object_id)
+            selected.extend(
+                item
+                for item in result.get("objects", [])
+                if int(item.get("collection_id", 0)) == collection_id
+                and item.get("source_store") == source_store
+                and item.get("cache_store") == cache_store
+            )
+            next_page_token = result.get("next_page_token")
+            if next_page_token is None:
+                break
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise QualificationError("retrieval-cache list returned an invalid page token")
+            page_token = next_page_token
+        if not selected:
+            raise QualificationError(
+                f"retrieval-cache list omitted {source_store} objects in {cache_store}"
+            )
+        for item in selected:
+            if expected_lease_category not in item.get("lease_categories", []):
+                raise QualificationError(
+                    f"retrieval-cache object omitted its {expected_lease_category} lease"
+                )
+            object_id = str(item.get("object_id", ""))
+            shown = api.get_retrieval_cache_object(collection_id, source_store, object_id)
+            if shown != item:
+                raise QualificationError("retrieval-cache list and show representations differ")
+            object_ids.append(object_id)
     return tuple(object_ids)
 
 
@@ -3702,6 +3739,7 @@ def operate_qualification(
                     "new-archive-lease-observed",
                     "opportunistic-cache-retrieval",
                     "retrieval-policy-effective-values",
+                    "filesystem-cache-local-placement-and-b2-overflow",
                 ),
             )
             write_checkpoint(checkpoint_path, checkpoint)

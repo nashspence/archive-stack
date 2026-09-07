@@ -26,6 +26,10 @@ IMPLEMENTATION_OWNERS = {
         REPO / "reference/riverhog/storage/backblaze/src",
         {"riverhog_storage_adapter_backblaze"},
     ),
+    "riverhog-storage-adapter-filesystem": (
+        REPO / "reference/riverhog/storage/filesystem/src",
+        {"riverhog_storage_adapter_filesystem"},
+    ),
     "riverhog-provenance-linux-observer": (
         REPO / "reference/riverhog/provenance/observers/linux/src",
         {"riverhog_provenance_linux_observer"},
@@ -916,6 +920,9 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
         REPO / "reference/riverhog/storage/aws/Dockerfile": "riverhog-storage-adapter-aws",
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "riverhog-storage-adapter-backblaze"
+        ),
+        REPO / "reference/riverhog/storage/filesystem/Dockerfile": (
+            "riverhog-storage-adapter-filesystem"
         ),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
         REPO / "reference/stove0/observers/exiftool/Dockerfile": ("stove0-exiftool-observer"),

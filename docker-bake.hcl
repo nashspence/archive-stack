@@ -4,6 +4,7 @@ group "default" {
     "riverhog-ftp-adapter",
     "riverhog-storage-adapter-aws",
     "riverhog-storage-adapter-backblaze",
+    "riverhog-storage-adapter-filesystem",
     "stove0",
     "stove0-exiftool-observer",
     "stove0-ffprobe-sampling-observer",
@@ -56,6 +57,14 @@ target "riverhog-storage-adapter-backblaze" {
   context    = "."
   dockerfile = "reference/riverhog/storage/backblaze/Dockerfile"
   tags       = ["riverhog-storage-adapter-backblaze:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "riverhog-storage-adapter-filesystem" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "reference/riverhog/storage/filesystem/Dockerfile"
+  tags       = ["riverhog-storage-adapter-filesystem:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 
