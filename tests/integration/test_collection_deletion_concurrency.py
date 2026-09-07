@@ -1213,8 +1213,8 @@ def test_postgres_exact_output_intent_creation_resumes_one_upload(
             uploads.append(
                 service.create_or_resume(
                     idempotency_key=EXECUTION_ID,
-                    initial_tag="docs",
-                    tag_set_identity_sha256=tag_set_identity(("docs",)),
+                    initial_tag=None,
+                    tag_set_identity_sha256=tag_set_identity(()),
                     ingest_source=f"transform:{EXECUTION_ID}",
                     archive_store=None,
                     initiator=transform,
