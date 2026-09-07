@@ -254,7 +254,6 @@ def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() ->
     plan = schemas["ProcessingClaimPlanDocument"]["properties"]
     assert plan["inputs"]["$ref"].endswith("/ExactSetAuthorityDocument")
     assert plan["artifacts"]["$ref"].endswith("/ArtifactSetAuthorityDocument")
-    assert plan["output_tags"]["$ref"].endswith("/ExactSetAuthorityDocument")
     assert (
         "stove0"
         not in str(

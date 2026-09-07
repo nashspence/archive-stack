@@ -597,8 +597,6 @@ operations:
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
-  input_tags:
-  - stove0-audio-archive
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
@@ -636,12 +634,8 @@ recipes:
       codec: opus
       container: opus
     input_retrieval_policy: allow
-    output_tags:
-    - archive-audio
 - id: stove0.conformance-media/v1
   revision: 1
-  input_tags:
-  - stove0-conformance-media
   event_input_closure: single-finalized-collection
   artifact_associations:
   - primary_role: stove0.media.source/v1
@@ -717,8 +711,6 @@ recipes:
           fields:
           - XMP-xmp:CreateDate
     input_retrieval_policy: available-only
-    output_tags:
-    - conformance-audio
   - id: archive-audio-overlap
     kind: operation
     when:
@@ -757,8 +749,6 @@ recipes:
         tags:
         - conformance-overlap
     input_retrieval_policy: available-only
-    output_tags:
-    - conformance-audio-overlap
   - id: archive-video
     kind: operation
     when:
@@ -803,12 +793,8 @@ recipes:
     target_options:
       preset: p4
     input_retrieval_policy: available-only
-    output_tags:
-    - conformance-video
 - id: stove0.review-effect/v1
   revision: 1
-  input_tags:
-  - stove0-review-effect
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
@@ -851,8 +837,6 @@ recipes:
     input_retrieval_policy: available-only
 - id: stove0.review/v1
   revision: 1
-  input_tags:
-  - stove0-review
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
@@ -893,12 +877,8 @@ recipes:
       destination: target-options
       destination_pointer: ''
     input_retrieval_policy: available-only
-    output_tags:
-    - review-output
 - id: stove0.video-archive/v1
   revision: 1
-  input_tags:
-  - stove0-video-archive
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retire-after-verified-output
@@ -941,5 +921,3 @@ recipes:
     target_options:
       preset: p4
     input_retrieval_policy: allow
-    output_tags:
-    - archive-video

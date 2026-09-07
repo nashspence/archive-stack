@@ -122,7 +122,6 @@ def workflow_intent(
         target_contract_sha256=digest(f"target-contract:{label}"),
         requested_target_options={"option": option},
         input_retrieval_policy="available-only",
-        output_tags=(f"output-{label}",) if result_kind == "collection" else (),
         retirement_policy=retirement,
         output_policy={"kind": label},
     )

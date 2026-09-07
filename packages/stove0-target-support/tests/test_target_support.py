@@ -277,7 +277,6 @@ def _controller_evidence(
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         )
     )
@@ -494,7 +493,6 @@ def _success_status(
         operation=workflow.operation.to_identity(),
         input_set_sha256=_sha("a"),
         artifact_set_sha256=_sha("b"),
-        output_tag_set_sha256=_sha("c"),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256=_sha("9"),
         controller_evidence=declaration.controller_evidence.model_dump(

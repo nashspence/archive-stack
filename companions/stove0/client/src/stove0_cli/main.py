@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.pretty import Pretty
 from rich.table import Table
 from stove0_api_client import Stove0ApiClient, Stove0ApiError
+from stove0_protocol import CollectionRootRef
 from stove0_recipe_config import RecipeCatalog
 
 app = typer.Typer(help="Operate stove0 collection workflows.")
@@ -146,7 +147,10 @@ def list_work(
 def create_work(
     context: typer.Context,
     recipe_id: str,
-    collection_ids: Annotated[list[int], typer.Argument()],
+    inputs: Annotated[
+        list[str],
+        typer.Argument(help="Collection receipt as ID:ARCHIVE_ROOT_SHA256:CONTENT_IDENTITY"),
+    ],
     preview_sha256: str = typer.Option(..., "--preview-sha256"),
     revision: int | None = typer.Option(None),
     intent: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
@@ -156,7 +160,7 @@ def create_work(
         state,
         lambda: state.client.create_work(
             recipe_id,
-            sorted(collection_ids),
+            _collection_roots(inputs),
             preview_sha256=preview_sha256,
             recipe_revision=revision,
             effective_intent=_document(intent),
@@ -218,7 +222,10 @@ def cancel_work(
 def preview(
     context: typer.Context,
     recipe_id: str,
-    collection_ids: Annotated[list[int], typer.Argument()],
+    inputs: Annotated[
+        list[str],
+        typer.Argument(help="Collection receipt as ID:ARCHIVE_ROOT_SHA256:CONTENT_IDENTITY"),
+    ],
     revision: int | None = typer.Option(None),
     intent: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
@@ -227,7 +234,7 @@ def preview(
         state,
         lambda: state.client.preview_workflow(
             recipe_id,
-            sorted(collection_ids),
+            _collection_roots(inputs),
             recipe_revision=revision,
             effective_intent=_document(intent),
         ),
@@ -340,7 +347,6 @@ def scheduler_status(context: typer.Context) -> None:
 def scheduler_run(
     context: typer.Context,
     role: str = typer.Option("combined"),
-    event_limit: int = typer.Option(100, min=1, max=100),
     work_limit: int = typer.Option(25, min=1, max=100),
 ) -> None:
     state = _context(context)
@@ -348,7 +354,6 @@ def scheduler_run(
         state,
         lambda: state.client.run_scheduler(
             role=cast(Any, role),
-            event_limit=event_limit,
             work_limit=work_limit,
         ),
     )
@@ -367,6 +372,28 @@ def _document(path: Path | None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise typer.BadParameter("JSON document must contain an object")
     return value
+
+
+def _collection_roots(values: list[str]) -> tuple[CollectionRootRef, ...]:
+    roots: list[CollectionRootRef] = []
+    for value in values:
+        fields = value.split(":")
+        if len(fields) != 3:
+            raise typer.BadParameter(
+                "collection receipt must be ID:ARCHIVE_ROOT_SHA256:CONTENT_IDENTITY"
+            )
+        collection_id, archive_root_sha256, content_identity = fields
+        try:
+            roots.append(
+                CollectionRootRef(
+                    collection_id=int(collection_id),
+                    archive_root_sha256=archive_root_sha256,
+                    content_identity=content_identity,
+                )
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(f"invalid collection receipt: {value}") from exc
+    return tuple(sorted(roots, key=lambda item: (item.collection_id, item.archive_root_sha256)))
 
 
 def _call(

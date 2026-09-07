@@ -408,7 +408,6 @@ class RecipePlanner:
                 target_contract_sha256=target.contract_sha256,
                 requested_target_options={**route.target_options, **compiled_options},
                 input_retrieval_policy=route.input_retrieval_policy,
-                output_tags=tuple(sorted(route.output_tags)),
                 retirement_policy="retain",
                 output_policy={
                     "route_id": route.id,
@@ -449,7 +448,6 @@ class RecipePlanner:
                 target_contract_sha256=target.contract_sha256,
                 requested_target_options={**join.target_options, **compiled_options},
                 input_retrieval_policy=join.input_retrieval_policy,
-                output_tags=tuple(sorted(join.output_tags)),
                 retirement_policy="retain",
                 output_policy={"route_id": join.id, "join_id": join.id},
             ),

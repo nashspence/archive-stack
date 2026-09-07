@@ -1,10 +1,10 @@
 {
-  "contract_canonical_sha256": "365bf1230e526766bfae177bd2273753c6560090922cfa83a6a355a30781d52c",
-  "contract_projection_sha256": "1103fd96caeb6d90c441d0fdd280b94d6ac1cf73d751f18fb78420b89b54624c",
+  "contract_canonical_sha256": "c9269abf4e62c0803578b63a74ccd9cfbc046fe3e6fef0b564b99868a77a5531",
+  "contract_projection_sha256": "e530f0057fd89e94fa9d6f2f5f4a0a42855bde1c4e6295aa26919180fc018372",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1841,
-    "extent_source_links": 1841,
+    "extent_decisions": 1816,
+    "extent_source_links": 1816,
     "source_authorities": 197,
     "source_kinds": {
       "cli": 5,
@@ -1964,16 +1964,6 @@
       "source_pointer": "/external_contract/cli/stove0/commands/recipe/commands/validate/parameters/0"
     },
     {
-      "id": "cli:stove0:stove0:scheduler:run:parameter:event_limit:value",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1"
-    },
-    {
-      "id": "cli:stove0:stove0:scheduler:run:parameter:event_limit:values-per-occurrence",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1"
-    },
-    {
       "id": "cli:stove0:stove0:scheduler:run:parameter:role:values-per-occurrence",
       "owner": "stove0",
       "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/0"
@@ -1981,12 +1971,12 @@
     {
       "id": "cli:stove0:stove0:scheduler:run:parameter:work_limit:value",
       "owner": "stove0",
-      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/2"
+      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1"
     },
     {
       "id": "cli:stove0:stove0:scheduler:run:parameter:work_limit:values-per-occurrence",
       "owner": "stove0",
-      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/2"
+      "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1"
     },
     {
       "id": "cli:stove0:stove0:selection:show:parameter:continuation:values-per-occurrence",
@@ -2509,11 +2499,6 @@
       "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeDefinition/properties/artifact_associations"
     },
     {
-      "id": "configuration:stove0-recipes:/$defs/RecipeDefinition/properties/input_tags:cardinality",
-      "owner": "stove0-recipes",
-      "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeDefinition/properties/input_tags"
-    },
-    {
       "id": "configuration:stove0-recipes:/$defs/RecipeDefinition/properties/observers:cardinality",
       "owner": "stove0-recipes",
       "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeDefinition/properties/observers"
@@ -2532,11 +2517,6 @@
       "id": "configuration:stove0-recipes:/$defs/RecipeJoin/properties/members:cardinality",
       "owner": "stove0-recipes",
       "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeJoin/properties/members"
-    },
-    {
-      "id": "configuration:stove0-recipes:/$defs/RecipeJoin/properties/output_tags:cardinality",
-      "owner": "stove0-recipes",
-      "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeJoin/properties/output_tags"
     },
     {
       "id": "configuration:stove0-recipes:/$defs/RecipeJoin/properties/projections:cardinality",
@@ -2572,11 +2552,6 @@
       "id": "configuration:stove0-recipes:/$defs/RecipeRoute/properties/intent:map-cardinality",
       "owner": "stove0-recipes",
       "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeRoute/properties/intent"
-    },
-    {
-      "id": "configuration:stove0-recipes:/$defs/RecipeRoute/properties/output_tags:cardinality",
-      "owner": "stove0-recipes",
-      "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeRoute/properties/output_tags"
     },
     {
       "id": "configuration:stove0-recipes:/$defs/RecipeRoute/properties/projections:cardinality",
@@ -3117,11 +3092,6 @@
       "id": "http:riverhog:components:/schemas/CollectionDerivationDocument/properties/input_set_sha256:length",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionDerivationDocument/properties/input_set_sha256"
-    },
-    {
-      "id": "http:riverhog:components:/schemas/CollectionDerivationDocument/properties/output_tag_set_sha256:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionDerivationDocument/properties/output_tag_set_sha256"
     },
     {
       "id": "http:riverhog:components:/schemas/CollectionDerivationResponseDocument/properties/document_sha256:length",
@@ -3687,16 +3657,6 @@
       "id": "http:riverhog:components:/schemas/OutcomeSetDocument/properties/failure/anyOf/0:length",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutcomeSetDocument/properties/failure/anyOf/0"
-    },
-    {
-      "id": "http:riverhog:components:/schemas/OutputTagBatchDocument/properties/tags:cardinality",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutputTagBatchDocument/properties/tags"
-    },
-    {
-      "id": "http:riverhog:components:/schemas/OutputTagPageDocument/properties/tags:cardinality",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutputTagPageDocument/properties/tags"
     },
     {
       "id": "http:riverhog:components:/schemas/PendingArchiveRootPublicationOut/properties/sha256/anyOf/0:length",
@@ -4489,11 +4449,6 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1inputs/put/parameters/0/schema"
     },
     {
-      "id": "http:riverhog:operation:append_processing_claim_output_tags:parameter:path:claim_id:/:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/put/parameters/0/schema"
-    },
-    {
       "id": "http:riverhog:operation:append_transform_capability_artifacts:parameter:path:claim_id:/:length",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1capabilities~1{capability_id}~1artifacts/put/parameters/0/schema"
@@ -4774,21 +4729,6 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1outcomes/get/parameters/1/schema"
     },
     {
-      "id": "http:riverhog:operation:list_processing_claim_output_tags:logical-result",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get"
-    },
-    {
-      "id": "http:riverhog:operation:list_processing_claim_output_tags:parameter:path:claim_id:/:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get/parameters/0/schema"
-    },
-    {
-      "id": "http:riverhog:operation:list_processing_claim_output_tags:parameter:query:authority_sha256:/:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get/parameters/1/schema"
-    },
-    {
       "id": "http:riverhog:operation:list_processing_claims:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims/get"
@@ -4917,11 +4857,6 @@
       "id": "http:riverhog:operation:seal_processing_claim_inputs:parameter:path:claim_id:/:length",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1inputs~1seal/post/parameters/0/schema"
-    },
-    {
-      "id": "http:riverhog:operation:seal_processing_claim_output_tags:parameter:path:claim_id:/:length",
-      "owner": "riverhog",
-      "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags~1seal/post/parameters/0/schema"
     },
     {
       "id": "http:riverhog:operation:seal_processing_claim_plan:parameter:path:claim_id:/:length",
@@ -5919,11 +5854,6 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeDefinition/properties/artifact_associations"
     },
     {
-      "id": "http:stove0:components:/schemas/RecipeDefinition/properties/input_tags:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeDefinition/properties/input_tags"
-    },
-    {
       "id": "http:stove0:components:/schemas/RecipeDefinition/properties/observers:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeDefinition/properties/observers"
@@ -5942,11 +5872,6 @@
       "id": "http:stove0:components:/schemas/RecipeJoin/properties/members:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeJoin/properties/members"
-    },
-    {
-      "id": "http:stove0:components:/schemas/RecipeJoin/properties/output_tags:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeJoin/properties/output_tags"
     },
     {
       "id": "http:stove0:components:/schemas/RecipeJoin/properties/projections:cardinality",
@@ -5984,11 +5909,6 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeRoute/properties/intent"
     },
     {
-      "id": "http:stove0:components:/schemas/RecipeRoute/properties/output_tags:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeRoute/properties/output_tags"
-    },
-    {
       "id": "http:stove0:components:/schemas/RecipeRoute/properties/projections:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeRoute/properties/projections"
@@ -6009,21 +5929,6 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeView/properties/sha256"
     },
     {
-      "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/failures:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/failures"
-    },
-    {
-      "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/work_ids/items:length",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/work_ids/items"
-    },
-    {
-      "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/work_ids:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/work_ids"
-    },
-    {
       "id": "http:stove0:components:/schemas/SchedulerFailure/properties/error:length",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerFailure/properties/error"
@@ -6032,11 +5937,6 @@
       "id": "http:stove0:components:/schemas/SchedulerFailure/properties/work_id/anyOf/0:length",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerFailure/properties/work_id/anyOf/0"
-    },
-    {
-      "id": "http:stove0:components:/schemas/SchedulerRunIn/properties/event_limit:value",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerRunIn/properties/event_limit"
     },
     {
       "id": "http:stove0:components:/schemas/SchedulerRunIn/properties/work_limit:value",
@@ -6279,19 +6179,14 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkClaimView/properties/claim_id"
     },
     {
-      "id": "http:stove0:components:/schemas/WorkCreateIn/properties/collection_ids/items:open-value",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/collection_ids/items"
-    },
-    {
-      "id": "http:stove0:components:/schemas/WorkCreateIn/properties/collection_ids:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/collection_ids"
-    },
-    {
       "id": "http:stove0:components:/schemas/WorkCreateIn/properties/effective_intent:map-cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/effective_intent"
+    },
+    {
+      "id": "http:stove0:components:/schemas/WorkCreateIn/properties/inputs:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/inputs"
     },
     {
       "id": "http:stove0:components:/schemas/WorkCreateIn/properties/preview_sha256:length",
@@ -6419,11 +6314,6 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlan/properties/output_policy"
     },
     {
-      "id": "http:stove0:components:/schemas/WorkflowPlan/properties/output_tags:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlan/properties/output_tags"
-    },
-    {
       "id": "http:stove0:components:/schemas/WorkflowPlan/properties/requested_target_options:map-cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlan/properties/requested_target_options"
@@ -6442,11 +6332,6 @@
       "id": "http:stove0:components:/schemas/WorkflowPlanIntent/properties/output_policy:map-cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlanIntent/properties/output_policy"
-    },
-    {
-      "id": "http:stove0:components:/schemas/WorkflowPlanIntent/properties/output_tags:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlanIntent/properties/output_tags"
     },
     {
       "id": "http:stove0:components:/schemas/WorkflowPlanIntent/properties/requested_target_options:map-cardinality",
@@ -6494,19 +6379,14 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreview/properties/warnings"
     },
     {
-      "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/collection_ids/items:open-value",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/collection_ids/items"
-    },
-    {
-      "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/collection_ids:cardinality",
-      "owner": "stove0",
-      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/collection_ids"
-    },
-    {
       "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/effective_intent:map-cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/effective_intent"
+    },
+    {
+      "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/inputs:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/inputs"
     },
     {
       "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/recipe_id:length",
@@ -8304,11 +8184,6 @@
       "source_pointer": "/external_contract/protocol_schemas/generated:stove0-target/schemas/TargetConformanceResult/$defs/WorkflowPlan/properties/output_policy"
     },
     {
-      "id": "protocol:generated:stove0-target:definition:WorkflowPlan:/properties/output_tags:cardinality",
-      "owner": "stove0-target-protocol",
-      "source_pointer": "/external_contract/protocol_schemas/generated:stove0-target/schemas/TargetConformanceResult/$defs/WorkflowPlan/properties/output_tags"
-    },
-    {
       "id": "protocol:generated:stove0-target:definition:WorkflowPlan:/properties/requested_target_options:map-cardinality",
       "owner": "stove0-target-protocol",
       "source_pointer": "/external_contract/protocol_schemas/generated:stove0-target/schemas/TargetConformanceResult/$defs/WorkflowPlan/properties/requested_target_options"
@@ -9809,42 +9684,6 @@
             "module": "riverhog_api.routers.workflows",
             "path": "riverhog/server/src/riverhog_api/routers/workflows.py",
             "symbol": "seal_processing_claim_artifacts"
-          }
-        },
-        {
-          "methods": [
-            "PUT"
-          ],
-          "operation_id": "append_processing_claim_output_tags",
-          "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags",
-          "source": {
-            "module": "riverhog_api.routers.workflows",
-            "path": "riverhog/server/src/riverhog_api/routers/workflows.py",
-            "symbol": "append_processing_claim_output_tags"
-          }
-        },
-        {
-          "methods": [
-            "GET"
-          ],
-          "operation_id": "list_processing_claim_output_tags",
-          "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags",
-          "source": {
-            "module": "riverhog_api.routers.workflows",
-            "path": "riverhog/server/src/riverhog_api/routers/workflows.py",
-            "symbol": "list_processing_claim_output_tags"
-          }
-        },
-        {
-          "methods": [
-            "POST"
-          ],
-          "operation_id": "seal_processing_claim_output_tags",
-          "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags/seal",
-          "source": {
-            "module": "riverhog_api.routers.workflows",
-            "path": "riverhog/server/src/riverhog_api/routers/workflows.py",
-            "symbol": "seal_processing_claim_output_tags"
           }
         },
         {
@@ -12825,7 +12664,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "85411e270ff7c1c21ff0ee47337b9cb6c18b1ee539eb3d84a517378801702e45"
+          "sha256": "f2b8e9bbbef041903e531c800d59e976aa188824196a63cc3c4f34f2fe9b97f6"
         }
       ],
       "id": "state:riverhog-catalog"
@@ -12870,19 +12709,19 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/stove0-target/transform.accepted.json",
-          "sha256": "b8054c490fc5d75c3bd08644a5e48705a9130c3fe67b02fbb13d7918e66724a9"
+          "sha256": "a7a558f503adc7905717e7a99404bc42132f55e639bcb56cf0d194c4058dd4fc"
         },
         {
           "path": "tests/fixtures/state/v1_0001/stove0-target/transform.status.json",
-          "sha256": "79948514ea597e7168b96d3e79ad88bd8e8f96a7473148702540e0b3cac31658"
+          "sha256": "29254d1dc7d6429b8368f311c1d25fee6bf059f55d5f1b9e309e507659920cf7"
         },
         {
           "path": "tests/fixtures/state/v1_0001/stove0-target/effect.accepted.json",
-          "sha256": "44313cc761b5d2ab76e565678c292e906a71df9f70397e4c7cbab96ba064effe"
+          "sha256": "dbb18aa80a2e9e15f6dacf3194928b42411aea66004bb20663ab90749ad8e33b"
         },
         {
           "path": "tests/fixtures/state/v1_0001/stove0-target/effect.status.json",
-          "sha256": "a4fd951e7d3e3c03e4211feea0be1cdff9b29ae5377fee80ed27f752f7013da9"
+          "sha256": "626cdf4d36eedf18fcd596fb81a6c49ea1fea98845f773ec33f8dd0b00887071"
         }
       ],
       "id": "state:stove0-target-jobs"

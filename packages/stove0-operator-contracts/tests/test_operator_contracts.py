@@ -151,18 +151,30 @@ def test_evaluation_review_request_is_meaningful_and_canonical() -> None:
 
 
 def test_operator_requests_share_one_exact_canonical_collection_contract() -> None:
+    roots = (
+        CollectionRootRef(
+            collection_id=1,
+            archive_root_sha256="1" * 64,
+            content_identity="2" * 64,
+        ),
+        CollectionRootRef(
+            collection_id=2,
+            archive_root_sha256="3" * 64,
+            content_identity="4" * 64,
+        ),
+    )
     preview = WorkflowPreviewIn(
         recipe_id="fixture.recipe/v1",
-        collection_ids=(1, 2),
+        inputs=roots,
     )
     created = WorkCreateIn(
         **preview.model_dump(mode="python"),
         preview_sha256="4" * 64,
     )
 
-    assert created.collection_ids == (1, 2)
-    with pytest.raises(ValidationError, match="positive, unique, and ordered"):
-        WorkflowPreviewIn(recipe_id="fixture.recipe/v1", collection_ids=(2, 1))
+    assert created.inputs == roots
+    with pytest.raises(ValidationError, match="unique and canonically ordered"):
+        WorkflowPreviewIn(recipe_id="fixture.recipe/v1", inputs=tuple(reversed(roots)))
 
 
 def test_stove0_events_use_one_closed_typed_operator_vocabulary() -> None:

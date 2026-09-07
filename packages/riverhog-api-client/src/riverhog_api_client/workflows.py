@@ -35,8 +35,6 @@ from riverhog_protocol.collection_workflow_transport import (
     CollectionRootIdentityDocument,
     CollectionRootPageDocument,
     OperationIdentityDocument,
-    OutputTagBatchDocument,
-    OutputTagPageDocument,
     ProcessingClaimAbandonDocument,
     ProcessingClaimCreateDocument,
     ProcessingClaimDocument,
@@ -279,7 +277,6 @@ class CollectionWorkflowMethods:
         operation_id: str,
         operation_sha256: str,
         input_artifacts: Iterable[ArtifactInput],
-        output_tags: Iterable[str],
         retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
     ) -> ProcessingClaimDocument:
@@ -294,16 +291,6 @@ class CollectionWorkflowMethods:
             )
             artifact_ordinal = staged_artifacts.count
         self.seal_processing_claim_artifacts(claim_id, fence=fence)
-        tag_ordinal = claim.plan.output_tags.count if claim.plan is not None else 0
-        for chunk in _chunks(output_tags, maximum=WORKFLOW_SET_BATCH_MAX):
-            staged_tags = self.append_processing_claim_output_tags(
-                claim_id,
-                fence=fence,
-                start_ordinal=tag_ordinal,
-                tags=chunk,
-            )
-            tag_ordinal = staged_tags.count
-        self.seal_processing_claim_output_tags(claim_id, fence=fence)
         request = ProcessingClaimPlanSealDocument(
             fence=fence,
             execution_id=execution_id,
@@ -363,59 +350,6 @@ class CollectionWorkflowMethods:
             self._json(
                 "GET",
                 f"/v1/collection-processing-claims/{_claim_id(claim_id)}/plan/artifacts",
-                params={
-                    "authority_sha256": authority_sha256,
-                    "start_ordinal": start_ordinal,
-                },
-            )
-        )
-
-    def append_processing_claim_output_tags(
-        self,
-        claim_id: ProcessingClaimId,
-        *,
-        fence: int,
-        start_ordinal: int,
-        tags: Sequence[str],
-    ) -> ReceivingSetDocument:
-        request = OutputTagBatchDocument(
-            fence=fence,
-            start_ordinal=start_ordinal,
-            tags=list(tags),
-        )
-        return ReceivingSetDocument.model_validate(
-            self._json(
-                "PUT",
-                f"/v1/collection-processing-claims/{_claim_id(claim_id)}/plan/output-tags",
-                json=_dump(request),
-            )
-        )
-
-    def seal_processing_claim_output_tags(
-        self,
-        claim_id: ProcessingClaimId,
-        *,
-        fence: int,
-    ) -> ReceivingSetDocument:
-        return ReceivingSetDocument.model_validate(
-            self._json(
-                "POST",
-                f"/v1/collection-processing-claims/{_claim_id(claim_id)}/plan/output-tags/seal",
-                json=_dump(ProcessingClaimFenceDocument(fence=fence)),
-            )
-        )
-
-    def list_processing_claim_output_tags(
-        self,
-        claim_id: ProcessingClaimId,
-        *,
-        authority_sha256: str,
-        start_ordinal: int = 0,
-    ) -> OutputTagPageDocument:
-        return OutputTagPageDocument.model_validate(
-            self._json(
-                "GET",
-                f"/v1/collection-processing-claims/{_claim_id(claim_id)}/plan/output-tags",
                 params={
                     "authority_sha256": authority_sha256,
                     "start_ordinal": start_ordinal,

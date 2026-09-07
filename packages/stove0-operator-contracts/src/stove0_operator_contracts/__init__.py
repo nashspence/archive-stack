@@ -20,6 +20,7 @@ from stove0_observer_protocol import ObservationRequest, ObservationResult
 from stove0_protocol import (
     ArtifactSelectionPage,
     BranchSetPlan,
+    CollectionRootRef,
     ControllerEvidence,
     CoordinationSettlement,
     EvaluationDefinition,
@@ -223,14 +224,19 @@ class OperatorModel(BaseModel):
 class WorkflowPreviewIn(OperatorModel):
     recipe_id: str = Field(min_length=1, max_length=160)
     recipe_revision: int | None = Field(default=None, ge=1)
-    collection_ids: tuple[int, ...] = Field(min_length=1)
+    inputs: tuple[CollectionRootRef, ...] = Field(min_length=1)
     effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
 
-    @field_validator("collection_ids")
+    @field_validator("inputs")
     @classmethod
-    def canonical_collections(cls, value: tuple[int, ...]) -> tuple[int, ...]:
-        if value != tuple(sorted(set(value))) or any(item < 1 for item in value):
-            raise ValueError("collection IDs must be positive, unique, and ordered")
+    def canonical_inputs(
+        cls, value: tuple[CollectionRootRef, ...]
+    ) -> tuple[CollectionRootRef, ...]:
+        ordered = tuple(
+            sorted(value, key=lambda item: (item.collection_id, item.archive_root_sha256))
+        )
+        if value != ordered or len(value) != len({item.collection_id for item in value}):
+            raise ValueError("collection roots must be unique and canonically ordered")
         return value
 
 
@@ -262,7 +268,6 @@ class EvaluationReviewIn(OperatorModel):
 
 class SchedulerRunIn(OperatorModel):
     role: SchedulerRole = "combined"
-    event_limit: int = Field(default=100, ge=1, le=100)
     work_limit: int = Field(default=25, ge=1, le=100)
 
 
@@ -641,7 +646,6 @@ class RecipeCatalogView(OperatorModel):
 class SchedulerStatus(OperatorModel):
     running: bool
     interval_seconds: float = Field(gt=0)
-    cursor: str
     roles: tuple[SchedulerRole, ...]
 
 
@@ -655,14 +659,6 @@ class SchedulerFailure(OperatorModel):
         if (self.event_id is None) == (self.work_id is None):
             raise ValueError("scheduler failure requires exactly one subject")
         return self
-
-
-class SchedulerEventBatch(OperatorModel):
-    events: int = Field(ge=0)
-    next_cursor: str | None
-    has_more: bool
-    work_ids: tuple[Sha256, ...]
-    failures: tuple[SchedulerFailure, ...] = ()
 
 
 class SchedulerWorkBatch(OperatorModel):
@@ -686,7 +682,6 @@ class SchedulerPruning(OperatorModel):
 
 class SchedulerRun(OperatorModel):
     pruning: SchedulerPruning | None
-    events: SchedulerEventBatch
     work: SchedulerWorkBatch
 
 
@@ -719,7 +714,6 @@ __all__ = [
     "JoinAdmittedEventData",
     "RecipeCatalogView",
     "RecipeView",
-    "SchedulerEventBatch",
     "SchedulerFailure",
     "SchedulerPruning",
     "SchedulerRole",

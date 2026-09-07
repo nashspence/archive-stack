@@ -777,7 +777,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operation_id=operation_identity.id,
         operation_sha256=operation_identity.sha256,
         input_artifacts=(source_artifact,),
-        output_tags=("reviewed",),
         retirement_policy="retain",
     )
     assert sealed["plan"]["execution_id"] == execution_id
@@ -800,10 +799,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         .path
         == "document.txt"
     )
-    assert operator.list_processing_claim_output_tags(
-        claim_id,
-        authority_sha256=str(sealed_plan["output_tags"]["sha256"]),
-    ).tags == ["reviewed"]
     output_capability = operator.create_transform_capability(
         claim_id,
         fence=claim_fence,
@@ -871,7 +866,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operation=operation_identity,
         input_set_sha256=str(plan["inputs"]["sha256"]),
         artifact_set_sha256=str(plan["artifacts"]["sha256"]),
-        output_tag_set_sha256=str(plan["output_tags"]["sha256"]),
         execution_envelope_sha256=execution_id,
         execution_sha256=hashlib.sha256(b"qualification-execution-result").hexdigest(),
         controller_evidence=controller_evidence,
@@ -964,7 +958,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             hashlib.sha256(b"unauthorized-output").hexdigest(),
-            ["reviewed"],
+            [],
             ingest_source=f"transform:{execution_id}",
             provenance_mode="omitted",
             provenance_omission_reason="qualification transform evidence",
@@ -972,7 +966,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             execution_id,
-            ["reviewed"],
+            [],
             ingest_source="transform:another-execution",
             provenance_mode="omitted",
             provenance_omission_reason="qualification transform evidence",
@@ -980,7 +974,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     with pytest.raises(Forbidden):
         target.create_or_resume_collection_upload_session(
             execution_id,
-            ["reviewed"],
+            [],
             ingest_source=f"transform:{execution_id}",
             archive_store="primary",
             provenance_mode="omitted",
@@ -988,14 +982,14 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
     target_session = target.create_or_resume_collection_upload_session(
         execution_id,
-        ["reviewed"],
+        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )
     output_collection_id = int(target_session["collection_id"])
     replayed_target_session = target.create_or_resume_collection_upload_session(
         execution_id,
-        ["reviewed"],
+        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )
@@ -1059,7 +1053,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert target.get_collection_upload_session(output_collection_id)["state"] == "finalized"
     replayed_output = target.create_or_resume_collection_upload_session(
         execution_id,
-        ["reviewed"],
+        [],
         ingest_source=f"transform:{execution_id}",
         provenance_mode="captured",
     )

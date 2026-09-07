@@ -22,6 +22,7 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "rich>=15.0,<16.0",
   "stove0-api-client>=0.1,<0.2",
+  "stove0-protocol>=0.1,<0.2",
   "stove0-recipe-config>=0.1,<0.2",
   "typer>=0.12,<1.0",
 ]
@@ -31,6 +32,7 @@ stove0 = "stove0_cli.main:main"
 
 [tool.uv.sources]
 stove0-api-client = { workspace = true }
+stove0-protocol = { workspace = true }
 stove0-recipe-config = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

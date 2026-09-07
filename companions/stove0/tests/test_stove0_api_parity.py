@@ -332,13 +332,6 @@ class _LifecycleScheduler:
     def run_once(self, **_kwargs: object) -> dict[str, object]:
         return {
             "pruning": None,
-            "events": {
-                "events": 0,
-                "next_cursor": "0",
-                "has_more": False,
-                "work_ids": [],
-                "failures": [],
-            },
             "work": {
                 "role": "combined",
                 "cursor": "",
@@ -381,6 +374,19 @@ def _lifecycle_composition() -> Stove0Composition:
         evaluations=cast(EvaluationService, _LifecycleEvaluations(state)),
         scheduler=cast(Stove0Scheduler, _LifecycleScheduler()),
     )
+
+
+def _collection_root(collection_id: int = 1) -> CollectionRootRef:
+    return CollectionRootRef(
+        collection_id=collection_id,
+        archive_root_sha256="1" * 64,
+        content_identity="2" * 64,
+    )
+
+
+def _collection_root_argument(collection_id: int = 1) -> str:
+    root = _collection_root(collection_id)
+    return f"{root.collection_id}:{root.archive_root_sha256}:{root.content_identity}"
 
 
 def _evaluation_definition() -> EvaluationDefinition:
@@ -468,7 +474,6 @@ def _ready_preview(work: WorkIdentity) -> WorkflowPreview:
             operation=operation,
             target_registration_id="fixture-target",
             target_contract_sha256="7" * 64,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         ),
     )
@@ -696,13 +701,19 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert recipe_page.recipes[0].sha256
         assert client.get_recipe("stove0.conformance-media/v1").sha256
         assert client.list_work().work == ()
-        preview = client.preview_workflow("stove0.conformance-media/v1", [1])
+        preview = client.preview_workflow("stove0.conformance-media/v1", [_collection_root()])
         created = client.create_work(
             "stove0.conformance-media/v1",
-            [1],
+            [_collection_root()],
+            preview_sha256=preview.preview_sha256,
+        )
+        retried_after_lost_response = client.create_work(
+            "stove0.conformance-media/v1",
+            [_collection_root()],
             preview_sha256=preview.preview_sha256,
         )
         assert created.work_id == _fixture_work().work_id
+        assert retried_after_lost_response == created
         fetched = client.get_work(created.work_id)
         assert fetched.work_id == created.work_id
         assert client.inspect_work_coordination(created.work_id).branch_set_succeeded is False
@@ -860,10 +871,10 @@ def test_stove0_request_bodies_have_one_shared_public_contract_owner() -> None:
 def test_workflow_request_accepts_the_complete_exact_input_set() -> None:
     request = WorkflowPreviewIn(
         recipe_id="fixture.recipe/v1",
-        collection_ids=tuple(range(1, 1002)),
+        inputs=tuple(_collection_root(index) for index in range(1, 1002)),
     )
 
-    assert len(request.collection_ids) == 1001
+    assert len(request.inputs) == 1001
 
 
 def test_scheduler_work_failures_are_operator_visible(
@@ -886,30 +897,6 @@ def test_scheduler_work_failures_are_operator_visible(
     assert (
         "stove0 controller scheduler could not advance work work-1: "
         "Conflict: processing outcomes differ"
-    ) in caplog.text
-
-
-def test_scheduler_event_failures_are_operator_visible(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    _log_scheduler_failures(
-        "controller",
-        {
-            "events": {
-                "failures": [
-                    {
-                        "event_id": "event-1",
-                        "error": "ValueError: invalid collection identity",
-                    }
-                ]
-            },
-            "work": {"failures": []},
-        },
-    )
-
-    assert (
-        "stove0 controller scheduler could not reconcile lifecycle event event-1: "
-        "ValueError: invalid collection identity"
     ) in caplog.text
 
 
@@ -983,10 +970,31 @@ def test_stove0_runtime_errors_use_the_shared_envelope() -> None:
         malformed = client.post(
             "/v1/work",
             headers={"Authorization": "Bearer stove0-test-token"},
-            json={"recipe_id": "fixture", "collection_ids": []},
+            json={"recipe_id": "fixture", "inputs": []},
         )
         assert malformed.status_code == 400
         assert malformed.json()["error"]["code"] == "bad_request"
+
+
+def test_workflow_preview_rejects_a_receipt_from_another_riverhog_authority() -> None:
+    app = create_app(_lifecycle_composition())
+    mismatched = _collection_root().model_copy(update={"archive_root_sha256": "f" * 64})
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/workflow-previews",
+            headers={"Authorization": "Bearer stove0-test-token"},
+            json={
+                "recipe_id": "stove0.conformance-media/v1",
+                "inputs": [mismatched.model_dump(mode="json")],
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == {
+        "code": "conflict",
+        "message": "collection receipt differs from Riverhog: 1",
+    }
 
 
 def test_stove0_client_preserves_the_public_wire_error() -> None:
@@ -1042,7 +1050,7 @@ def test_installed_conformance_catalog_is_exact_through_api_client_and_cli(
         client._client = cast(Any, TimeoutNeutralTestClient(transport))  # type: ignore[assignment]
         page = client.list_recipes()
         recipe = client.get_recipe("stove0.conformance-media/v1")
-        preview = client.preview_workflow("stove0.conformance-media/v1", [1])
+        preview = client.preview_workflow("stove0.conformance-media/v1", [_collection_root()])
 
         def cli_client(*_args: object, **_kwargs: object) -> Stove0ApiClient:
             value = Stove0ApiClient(
@@ -1058,10 +1066,18 @@ def test_installed_conformance_catalog_is_exact_through_api_client_and_cli(
 
         monkeypatch.setattr(stove0_cli, "Stove0ApiClient", cli_client)
         runner = CliRunner()
-        human = runner.invoke(stove0_cli.app, ["preview", "stove0.conformance-media/v1", "1"])
+        human = runner.invoke(
+            stove0_cli.app,
+            ["preview", "stove0.conformance-media/v1", _collection_root_argument()],
+        )
         machine = runner.invoke(
             stove0_cli.app,
-            ["--json", "preview", "stove0.conformance-media/v1", "1"],
+            [
+                "--json",
+                "preview",
+                "stove0.conformance-media/v1",
+                _collection_root_argument(),
+            ],
         )
 
     assert page.catalog_sha256 == catalog.sha256

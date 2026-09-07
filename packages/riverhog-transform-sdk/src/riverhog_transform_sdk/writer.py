@@ -117,7 +117,6 @@ class DerivedCollectionWriter:
             raise ValueError("derived collection writer requires the sealed claim plan")
         self.input_set_sha256 = plan.inputs.sha256
         self.artifact_set_sha256 = plan.artifacts.sha256
-        self.output_tag_set_sha256 = plan.output_tags.sha256
 
     def replace_api(self, api: Any) -> None:
         self.api = api
@@ -155,7 +154,6 @@ class DerivedCollectionWriter:
             operation=self.spec.operation,
             input_set_sha256=self.input_set_sha256,
             artifact_set_sha256=self.artifact_set_sha256,
-            output_tag_set_sha256=self.output_tag_set_sha256,
             execution_envelope_sha256=_sha256(
                 execution_envelope_sha256,
                 "execution envelope identity",
@@ -171,7 +169,7 @@ class DerivedCollectionWriter:
             adapter_id="riverhog-derived-collection/v1",
             adapter_version=self.producer_version,
             ingest_source=f"transform:{self.execution_id}",
-            tags=self.spec.output_tags,
+            tags=(),
             source_event_id=self.execution_id,
             source_context={
                 **dict(source_context or {}),
@@ -254,7 +252,6 @@ class IncrementalDerivedCollectionWriter:
             raise ValueError("incremental writer requires the sealed claim plan")
         self.input_set_sha256 = plan.inputs.sha256
         self.artifact_set_sha256 = plan.artifacts.sha256
-        self.output_tag_set_sha256 = plan.output_tags.sha256
         self._artifacts: dict[str, ProducerArtifactIdentity] = {}
         self.producer = IncrementalCollectionProducer(
             api,
@@ -262,7 +259,7 @@ class IncrementalDerivedCollectionWriter:
             adapter_id="riverhog-derived-collection/v1",
             adapter_version=producer_version,
             ingest_source=f"transform:{self.execution_id}",
-            tags=spec.output_tags,
+            tags=(),
             source_event_id=self.execution_id,
             source_context={
                 **dict(source_context or {}),
@@ -337,7 +334,6 @@ class IncrementalDerivedCollectionWriter:
             operation=self.spec.operation,
             input_set_sha256=self.input_set_sha256,
             artifact_set_sha256=self.artifact_set_sha256,
-            output_tag_set_sha256=self.output_tag_set_sha256,
             execution_envelope_sha256=self.execution_envelope_sha256,
             execution_sha256=_sha256(execution_sha256, "execution evidence identity"),
             controller_evidence=cast(dict[str, JsonValue], self.controller_evidence),

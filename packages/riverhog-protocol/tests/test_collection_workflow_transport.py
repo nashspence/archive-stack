@@ -134,7 +134,7 @@ def test_transform_capability_actions_are_the_exact_read_contract() -> None:
             capability.model_dump(mode="json")
         )
 
-    for actions in (["write-output"], ["read-inputs", "manage-output-tags"]):
+    for actions in (["write-output"], ["read-inputs", "manage-output"]):
         invalid = {
             "fence": 1,
             "audience": "transform:test",

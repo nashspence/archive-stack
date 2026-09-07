@@ -127,7 +127,6 @@ class RecipeRoute(_RecipeRouteBase):
     target_registration_id: str
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = ()
 
 
 class RecipeCoordinationRoute(_RecipeRouteBase):
@@ -169,7 +168,6 @@ class RecipeJoin(RecipeModel):
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
     projections: tuple[OperationProjection, ...] = ()
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def canonical_projections(self) -> Self:
@@ -180,7 +178,6 @@ class RecipeJoin(RecipeModel):
 class RecipeDefinition(RecipeModel):
     id: SemanticId
     revision: int = Field(ge=1)
-    input_tags: tuple[str, ...] = Field(min_length=1)
     event_input_closure: Literal["single-finalized-collection"] = "single-finalized-collection"
     artifact_associations: tuple[ArtifactAssociation, ...] = ()
     observers: tuple[ObserverUse, ...] = ()
@@ -193,8 +190,6 @@ class RecipeDefinition(RecipeModel):
 
     @model_validator(mode="after")
     def canonical_members(self) -> Self:
-        if self.input_tags != tuple(sorted(set(self.input_tags))):
-            raise ValueError("recipe input tags must be unique and canonical")
         association_roles = [item.primary_role for item in self.artifact_associations]
         if association_roles != sorted(association_roles) or len(association_roles) != len(
             set(association_roles)
@@ -280,15 +275,6 @@ class RecipeCatalog(RecipeModel):
             for route in recipe.routes:
                 if isinstance(route, RecipeCoordinationRoute):
                     continue
-                operation = operations[route.operation_id]
-                if operation.result_kind == "collection" and not route.output_tags:
-                    raise ValueError(
-                        f"recipe {recipe.id} collection branch {route.id} requires output tags"
-                    )
-                if operation.result_kind == "external-effect" and route.output_tags:
-                    raise ValueError(
-                        f"recipe {recipe.id} effect branch {route.id} cannot declare output tags"
-                    )
             if recipe.join is not None:
                 join_operation = operations[recipe.join.operation_id]
                 if join_operation.result_kind != "collection":
@@ -356,12 +342,6 @@ class RecipeCatalog(RecipeModel):
         if not matches:
             raise KeyError(recipe_id)
         return max(matches, key=lambda recipe: recipe.revision)
-
-    def matching(self, tags: tuple[str, ...] | list[str]) -> tuple[RecipeDefinition, ...]:
-        available = set(tags)
-        return tuple(
-            recipe for recipe in self.recipes if set(recipe.input_tags).issubset(available)
-        )
 
     def validation_document(self) -> dict[str, JsonValue]:
         return {

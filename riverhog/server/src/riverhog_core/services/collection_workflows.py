@@ -66,13 +66,11 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionRecord,
     CollectionUploadRecord,
-    TagRecord,
 )
 from riverhog_core.catalog_workflow_models import (
     CollectionDerivationRecord,
     CollectionProcessingClaimArtifactRecord,
     CollectionProcessingClaimInputRecord,
-    CollectionProcessingClaimOutputTagRecord,
     CollectionProcessingClaimRecord,
     CollectionProcessingDispositionOutputRecord,
     CollectionProcessingDispositionRecord,
@@ -467,119 +465,6 @@ class SqlAlchemyCollectionWorkflowService:
                 ],
             }
 
-    def append_claim_output_tags(
-        self,
-        claim_id: str,
-        *,
-        fence: int,
-        start_ordinal: int,
-        tags: Sequence[str],
-        principal: ApplicationPrincipal,
-    ) -> dict[str, object]:
-        values = tuple(str(item) for item in tags)
-        _bounded_batch(values, "output tag")
-        if values != tuple(sorted(set(values))):
-            raise BadRequest("output tags must be unique and canonically ordered")
-        with session_scope(self._session_factory) as session:
-            claim = _owned_claim(session, claim_id, principal, lock=True)
-            _require_live_claim(claim, fence=fence)
-            if claim.output_tags_sealed_at is not None:
-                return _output_tag_set_payload(claim)
-            ordinal = _append_start(start_ordinal, claim.output_tag_count)
-            checkpoint = _tag_checkpoint(claim.output_tag_hash_state)
-            for value in values:
-                if session.get(TagRecord, value) is None:
-                    raise BadRequest(f"output tag does not exist: {value}")
-                if ordinal < claim.output_tag_count:
-                    current = session.scalar(
-                        select(CollectionProcessingClaimOutputTagRecord).where(
-                            CollectionProcessingClaimOutputTagRecord.claim_id == claim.id,
-                            CollectionProcessingClaimOutputTagRecord.tag_order == ordinal,
-                        )
-                    )
-                    if current is None or current.tag != value:
-                        raise Conflict("output-tag retry differs from staged authority")
-                    ordinal += 1
-                    continue
-                previous = session.scalar(
-                    select(CollectionProcessingClaimOutputTagRecord.tag)
-                    .where(CollectionProcessingClaimOutputTagRecord.claim_id == claim.id)
-                    .order_by(CollectionProcessingClaimOutputTagRecord.tag_order.desc())
-                    .limit(1)
-                )
-                if previous is not None and value <= previous:
-                    raise BadRequest("output tags must remain canonically ordered across batches")
-                session.add(
-                    CollectionProcessingClaimOutputTagRecord(
-                        claim_id=claim.id,
-                        tag=value,
-                        tag_order=ordinal,
-                    )
-                )
-                _checkpoint_tag(checkpoint, value, ordinal=ordinal)
-                claim.output_tag_count += 1
-                ordinal += 1
-                session.flush()
-            claim.output_tag_hash_state = checkpoint.export_state()
-            claim.updated_at = utc_timestamp_now()
-            return _output_tag_set_payload(claim)
-
-    def seal_claim_output_tags(
-        self,
-        claim_id: str,
-        *,
-        fence: int,
-        principal: ApplicationPrincipal,
-    ) -> dict[str, object]:
-        with session_scope(self._session_factory) as session:
-            claim = _owned_claim(session, claim_id, principal, lock=True)
-            _require_live_claim(claim, fence=fence)
-            if claim.output_tags_sealed_at is None:
-                if claim.output_tag_count < 1 or claim.output_tag_hash_state is None:
-                    raise Conflict("output-tag authority is empty")
-                checkpoint = CheckpointSHA256.from_state(claim.output_tag_hash_state)
-                checkpoint.update(b"]}")
-                claim.output_tag_set_sha256 = checkpoint.hexdigest()
-                claim.output_tags_sealed_at = utc_timestamp_now()
-                claim.updated_at = claim.output_tags_sealed_at
-            return _output_tag_set_payload(claim)
-
-    def list_claim_output_tags(
-        self,
-        claim_id: str,
-        *,
-        authority_sha256: str,
-        start_ordinal: int,
-        principal: ApplicationPrincipal,
-    ) -> dict[str, object]:
-        start = _page_start(start_ordinal)
-        with read_snapshot(self._session_factory) as session:
-            claim = _claim_actor(session, claim_id, principal)
-            authority = _require_set_authority(
-                claim.output_tag_count,
-                claim.output_tag_set_sha256,
-                authority_sha256,
-                "output-tag",
-            )
-            rows = list(
-                session.scalars(
-                    select(CollectionProcessingClaimOutputTagRecord)
-                    .where(
-                        CollectionProcessingClaimOutputTagRecord.claim_id == claim.id,
-                        CollectionProcessingClaimOutputTagRecord.tag_order >= start,
-                    )
-                    .order_by(CollectionProcessingClaimOutputTagRecord.tag_order)
-                    .limit(DISPOSITION_BATCH_MAX)
-                )
-            )
-            next_ordinal = start + len(rows)
-            return {
-                "authority": authority,
-                "start_ordinal": start,
-                "next_ordinal": next_ordinal if next_ordinal < claim.output_tag_count else None,
-                "tags": [item.tag for item in rows],
-            }
-
     def get_claim(
         self,
         claim_id: str,
@@ -742,8 +627,6 @@ class SqlAlchemyCollectionWorkflowService:
             _require_inputs_sealed(claim)
             if claim.artifacts_sealed_at is None or claim.artifact_set_sha256 is None:
                 raise Conflict("artifact authority is not sealed")
-            if claim.output_tags_sealed_at is None or claim.output_tag_set_sha256 is None:
-                raise Conflict("output-tag authority is not sealed")
             encoded_evidence = json.dumps(
                 evidence,
                 ensure_ascii=False,
@@ -1432,7 +1315,6 @@ class SqlAlchemyCollectionWorkflowService:
             assert claim.operation_sha256 is not None
             assert claim.input_set_sha256 is not None
             assert claim.artifact_set_sha256 is not None
-            assert claim.output_tag_set_sha256 is not None
             expected_evidence = cast(dict[str, object], json.loads(claim.controller_evidence_json))
             if (
                 document.claim_id != claim.id
@@ -1442,7 +1324,6 @@ class SqlAlchemyCollectionWorkflowService:
                 or document.artifact_set_sha256 != claim.artifact_set_sha256
                 or document.operation
                 != OperationIdentity(claim.operation_id, claim.operation_sha256)
-                or document.output_tag_set_sha256 != claim.output_tag_set_sha256
                 or document.execution_envelope_sha256 != claim.execution_id
                 or document.controller_evidence != expected_evidence
                 or document.controller_evidence_sha256 != claim.controller_evidence_sha256
@@ -1464,8 +1345,6 @@ class SqlAlchemyCollectionWorkflowService:
                 or output.creation_idempotency_key != claim.execution_id
             ):
                 raise Conflict("derived collection was not created by the sealed output intent")
-            if output.tag_set_identity != claim.output_tag_set_sha256:
-                raise Conflict("derived collection tags differ from the sealed work plan")
             evidence = session.get(
                 CollectionFileRecord,
                 (output.id, DERIVATION_EVIDENCE_PATH),
@@ -1933,11 +1812,6 @@ def _clear_plan(session: Session, claim: CollectionProcessingClaimRecord) -> Non
         )
     )
     session.execute(
-        delete(CollectionProcessingClaimOutputTagRecord).where(
-            CollectionProcessingClaimOutputTagRecord.claim_id == claim.id
-        )
-    )
-    session.execute(
         delete(CollectionProcessingOutcomeRecord).where(
             CollectionProcessingOutcomeRecord.claim_id == claim.id
         )
@@ -1952,10 +1826,6 @@ def _clear_plan(session: Session, claim: CollectionProcessingClaimRecord) -> Non
     claim.artifact_hash_state = None
     claim.artifact_set_sha256 = None
     claim.artifacts_sealed_at = None
-    claim.output_tag_count = 0
-    claim.output_tag_hash_state = None
-    claim.output_tag_set_sha256 = None
-    claim.output_tags_sealed_at = None
     claim.outcome_count = 0
     claim.outcome_state = "receiving"
     claim.outcome_hash_state = None
@@ -2048,7 +1918,6 @@ def _require_sealed_transform_plan(claim: CollectionProcessingClaimRecord) -> No
             claim.operation_sha256,
             claim.input_set_sha256,
             claim.artifact_set_sha256,
-            claim.output_tag_set_sha256,
             claim.retirement_policy,
         )
     ):
@@ -2078,20 +1947,6 @@ def _set_checkpoint(state: str | None, domain: str) -> CheckpointSHA256:
     if state is not None:
         return CheckpointSHA256.from_state(state)
     return CheckpointSHA256(f"riverhog-{domain}/v1\0".encode("ascii"))
-
-
-def _tag_checkpoint(state: str | None) -> CheckpointSHA256:
-    if state is not None:
-        return CheckpointSHA256.from_state(state)
-    return CheckpointSHA256(b'{"format":"riverhog-tag-set/v1","tags":[')
-
-
-def _checkpoint_tag(checkpoint: CheckpointSHA256, value: str, *, ordinal: int) -> None:
-    if ordinal:
-        checkpoint.update(b",")
-    checkpoint.update(b'"')
-    checkpoint.update(value.encode("ascii"))
-    checkpoint.update(b'"')
 
 
 def _checkpoint_item(checkpoint: CheckpointSHA256, value: object) -> None:
@@ -2269,19 +2124,6 @@ def _artifact_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, o
         "state": "sealed" if authority is not None else "receiving",
         "count": claim.artifact_count,
         "total_bytes": claim.artifact_bytes,
-        "authority": authority,
-    }
-
-
-def _output_tag_set_payload(claim: CollectionProcessingClaimRecord) -> dict[str, object]:
-    authority = (
-        {"count": claim.output_tag_count, "sha256": claim.output_tag_set_sha256}
-        if claim.output_tag_set_sha256 is not None
-        else None
-    )
-    return {
-        "state": "sealed" if authority is not None else "receiving",
-        "count": claim.output_tag_count,
         "authority": authority,
     }
 
@@ -3155,18 +2997,6 @@ def _collection_root(
     )
 
 
-def _require_output_tags(session: Session, values: Sequence[str]) -> tuple[str, ...]:
-    tags = tuple(str(value) for value in values)
-    normalized = tuple(sorted(set(tags)))
-    if not normalized or tags != normalized:
-        raise BadRequest("output tags must be nonempty, unique, and canonical")
-    found = set(session.scalars(select(TagRecord.id).where(TagRecord.id.in_(normalized))))
-    missing = sorted(set(normalized) - found)
-    if missing:
-        raise BadRequest("output tags do not exist: " + ", ".join(missing))
-    return normalized
-
-
 def _owned_claim(
     session: Session,
     claim_id: str,
@@ -3213,7 +3043,6 @@ def _claim_payload(
         assert claim.operation_sha256 is not None
         assert claim.input_set_sha256 is not None
         assert claim.artifact_set_sha256 is not None
-        assert claim.output_tag_set_sha256 is not None
         assert claim.retirement_policy is not None
         plan = {
             "execution_id": claim.execution_id,
@@ -3231,10 +3060,6 @@ def _claim_payload(
                 "count": claim.artifact_count,
                 "total_bytes": claim.artifact_bytes,
                 "sha256": claim.artifact_set_sha256,
-            },
-            "output_tags": {
-                "count": claim.output_tag_count,
-                "sha256": claim.output_tag_set_sha256,
             },
             "retirement_policy": claim.retirement_policy,
             "retirement_grace_seconds": claim.retirement_grace_seconds,

@@ -411,7 +411,6 @@ class TransformIntent:
     operation: OperationIdentity
     inputs: tuple[CollectionRootIdentity, ...]
     effective_intent: dict[str, JsonValue]
-    output_tags: tuple[str, ...]
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = 0
 
@@ -427,7 +426,6 @@ class TransformIntent:
             "effective_intent",
             _json_object(self.effective_intent, "effective transform intent"),
         )
-        object.__setattr__(self, "output_tags", _canonical_tags(self.output_tags))
         policy = str(self.retirement_policy)
         if policy not in _RETIREMENT_POLICIES:
             raise ValueError("retirement policy is invalid")
@@ -446,7 +444,6 @@ class TransformIntent:
             "operation": self.operation.as_dict(),
             "inputs": [item.as_dict() for item in self.inputs],
             "effective_intent": self.effective_intent,
-            "output_tags": list(self.output_tags),
             "retirement": {
                 "policy": self.retirement_policy,
                 "grace_seconds": self.retirement_grace_seconds,
@@ -470,20 +467,17 @@ class TransformIntent:
         operation: OperationIdentity,
         inputs: Sequence[CollectionRootIdentity],
         effective_intent: Mapping[str, object],
-        output_tags: Sequence[str],
         retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
     ) -> TransformIntent:
         normalized_inputs = tuple(sorted(inputs))
         normalized_intent = _json_object(effective_intent, "effective transform intent")
-        normalized_tags = _canonical_tags(tuple(output_tags))
         payload = {
             "format": TRANSFORM_INTENT_FORMAT,
             "recipe": recipe.as_dict(),
             "operation": operation.as_dict(),
             "inputs": [item.as_dict() for item in normalized_inputs],
             "effective_intent": normalized_intent,
-            "output_tags": list(normalized_tags),
             "retirement": {
                 "policy": retirement_policy,
                 "grace_seconds": retirement_grace_seconds,
@@ -495,7 +489,6 @@ class TransformIntent:
             operation=operation,
             inputs=normalized_inputs,
             effective_intent=normalized_intent,
-            output_tags=normalized_tags,
             retirement_policy=retirement_policy,
             retirement_grace_seconds=retirement_grace_seconds,
         )
@@ -511,7 +504,6 @@ class TransformIntent:
                 "operation",
                 "inputs",
                 "effective_intent",
-                "output_tags",
                 "retirement",
             }
             or value.get("format") != TRANSFORM_INTENT_FORMAT
@@ -521,7 +513,6 @@ class TransformIntent:
         operation = value.get("operation")
         inputs = value.get("inputs")
         intent = value.get("effective_intent")
-        output_tags = value.get("output_tags")
         retirement = value.get("retirement")
         if (
             not isinstance(recipe, Mapping)
@@ -529,7 +520,6 @@ class TransformIntent:
             or not isinstance(inputs, list)
             or not all(isinstance(item, Mapping) for item in inputs)
             or not isinstance(intent, Mapping)
-            or not isinstance(output_tags, list)
             or not isinstance(retirement, Mapping)
             or set(retirement) != {"policy", "grace_seconds"}
         ):
@@ -540,7 +530,6 @@ class TransformIntent:
             operation=OperationIdentity.from_mapping(operation),
             inputs=tuple(CollectionRootIdentity.from_mapping(item) for item in inputs),
             effective_intent=dict(intent),
-            output_tags=tuple(str(item) for item in output_tags),
             retirement_policy=cast(RetirementPolicy, str(retirement.get("policy") or "")),
             retirement_grace_seconds=_uint(
                 retirement.get("grace_seconds"), "retirement grace seconds"
@@ -748,7 +737,6 @@ class CollectionDerivation:
     operation: OperationIdentity
     input_set_sha256: str
     artifact_set_sha256: str
-    output_tag_set_sha256: str
     execution_envelope_sha256: str
     execution_sha256: str
     controller_evidence: dict[str, JsonValue]
@@ -768,11 +756,6 @@ class CollectionDerivation:
             self,
             "artifact_set_sha256",
             _sha256(self.artifact_set_sha256, "artifact set identity"),
-        )
-        object.__setattr__(
-            self,
-            "output_tag_set_sha256",
-            _sha256(self.output_tag_set_sha256, "output tag set identity"),
         )
         object.__setattr__(
             self,
@@ -810,7 +793,6 @@ class CollectionDerivation:
             "operation": self.operation.as_dict(),
             "input_set_sha256": self.input_set_sha256,
             "artifact_set_sha256": self.artifact_set_sha256,
-            "output_tag_set_sha256": self.output_tag_set_sha256,
             "execution_envelope_sha256": self.execution_envelope_sha256,
             "execution_sha256": self.execution_sha256,
             "controller_evidence": self.controller_evidence,
@@ -837,7 +819,6 @@ class CollectionDerivation:
                 "operation",
                 "input_set_sha256",
                 "artifact_set_sha256",
-                "output_tag_set_sha256",
                 "execution_envelope_sha256",
                 "execution_sha256",
                 "controller_evidence",
@@ -867,7 +848,6 @@ class CollectionDerivation:
             operation=OperationIdentity.from_mapping(operation),
             input_set_sha256=str(value.get("input_set_sha256") or ""),
             artifact_set_sha256=str(value.get("artifact_set_sha256") or ""),
-            output_tag_set_sha256=str(value.get("output_tag_set_sha256") or ""),
             execution_envelope_sha256=str(value.get("execution_envelope_sha256") or ""),
             execution_sha256=str(value.get("execution_sha256") or ""),
             controller_evidence=_json_object(

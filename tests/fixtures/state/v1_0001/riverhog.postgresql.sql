@@ -528,10 +528,6 @@ CREATE TABLE collection_processing_claims (
 	artifact_hash_state TEXT,
 	artifact_set_sha256 VARCHAR(64),
 	artifacts_sealed_at VARCHAR,
-	output_tag_count BIGINT NOT NULL,
-	output_tag_hash_state TEXT,
-	output_tag_set_sha256 VARCHAR(64),
-	output_tags_sealed_at VARCHAR,
 	outcome_count BIGINT NOT NULL,
 	outcome_state VARCHAR NOT NULL,
 	outcome_hash_state TEXT,
@@ -559,7 +555,7 @@ CREATE TABLE collection_processing_claims (
 	CONSTRAINT ck_collection_processing_claims_outcome_state CHECK (outcome_state IN ('receiving','sealing','sealed','failed')),
 	CONSTRAINT ck_collection_processing_claims_fence CHECK (fence >= 1),
 	CONSTRAINT ck_collection_processing_claims_grace CHECK (retirement_grace_seconds >= 0),
-	CONSTRAINT ck_collection_processing_claims_artifact_count CHECK (input_count >= 0 AND artifact_count >= 0 AND artifact_bytes >= 0 AND output_tag_count >= 0 AND outcome_count >= 0 AND outcome_validation_count >= 0),
+	CONSTRAINT ck_collection_processing_claims_artifact_count CHECK (input_count >= 0 AND artifact_count >= 0 AND artifact_bytes >= 0 AND outcome_count >= 0 AND outcome_validation_count >= 0),
 	CONSTRAINT ck_collection_processing_claims_id CHECK (length(id) = 64),
 	CONSTRAINT ck_collection_processing_claims_work_id CHECK (length(work_id) = 64),
 	CONSTRAINT ck_collection_processing_claims_document_sha256 CHECK (length(work_document_sha256) = 64),
@@ -573,7 +569,6 @@ CREATE TABLE collection_processing_claims (
 	CONSTRAINT ck_collection_processing_claims_operation_sha256_hex CHECK (operation_sha256 IS NULL OR length(operation_sha256) = 64 AND lower(operation_sha256) = operation_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(operation_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_processing_claims_input_set_sha256_hex CHECK (input_set_sha256 IS NULL OR length(input_set_sha256) = 64 AND lower(input_set_sha256) = input_set_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(input_set_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_processing_claims_artifact_set_sha256_hex CHECK (artifact_set_sha256 IS NULL OR length(artifact_set_sha256) = 64 AND lower(artifact_set_sha256) = artifact_set_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(artifact_set_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collection_processing_claims_output_tag_set_sha256_hex CHECK (output_tag_set_sha256 IS NULL OR length(output_tag_set_sha256) = 64 AND lower(output_tag_set_sha256) = output_tag_set_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(output_tag_set_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_processing_claims_outcome_set_sha256_hex CHECK (outcome_set_sha256 IS NULL OR length(outcome_set_sha256) = 64 AND lower(outcome_set_sha256) = outcome_set_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(outcome_set_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
 
@@ -967,18 +962,6 @@ CREATE TABLE collection_processing_claim_inputs (
 );
 
 CREATE INDEX ix_collection_processing_claim_inputs_collection ON collection_processing_claim_inputs (collection_id, claim_id);
-
-CREATE TABLE collection_processing_claim_output_tags (
-	claim_id VARCHAR(64) NOT NULL,
-	tag VARCHAR NOT NULL,
-	tag_order BIGINT NOT NULL,
-	PRIMARY KEY (claim_id, tag),
-	CONSTRAINT ck_processing_claim_output_tags_order CHECK (tag_order >= 0),
-	FOREIGN KEY(claim_id) REFERENCES collection_processing_claims (id) ON DELETE CASCADE,
-	CONSTRAINT ck_collection_processing_claim_output_tags_claim_id_hex CHECK (length(claim_id) = 64 AND lower(claim_id) = claim_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(claim_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-);
-
-CREATE UNIQUE INDEX ix_collection_processing_claim_output_tags_order ON collection_processing_claim_output_tags (claim_id, tag_order);
 
 CREATE TABLE collection_processing_disposition_sets (
 	claim_id VARCHAR(64) NOT NULL,

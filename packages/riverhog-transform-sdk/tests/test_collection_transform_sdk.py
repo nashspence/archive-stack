@@ -101,7 +101,6 @@ def _spec() -> DerivedCollectionSpec:
         recipe=RecipeIdentity("camera/v1", 1, "a" * 64),
         operation=OperationIdentity("archive-video/v1", "b" * 64),
         inputs=(CollectionRootIdentity(1, "1" * 64, "2" * 64),),
-        output_tags=("archive-camera",),
     )
 
 
@@ -125,7 +124,6 @@ def _processing_claim() -> SimpleNamespace:
             execution_id=EXECUTION_ID,
             inputs=SimpleNamespace(sha256="7" * 64),
             artifacts=SimpleNamespace(sha256="8" * 64),
-            output_tags=SimpleNamespace(sha256="9" * 64),
         )
     )
 
@@ -139,7 +137,6 @@ def _derivation(spec: DerivedCollectionSpec) -> CollectionDerivation:
         operation=spec.operation,
         input_set_sha256="7" * 64,
         artifact_set_sha256="8" * 64,
-        output_tag_set_sha256="9" * 64,
         execution_envelope_sha256="c" * 64,
         execution_sha256="d" * 64,
         controller_evidence=CONTROLLER_EVIDENCE,

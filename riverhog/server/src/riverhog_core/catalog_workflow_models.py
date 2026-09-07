@@ -45,10 +45,6 @@ class CollectionProcessingClaimRecord(Base):
     artifact_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
     artifact_set_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     artifacts_sealed_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    output_tag_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    output_tag_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
-    output_tag_set_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    output_tags_sealed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     outcome_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     outcome_state: Mapped[str] = mapped_column(String, nullable=False, default="receiving")
     outcome_hash_state: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -98,7 +94,7 @@ class CollectionProcessingClaimRecord(Base):
         ),
         CheckConstraint(
             "input_count >= 0 AND artifact_count >= 0 AND artifact_bytes >= 0 "
-            "AND output_tag_count >= 0 AND outcome_count >= 0 "
+            "AND outcome_count >= 0 "
             "AND outcome_validation_count >= 0",
             name="ck_collection_processing_claims_artifact_count",
         ),
@@ -230,28 +226,6 @@ class CollectionProcessingClaimArtifactRecord(Base):
         CheckConstraint("bytes >= 0", name="ck_processing_claim_artifacts_bytes"),
         CheckConstraint("artifact_order >= 0", name="ck_processing_claim_artifacts_order"),
         CheckConstraint("length(sha256) = 64", name="ck_processing_claim_artifacts_sha256"),
-    )
-
-
-class CollectionProcessingClaimOutputTagRecord(Base):
-    __tablename__ = "collection_processing_claim_output_tags"
-
-    claim_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("collection_processing_claims.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    tag: Mapped[str] = mapped_column(String, primary_key=True)
-    tag_order: Mapped[int] = mapped_column(BigInteger, nullable=False)
-
-    __table_args__ = (
-        Index(
-            "ix_collection_processing_claim_output_tags_order",
-            "claim_id",
-            "tag_order",
-            unique=True,
-        ),
-        CheckConstraint("tag_order >= 0", name="ck_processing_claim_output_tags_order"),
     )
 
 
@@ -548,7 +522,6 @@ __all__ = [
     "CollectionProcessingClaimArtifactRecord",
     "CollectionProcessingClaimInputRecord",
     "CollectionProcessingClaimRecord",
-    "CollectionProcessingClaimOutputTagRecord",
     "CollectionProcessingOutcomeRecord",
     "CollectionTransformCapabilityArtifactRecord",
     "CollectionTransformCapabilityRecord",

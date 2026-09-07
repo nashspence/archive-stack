@@ -3724,14 +3724,13 @@ def _require_transform_output_intent(
         claim is None
         or claim.state != "active"
         or claim.plan_sealed_at is None
-        or claim.output_tag_set_sha256 is None
         or parse_utc_timestamp(claim.expires_at) <= utc_now()
         or initiator.key_id != claim.consumer_key_id
     ):
         raise Forbidden("transform output intent is not active")
     if (
         idempotency_key != execution_id
-        or claim.output_tag_set_sha256 != tag_set_identity_sha256
+        or tag_set_identity_sha256 != tag_set_identity(())
         or ingest_source != f"transform:{execution_id}"
         or archive_store is not None
     ):

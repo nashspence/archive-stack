@@ -7,6 +7,7 @@
         },
         "dependencies": [
           "stove0-api-client",
+          "stove0-protocol",
           "stove0-recipe-config"
         ],
         "distribution": "stove0-client",
@@ -8382,16 +8383,16 @@
                 "envvar": null,
                 "kind": "TyperArgument",
                 "multiple": false,
-                "name": "collection_ids",
+                "name": "inputs",
                 "nargs": -1,
                 "options": [
-                  "collection_ids"
+                  "inputs"
                 ],
                 "required": true,
                 "secondary_options": [],
                 "type": {
-                  "class": "typer._click.types.IntParamType",
-                  "name": "integer"
+                  "class": "typer._click.types.StringParamType",
+                  "name": "text"
                 }
               },
               {
@@ -8524,27 +8525,6 @@
                     "type": {
                       "class": "typer._click.types.StringParamType",
                       "name": "text"
-                    }
-                  },
-                  {
-                    "count": false,
-                    "default": 100,
-                    "envvar": null,
-                    "is_flag": false,
-                    "kind": "TyperOption",
-                    "multiple": false,
-                    "name": "event_limit",
-                    "nargs": 1,
-                    "options": [
-                      "--event-limit"
-                    ],
-                    "required": false,
-                    "secondary_options": [],
-                    "type": {
-                      "class": "typer._click.types.IntRange",
-                      "maximum": 100,
-                      "minimum": 1,
-                      "name": "integer range"
                     }
                   },
                   {
@@ -8690,16 +8670,16 @@
                     "envvar": null,
                     "kind": "TyperArgument",
                     "multiple": false,
-                    "name": "collection_ids",
+                    "name": "inputs",
                     "nargs": -1,
                     "options": [
-                      "collection_ids"
+                      "inputs"
                     ],
                     "required": true,
                     "secondary_options": [],
                     "type": {
-                      "class": "typer._click.types.IntParamType",
-                      "name": "integer"
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
                     }
                   },
                   {
@@ -9963,14 +9943,6 @@
                 "title": "Id",
                 "type": "string"
               },
-              "input_tags": {
-                "items": {
-                  "type": "string"
-                },
-                "minItems": 1,
-                "title": "Input Tags",
-                "type": "array"
-              },
               "join": {
                 "anyOf": [
                   {
@@ -10044,7 +10016,6 @@
             "required": [
               "id",
               "revision",
-              "input_tags",
               "routes",
               "unmatched_artifact_disposition"
             ],
@@ -10088,14 +10059,6 @@
                 "title": "Operation Id",
                 "type": "string"
               },
-              "output_tags": {
-                "items": {
-                  "type": "string"
-                },
-                "minItems": 1,
-                "title": "Output Tags",
-                "type": "array"
-              },
               "projections": {
                 "default": [],
                 "items": {
@@ -10120,8 +10083,7 @@
               "id",
               "members",
               "operation_id",
-              "target_registration_id",
-              "output_tags"
+              "target_registration_id"
             ],
             "title": "RecipeJoin",
             "type": "object"
@@ -10236,14 +10198,6 @@
                 "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
                 "title": "Operation Id",
                 "type": "string"
-              },
-              "output_tags": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "title": "Output Tags",
-                "type": "array"
               },
               "primary_role": {
                 "anyOf": [
@@ -11206,7 +11160,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "85411e270ff7c1c21ff0ee47337b9cb6c18b1ee539eb3d84a517378801702e45"
+            "f2b8e9bbbef041903e531c800d59e976aa188824196a63cc3c4f34f2fe9b97f6"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11251,10 +11205,10 @@
         {
           "distribution": "stove0-target-support",
           "fixture_sha256s": [
-            "44313cc761b5d2ab76e565678c292e906a71df9f70397e4c7cbab96ba064effe",
-            "79948514ea597e7168b96d3e79ad88bd8e8f96a7473148702540e0b3cac31658",
-            "a4fd951e7d3e3c03e4211feea0be1cdff9b29ae5377fee80ed27f752f7013da9",
-            "b8054c490fc5d75c3bd08644a5e48705a9130c3fe67b02fbb13d7918e66724a9"
+            "29254d1dc7d6429b8368f311c1d25fee6bf059f55d5f1b9e309e507659920cf7",
+            "626cdf4d36eedf18fcd596fb81a6c49ea1fea98845f773ec33f8dd0b00887071",
+            "a7a558f503adc7905717e7a99404bc42132f55e639bcb56cf0d194c4058dd4fc",
+            "dbb18aa80a2e9e15f6dacf3194928b42411aea66004bb20663ab90749ad8e33b"
           ],
           "format": "stove0-target-job-state/v1",
           "head": "v1",
@@ -11284,8 +11238,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1841,
-        "discovered": 1841,
+        "classified": 1816,
+        "discovered": 1816,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11320,7 +11274,7 @@
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-volume-v1.schema.json": 7,
           "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json": 2,
           "mango-fish": 2,
-          "riverhog": 753,
+          "riverhog": 745,
           "riverhog-api-client": 7,
           "riverhog-client": 3,
           "riverhog-ftp-adapter": 21,
@@ -11328,23 +11282,23 @@
           "riverhog-recover": 1,
           "riverhog-server": 31,
           "riverhog-storage-adapter-protocol": 61,
-          "stove0": 374,
+          "stove0": 361,
           "stove0-api-client": 1,
           "stove0-observer-protocol": 76,
-          "stove0-recipes": 42,
+          "stove0-recipes": 39,
           "stove0-review-sampler-protocol": 54,
           "stove0-review-target": 4,
           "stove0-review-target-sampler": 3,
           "stove0-server": 6,
-          "stove0-target-protocol": 163,
+          "stove0-target-protocol": 162,
           "stove0-target-support": 1
         },
         "policies": {
-          "contract_max": 381,
+          "contract_max": 379,
           "extension_owned": 55,
-          "fixed": 836,
-          "operational_policy": 491,
-          "segmented_no_total_max": 78
+          "fixed": 829,
+          "operational_policy": 478,
+          "segmented_no_total_max": 75
         },
         "stale": 0,
         "undecided": 0
@@ -17190,36 +17144,6 @@
           "unit": "values-per-occurrence"
         },
         {
-          "dimension": "value",
-          "id": "cli:stove0:stove0:scheduler:run:parameter:event_limit:value",
-          "maximum": 100,
-          "minimum": 1,
-          "owner": "stove0",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "field": "type.maximum"
-          },
-          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1",
-          "unit": "cli-value"
-        },
-        {
-          "dimension": "cardinality",
-          "id": "cli:stove0:stove0:scheduler:run:parameter:event_limit:values-per-occurrence",
-          "maximum": 1,
-          "minimum": 1,
-          "owner": "stove0",
-          "policy": "fixed",
-          "reason": "fixed-command-argument-arity",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "field": "nargs"
-          },
-          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1",
-          "unit": "values-per-occurrence"
-        },
-        {
           "dimension": "cardinality",
           "id": "cli:stove0:stove0:scheduler:run:parameter:role:values-per-occurrence",
           "maximum": 1,
@@ -17246,7 +17170,7 @@
           "source_constraint": {
             "field": "type.maximum"
           },
-          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/2",
+          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1",
           "unit": "cli-value"
         },
         {
@@ -17261,7 +17185,7 @@
           "source_constraint": {
             "field": "nargs"
           },
-          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/2",
+          "source_pointer": "/external_contract/cli/stove0/commands/scheduler/commands/run/parameters/1",
           "unit": "values-per-occurrence"
         },
         {
@@ -18661,22 +18585,6 @@
             "owner": "stove0-recipes"
           },
           "dimension": "cardinality",
-          "id": "configuration:stove0-recipes:/$defs/RecipeDefinition/properties/input_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0-recipes",
-          "policy": "operational_policy",
-          "reason": "validated-deployment-composition",
-          "rule": "configuration-composition/v1",
-          "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeDefinition/properties/input_tags",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0-recipes"
-          },
-          "dimension": "cardinality",
           "id": "configuration:stove0-recipes:/$defs/RecipeDefinition/properties/observers:cardinality",
           "maximum": null,
           "owner": "stove0-recipes",
@@ -18732,22 +18640,6 @@
           "reason": "validated-deployment-composition",
           "rule": "configuration-composition/v1",
           "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeJoin/properties/members",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0-recipes"
-          },
-          "dimension": "cardinality",
-          "id": "configuration:stove0-recipes:/$defs/RecipeJoin/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0-recipes",
-          "policy": "operational_policy",
-          "reason": "validated-deployment-composition",
-          "rule": "configuration-composition/v1",
-          "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeJoin/properties/output_tags",
           "unit": "items"
         },
         {
@@ -18860,22 +18752,6 @@
           "rule": "configuration-composition/v1",
           "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeRoute/properties/intent",
           "unit": "entries"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0-recipes"
-          },
-          "dimension": "cardinality",
-          "id": "configuration:stove0-recipes:/$defs/RecipeRoute/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0-recipes",
-          "policy": "operational_policy",
-          "reason": "validated-deployment-composition",
-          "rule": "configuration-composition/v1",
-          "source_pointer": "/external_contract/configuration_documents/stove0-recipes/$defs/RecipeRoute/properties/output_tags",
-          "unit": "items"
         },
         {
           "capacity_authority": {
@@ -20473,21 +20349,6 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionDerivationDocument/properties/input_set_sha256",
-          "unit": "characters"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:components:/schemas/CollectionDerivationDocument/properties/output_tag_set_sha256:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionDerivationDocument/properties/output_tag_set_sha256",
           "unit": "characters"
         },
         {
@@ -22187,39 +22048,6 @@
           "rule": "schema-bound/v1",
           "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutcomeSetDocument/properties/failure/anyOf/0",
           "unit": "characters"
-        },
-        {
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/OutputTagBatchDocument/properties/tags:cardinality",
-          "maximum": 128,
-          "minimum": 1,
-          "owner": "riverhog",
-          "policy": "segmented_no_total_max",
-          "progression": {
-            "progression": "start_ordinal"
-          },
-          "reason": "bounded-authority-append",
-          "rule": "bounded-segment/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutputTagBatchDocument/properties/tags",
-          "unit": "items"
-        },
-        {
-          "dimension": "cardinality",
-          "id": "http:riverhog:components:/schemas/OutputTagPageDocument/properties/tags:cardinality",
-          "maximum": 128,
-          "owner": "riverhog",
-          "policy": "segmented_no_total_max",
-          "progression": {
-            "authority": "processing-claim-output-tags",
-            "authority_parameter": "authority_sha256",
-            "cursor_parameter": "start_ordinal",
-            "fixed_limit": 128,
-            "kind": "exact-authority-page"
-          },
-          "reason": "bounded-route-page",
-          "rule": "route-progression/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/OutputTagPageDocument/properties/tags",
-          "unit": "items"
         },
         {
           "dimension": "length",
@@ -24453,21 +24281,6 @@
         },
         {
           "dimension": "length",
-          "id": "http:riverhog:operation:append_processing_claim_output_tags:parameter:path:claim_id:/:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/put/parameters/0/schema",
-          "unit": "characters"
-        },
-        {
-          "dimension": "length",
           "id": "http:riverhog:operation:append_transform_capability_artifacts:parameter:path:claim_id:/:length",
           "maximum": 64,
           "minimum": 64,
@@ -25300,53 +25113,6 @@
         },
         {
           "dimension": "logical-result-cardinality",
-          "id": "http:riverhog:operation:list_processing_claim_output_tags:logical-result",
-          "owner": "riverhog",
-          "policy": "segmented_no_total_max",
-          "progression": {
-            "authority": "processing-claim-output-tags",
-            "authority_parameter": "authority_sha256",
-            "cursor_parameter": "start_ordinal",
-            "fixed_limit": 128,
-            "kind": "exact-authority-page"
-          },
-          "reason": "bounded-route-progression",
-          "rule": "route-progression/v1",
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get",
-          "unit": "items"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_processing_claim_output_tags:parameter:path:claim_id:/:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get/parameters/0/schema",
-          "unit": "characters"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:operation:list_processing_claim_output_tags:parameter:query:authority_sha256:/:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags/get/parameters/1/schema",
-          "unit": "characters"
-        },
-        {
-          "dimension": "logical-result-cardinality",
           "id": "http:riverhog:operation:list_processing_claims:logical-result",
           "owner": "riverhog",
           "policy": "segmented_no_total_max",
@@ -25716,21 +25482,6 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1inputs~1seal/post/parameters/0/schema",
-          "unit": "characters"
-        },
-        {
-          "dimension": "length",
-          "id": "http:riverhog:operation:seal_processing_claim_output_tags:parameter:path:claim_id:/:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "riverhog",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1output-tags~1seal/post/parameters/0/schema",
           "unit": "characters"
         },
         {
@@ -28698,22 +28449,6 @@
             "owner": "stove0"
           },
           "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/RecipeDefinition/properties/input_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeDefinition/properties/input_tags",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
           "id": "http:stove0:components:/schemas/RecipeDefinition/properties/observers:cardinality",
           "maximum": null,
           "owner": "stove0",
@@ -28769,22 +28504,6 @@
           "reason": "no-declared-semantic-maximum",
           "rule": "no-semantic-maximum/v1",
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeJoin/properties/members",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/RecipeJoin/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeJoin/properties/output_tags",
           "unit": "items"
         },
         {
@@ -28905,22 +28624,6 @@
             "owner": "stove0"
           },
           "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/RecipeRoute/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/RecipeRoute/properties/output_tags",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
           "id": "http:stove0:components:/schemas/RecipeRoute/properties/projections:cardinality",
           "maximum": null,
           "owner": "stove0",
@@ -28978,53 +28681,6 @@
           "unit": "characters"
         },
         {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/failures:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/failures",
-          "unit": "items"
-        },
-        {
-          "dimension": "length",
-          "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/work_ids/items:length",
-          "maximum": 64,
-          "minimum": 64,
-          "owner": "stove0",
-          "policy": "fixed",
-          "reason": "fixed-public-representation",
-          "rule": "schema-bound/v1",
-          "source_constraint": {
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/work_ids/items",
-          "unit": "characters"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/SchedulerEventBatch/properties/work_ids:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerEventBatch/properties/work_ids",
-          "unit": "items"
-        },
-        {
           "dimension": "length",
           "id": "http:stove0:components:/schemas/SchedulerFailure/properties/error:length",
           "maximum": 1000,
@@ -29050,18 +28706,6 @@
           },
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerFailure/properties/work_id/anyOf/0",
           "unit": "characters"
-        },
-        {
-          "dimension": "value",
-          "id": "http:stove0:components:/schemas/SchedulerRunIn/properties/event_limit:value",
-          "maximum": 100.0,
-          "minimum": 1.0,
-          "owner": "stove0",
-          "policy": "contract_max",
-          "reason": "schema-maximum",
-          "rule": "schema-bound/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerRunIn/properties/event_limit",
-          "unit": "schema-value"
         },
         {
           "dimension": "value",
@@ -29782,38 +29426,6 @@
             "hidden_maximum": "forbidden",
             "owner": "stove0"
           },
-          "dimension": "value",
-          "id": "http:stove0:components:/schemas/WorkCreateIn/properties/collection_ids/items:open-value",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/collection_ids/items",
-          "unit": "schema-value"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/WorkCreateIn/properties/collection_ids:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/collection_ids",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
           "dimension": "cardinality",
           "id": "http:stove0:components:/schemas/WorkCreateIn/properties/effective_intent:map-cardinality",
           "maximum": null,
@@ -29823,6 +29435,22 @@
           "rule": "no-semantic-maximum/v1",
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/effective_intent",
           "unit": "entries"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/WorkCreateIn/properties/inputs:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkCreateIn/properties/inputs",
+          "unit": "items"
         },
         {
           "dimension": "length",
@@ -30200,22 +29828,6 @@
             "owner": "stove0"
           },
           "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/WorkflowPlan/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlan/properties/output_tags",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
           "id": "http:stove0:components:/schemas/WorkflowPlan/properties/requested_target_options:map-cardinality",
           "maximum": null,
           "owner": "stove0",
@@ -30270,22 +29882,6 @@
           "rule": "no-semantic-maximum/v1",
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlanIntent/properties/output_policy",
           "unit": "entries"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/WorkflowPlanIntent/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPlanIntent/properties/output_tags",
-          "unit": "items"
         },
         {
           "capacity_authority": {
@@ -30434,38 +30030,6 @@
             "hidden_maximum": "forbidden",
             "owner": "stove0"
           },
-          "dimension": "value",
-          "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/collection_ids/items:open-value",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/collection_ids/items",
-          "unit": "schema-value"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
-          "dimension": "cardinality",
-          "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/collection_ids:cardinality",
-          "maximum": null,
-          "owner": "stove0",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/collection_ids",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0"
-          },
           "dimension": "cardinality",
           "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/effective_intent:map-cardinality",
           "maximum": null,
@@ -30475,6 +30039,22 @@
           "rule": "no-semantic-maximum/v1",
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/effective_intent",
           "unit": "entries"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/WorkflowPreviewIn/properties/inputs:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/inputs",
+          "unit": "items"
         },
         {
           "dimension": "length",
@@ -35638,22 +35218,6 @@
             "owner": "stove0-target-protocol"
           },
           "dimension": "cardinality",
-          "id": "protocol:generated:stove0-target:definition:WorkflowPlan:/properties/output_tags:cardinality",
-          "maximum": null,
-          "owner": "stove0-target-protocol",
-          "policy": "operational_policy",
-          "reason": "no-declared-semantic-maximum",
-          "rule": "no-semantic-maximum/v1",
-          "source_pointer": "/external_contract/protocol_schemas/generated:stove0-target/schemas/TargetConformanceResult/$defs/WorkflowPlan/properties/output_tags",
-          "unit": "items"
-        },
-        {
-          "capacity_authority": {
-            "declared_maximum": null,
-            "hidden_maximum": "forbidden",
-            "owner": "stove0-target-protocol"
-          },
-          "dimension": "cardinality",
           "id": "protocol:generated:stove0-target:definition:WorkflowPlan:/properties/requested_target_options:map-cardinality",
           "maximum": null,
           "owner": "stove0-target-protocol",
@@ -38245,7 +37809,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "49273562fc7d5d976c5530a9820648dca6fa3457c7b8796b53c48eaaaf22801b"
+      "sha256": "019cf953f9be42accacfd68b4465dfbeb9c16a86ceaeb01571e768fd295ea4d2"
     },
     "http_openapi": {
       "riverhog": {
@@ -41737,11 +41301,6 @@
                 "operation": {
                   "$ref": "#/components/schemas/OperationIdentityDocument"
                 },
-                "output_tag_set_sha256": {
-                  "pattern": "^[0-9a-f]{64}$",
-                  "title": "Output Tag Set Sha256",
-                  "type": "string"
-                },
                 "recipe": {
                   "$ref": "#/components/schemas/RecipeIdentityDocument"
                 }
@@ -41754,7 +41313,6 @@
                 "operation",
                 "input_set_sha256",
                 "artifact_set_sha256",
-                "output_tag_set_sha256",
                 "execution_envelope_sha256",
                 "execution_sha256",
                 "controller_evidence",
@@ -47108,88 +46666,6 @@
               "title": "OutcomeSetDocument",
               "type": "object"
             },
-            "OutputTagBatchDocument": {
-              "additionalProperties": false,
-              "properties": {
-                "fence": {
-                  "minimum": 1.0,
-                  "title": "Fence",
-                  "type": "integer"
-                },
-                "start_ordinal": {
-                  "minimum": 0.0,
-                  "title": "Start Ordinal",
-                  "type": "integer"
-                },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "maxItems": 128,
-                  "minItems": 1,
-                  "title": "Tags",
-                  "type": "array",
-                  "uniqueItems": true,
-                  "x-riverhog-extent": {
-                    "policy": "segmented_no_total_max",
-                    "progression": "start_ordinal",
-                    "reason": "bounded-authority-append"
-                  }
-                }
-              },
-              "required": [
-                "fence",
-                "start_ordinal",
-                "tags"
-              ],
-              "title": "OutputTagBatchDocument",
-              "type": "object"
-            },
-            "OutputTagPageDocument": {
-              "additionalProperties": false,
-              "properties": {
-                "authority": {
-                  "$ref": "#/components/schemas/ExactSetAuthorityDocument"
-                },
-                "next_ordinal": {
-                  "anyOf": [
-                    {
-                      "minimum": 1.0,
-                      "type": "integer"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Next Ordinal"
-                },
-                "start_ordinal": {
-                  "minimum": 0.0,
-                  "title": "Start Ordinal",
-                  "type": "integer"
-                },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "maxItems": 128,
-                  "title": "Tags",
-                  "type": "array",
-                  "x-riverhog-extent": {
-                    "policy": "segmented_no_total_max",
-                    "progression": "authority-bound-start_ordinal",
-                    "reason": "bounded-authority-page"
-                  }
-                }
-              },
-              "required": [
-                "authority",
-                "start_ordinal",
-                "tags"
-              ],
-              "title": "OutputTagPageDocument",
-              "type": "object"
-            },
             "PendingArchiveRootPublicationOut": {
               "additionalProperties": false,
               "properties": {
@@ -47981,9 +47457,6 @@
                 "operation": {
                   "$ref": "#/components/schemas/OperationIdentityDocument"
                 },
-                "output_tags": {
-                  "$ref": "#/components/schemas/ExactSetAuthorityDocument"
-                },
                 "retirement_grace_seconds": {
                   "minimum": 0.0,
                   "title": "Retirement Grace Seconds",
@@ -48011,7 +47484,6 @@
                 "operation",
                 "inputs",
                 "artifacts",
-                "output_tags",
                 "retirement_policy",
                 "retirement_grace_seconds",
                 "sealed_at"
@@ -57961,347 +57433,6 @@
                 }
               ],
               "summary": "Seal Processing Claim Artifacts",
-              "tags": [
-                "collection-workflows"
-              ],
-              "x-riverhog-interface": "client-only-primitive",
-              "x-riverhog-permission-requirements": [
-                {
-                  "any_of": [
-                    "collection-transforms:control"
-                  ]
-                }
-              ]
-            }
-          },
-          "/v1/collection-processing-claims/{claim_id}/plan/output-tags": {
-            "get": {
-              "operationId": "list_processing_claim_output_tags",
-              "parameters": [
-                {
-                  "in": "path",
-                  "name": "claim_id",
-                  "required": true,
-                  "schema": {
-                    "pattern": "^[0-9a-f]{64}$",
-                    "title": "Claim Id",
-                    "type": "string"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "authority_sha256",
-                  "required": true,
-                  "schema": {
-                    "pattern": "^[0-9a-f]{64}$",
-                    "title": "Authority Sha256",
-                    "type": "string"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "start_ordinal",
-                  "required": false,
-                  "schema": {
-                    "default": 0,
-                    "minimum": 0,
-                    "title": "Start Ordinal",
-                    "type": "integer"
-                  }
-                }
-              ],
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/OutputTagPageDocument"
-                      }
-                    }
-                  },
-                  "description": "Successful Response"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "List Processing Claim Output Tags",
-              "tags": [
-                "collection-workflows"
-              ],
-              "x-riverhog-interface": "client-only-primitive",
-              "x-riverhog-permission-requirements": [
-                {
-                  "any_of": [
-                    "collection-transforms:control",
-                    "collection-transforms:execute"
-                  ]
-                }
-              ],
-              "x-riverhog-read-collection": {
-                "authority": "processing-claim-output-tags",
-                "authority_parameter": "authority_sha256",
-                "cursor_parameter": "start_ordinal",
-                "fixed_limit": 128,
-                "kind": "exact-authority-page"
-              }
-            },
-            "put": {
-              "operationId": "append_processing_claim_output_tags",
-              "parameters": [
-                {
-                  "in": "path",
-                  "name": "claim_id",
-                  "required": true,
-                  "schema": {
-                    "pattern": "^[0-9a-f]{64}$",
-                    "title": "Claim Id",
-                    "type": "string"
-                  }
-                }
-              ],
-              "requestBody": {
-                "content": {
-                  "application/json": {
-                    "schema": {
-                      "$ref": "#/components/schemas/OutputTagBatchDocument"
-                    }
-                  }
-                },
-                "required": true
-              },
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ReceivingSetDocument"
-                      }
-                    }
-                  },
-                  "description": "Successful Response"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Append Processing Claim Output Tags",
-              "tags": [
-                "collection-workflows"
-              ],
-              "x-riverhog-interface": "client-only-primitive",
-              "x-riverhog-permission-requirements": [
-                {
-                  "any_of": [
-                    "collection-transforms:control"
-                  ]
-                }
-              ]
-            }
-          },
-          "/v1/collection-processing-claims/{claim_id}/plan/output-tags/seal": {
-            "post": {
-              "operationId": "seal_processing_claim_output_tags",
-              "parameters": [
-                {
-                  "in": "path",
-                  "name": "claim_id",
-                  "required": true,
-                  "schema": {
-                    "pattern": "^[0-9a-f]{64}$",
-                    "title": "Claim Id",
-                    "type": "string"
-                  }
-                }
-              ],
-              "requestBody": {
-                "content": {
-                  "application/json": {
-                    "schema": {
-                      "$ref": "#/components/schemas/ProcessingClaimFenceDocument"
-                    }
-                  }
-                },
-                "required": true
-              },
-              "responses": {
-                "200": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ReceivingSetDocument"
-                      }
-                    }
-                  },
-                  "description": "Successful Response"
-                },
-                "400": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Bad Request",
-                  "x-riverhog-error-codes": [
-                    "bad_request"
-                  ]
-                },
-                "401": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Unauthorized",
-                  "x-riverhog-error-codes": [
-                    "unauthorized"
-                  ]
-                },
-                "403": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Forbidden",
-                  "x-riverhog-error-codes": [
-                    "forbidden"
-                  ]
-                },
-                "500": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Internal Server Error",
-                  "x-riverhog-error-codes": [
-                    "internal_error"
-                  ]
-                }
-              },
-              "security": [
-                {
-                  "HTTPBearer": []
-                }
-              ],
-              "summary": "Seal Processing Claim Output Tags",
               "tags": [
                 "collection-workflows"
               ],
@@ -71287,14 +70418,6 @@
                   "title": "Id",
                   "type": "string"
                 },
-                "input_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "minItems": 1,
-                  "title": "Input Tags",
-                  "type": "array"
-                },
                 "join": {
                   "anyOf": [
                     {
@@ -71367,7 +70490,6 @@
               "required": [
                 "id",
                 "revision",
-                "input_tags",
                 "routes",
                 "unmatched_artifact_disposition"
               ],
@@ -71411,14 +70533,6 @@
                   "title": "Operation Id",
                   "type": "string"
                 },
-                "output_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "minItems": 1,
-                  "title": "Output Tags",
-                  "type": "array"
-                },
                 "projections": {
                   "default": [],
                   "items": {
@@ -71443,8 +70557,7 @@
                 "id",
                 "members",
                 "operation_id",
-                "target_registration_id",
-                "output_tags"
+                "target_registration_id"
               ],
               "title": "RecipeJoin",
               "type": "object"
@@ -71559,14 +70672,6 @@
                   "title": "Operation Id",
                   "type": "string"
                 },
-                "output_tags": {
-                  "default": [],
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Output Tags",
-                  "type": "array"
-                },
                 "primary_role": {
                   "anyOf": [
                     {
@@ -71632,55 +70737,6 @@
                 "sha256"
               ],
               "title": "RecipeView",
-              "type": "object"
-            },
-            "SchedulerEventBatch": {
-              "additionalProperties": false,
-              "properties": {
-                "events": {
-                  "minimum": 0.0,
-                  "title": "Events",
-                  "type": "integer"
-                },
-                "failures": {
-                  "default": [],
-                  "items": {
-                    "$ref": "#/components/schemas/SchedulerFailure"
-                  },
-                  "title": "Failures",
-                  "type": "array"
-                },
-                "has_more": {
-                  "title": "Has More",
-                  "type": "boolean"
-                },
-                "next_cursor": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Next Cursor"
-                },
-                "work_ids": {
-                  "items": {
-                    "pattern": "^[0-9a-f]{64}$",
-                    "type": "string"
-                  },
-                  "title": "Work Ids",
-                  "type": "array"
-                }
-              },
-              "required": [
-                "events",
-                "next_cursor",
-                "has_more",
-                "work_ids"
-              ],
-              "title": "SchedulerEventBatch",
               "type": "object"
             },
             "SchedulerFailure": {
@@ -71782,9 +70838,6 @@
             "SchedulerRun": {
               "additionalProperties": false,
               "properties": {
-                "events": {
-                  "$ref": "#/components/schemas/SchedulerEventBatch"
-                },
                 "pruning": {
                   "anyOf": [
                     {
@@ -71801,7 +70854,6 @@
               },
               "required": [
                 "pruning",
-                "events",
                 "work"
               ],
               "title": "SchedulerRun",
@@ -71810,13 +70862,6 @@
             "SchedulerRunIn": {
               "additionalProperties": false,
               "properties": {
-                "event_limit": {
-                  "default": 100,
-                  "maximum": 100.0,
-                  "minimum": 1.0,
-                  "title": "Event Limit",
-                  "type": "integer"
-                },
                 "role": {
                   "default": "combined",
                   "enum": [
@@ -71841,10 +70886,6 @@
             "SchedulerStatus": {
               "additionalProperties": false,
               "properties": {
-                "cursor": {
-                  "title": "Cursor",
-                  "type": "string"
-                },
                 "interval_seconds": {
                   "exclusiveMinimum": 0.0,
                   "title": "Interval Seconds",
@@ -71870,7 +70911,6 @@
               "required": [
                 "running",
                 "interval_seconds",
-                "cursor",
                 "roles"
               ],
               "title": "SchedulerStatus",
@@ -72801,20 +71841,20 @@
             "WorkCreateIn": {
               "additionalProperties": false,
               "properties": {
-                "collection_ids": {
-                  "items": {
-                    "type": "integer"
-                  },
-                  "minItems": 1,
-                  "title": "Collection Ids",
-                  "type": "array"
-                },
                 "effective_intent": {
                   "additionalProperties": {
                     "$ref": "#/components/schemas/JsonValue"
                   },
                   "title": "Effective Intent",
                   "type": "object"
+                },
+                "inputs": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionRootRef"
+                  },
+                  "minItems": 1,
+                  "title": "Inputs",
+                  "type": "array"
                 },
                 "preview_sha256": {
                   "pattern": "^[0-9a-f]{64}$",
@@ -72842,7 +71882,7 @@
               },
               "required": [
                 "recipe_id",
-                "collection_ids",
+                "inputs",
                 "preview_sha256"
               ],
               "title": "WorkCreateIn",
@@ -73569,14 +72609,6 @@
                   "title": "Output Policy",
                   "type": "object"
                 },
-                "output_tags": {
-                  "default": [],
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Output Tags",
-                  "type": "array"
-                },
                 "requested_target_options": {
                   "additionalProperties": {
                     "$ref": "#/components/schemas/JsonValue"
@@ -73659,14 +72691,6 @@
                   },
                   "title": "Output Policy",
                   "type": "object"
-                },
-                "output_tags": {
-                  "default": [],
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Output Tags",
-                  "type": "array"
                 },
                 "requested_target_options": {
                   "additionalProperties": {
@@ -73823,20 +72847,20 @@
             "WorkflowPreviewIn": {
               "additionalProperties": false,
               "properties": {
-                "collection_ids": {
-                  "items": {
-                    "type": "integer"
-                  },
-                  "minItems": 1,
-                  "title": "Collection Ids",
-                  "type": "array"
-                },
                 "effective_intent": {
                   "additionalProperties": {
                     "$ref": "#/components/schemas/JsonValue"
                   },
                   "title": "Effective Intent",
                   "type": "object"
+                },
+                "inputs": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionRootRef"
+                  },
+                  "minItems": 1,
+                  "title": "Inputs",
+                  "type": "array"
                 },
                 "recipe_id": {
                   "maxLength": 160,
@@ -73859,7 +72883,7 @@
               },
               "required": [
                 "recipe_id",
-                "collection_ids"
+                "inputs"
               ],
               "title": "WorkflowPreviewIn",
               "type": "object"
@@ -77489,48 +76513,6 @@
         "method": "POST",
         "operation_id": "seal_processing_claim_artifacts",
         "path": "/v1/collection-processing-claims/{claim_id}/plan/artifacts/seal",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "canonical-document"
-      },
-      {
-        "application": "riverhog",
-        "classification": "client-only-primitive",
-        "cli_commands": [],
-        "client": "ApiClient",
-        "method": "GET",
-        "operation_id": "list_processing_claim_output_tags",
-        "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags",
-        "provider_evidence": null,
-        "read_collection": {
-          "authority": "processing-claim-output-tags",
-          "authority_parameter": "authority_sha256",
-          "cursor_parameter": "start_ordinal",
-          "fixed_limit": 128,
-          "kind": "exact-authority-page"
-        },
-        "response_authority": "canonical-document"
-      },
-      {
-        "application": "riverhog",
-        "classification": "client-only-primitive",
-        "cli_commands": [],
-        "client": "ApiClient",
-        "method": "PUT",
-        "operation_id": "append_processing_claim_output_tags",
-        "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags",
-        "provider_evidence": null,
-        "read_collection": null,
-        "response_authority": "canonical-document"
-      },
-      {
-        "application": "riverhog",
-        "classification": "client-only-primitive",
-        "cli_commands": [],
-        "client": "ApiClient",
-        "method": "POST",
-        "operation_id": "seal_processing_claim_output_tags",
-        "path": "/v1/collection-processing-claims/{claim_id}/plan/output-tags/seal",
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "canonical-document"
@@ -84733,7 +83715,7 @@
           "semantic_acceptance": "semantic_acceptance",
           "structural_models": "schemas"
         },
-        "bundle_sha256": "3a20196d938f02298c8ffcdc74cd89e301ab382878db7a093c2516267ff8cb0e",
+        "bundle_sha256": "916d26a1630afc12fe746ce28f8ba0f2639264e14929dd60b02c6c9059444b80",
         "compatibility": {
           "contract_identity": "rfc8785-sha256",
           "unknown_fields": "reject",
@@ -87719,14 +86701,6 @@
                     "title": "Output Policy",
                     "type": "object"
                   },
-                  "output_tags": {
-                    "default": [],
-                    "items": {
-                      "type": "string"
-                    },
-                    "title": "Output Tags",
-                    "type": "array"
-                  },
                   "requested_target_options": {
                     "additionalProperties": {
                       "$ref": "#/$defs/JsonValue"
@@ -89209,14 +88183,6 @@
                     },
                     "title": "Output Policy",
                     "type": "object"
-                  },
-                  "output_tags": {
-                    "default": [],
-                    "items": {
-                      "type": "string"
-                    },
-                    "title": "Output Tags",
-                    "type": "array"
                   },
                   "requested_target_options": {
                     "additionalProperties": {
@@ -100352,11 +99318,6 @@
               },
               {
                 "default": "required",
-                "name": "output_tag_set_sha256",
-                "type": "'str'"
-              },
-              {
-                "default": "required",
                 "name": "execution_envelope_sha256",
                 "type": "'str'"
               },
@@ -100400,7 +99361,7 @@
                 "signature": "(self) -> 'bytes'"
               }
             },
-            "signature": "(execution_id: 'str', claim_id: 'str', fence: 'int', recipe: 'RecipeIdentity', operation: 'OperationIdentity', input_set_sha256: 'str', artifact_set_sha256: 'str', output_tag_set_sha256: 'str', execution_envelope_sha256: 'str', execution_sha256: 'str', controller_evidence: 'dict[str, JsonValue]', controller_evidence_sha256: 'str', disposition_set: 'ArtifactDispositionSetIdentity') -> None"
+            "signature": "(execution_id: 'str', claim_id: 'str', fence: 'int', recipe: 'RecipeIdentity', operation: 'OperationIdentity', input_set_sha256: 'str', artifact_set_sha256: 'str', execution_envelope_sha256: 'str', execution_sha256: 'str', controller_evidence: 'dict[str, JsonValue]', controller_evidence_sha256: 'str', disposition_set: 'ArtifactDispositionSetIdentity') -> None"
           },
           "CollectionDerivationDocument": {
             "kind": "class",
@@ -100410,8 +99371,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "b2886aa0c57f327f82349bda8e21b8dd2c755a8d3f7e0641d69ec85d9c6f9341",
-            "signature": "(*, format: Literal['riverhog-collection-derivation/v1'], execution_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], claim: riverhog_protocol.collection_workflow_transport.ClaimFenceDocument, recipe: riverhog_protocol.collection_workflow_transport.RecipeIdentityDocument, operation: riverhog_protocol.collection_workflow_transport.OperationIdentityDocument, input_set_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], artifact_set_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], output_tag_set_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], execution_envelope_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], execution_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], controller_evidence: dict[str, typing.Any], controller_evidence_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], disposition_set: riverhog_protocol.collection_workflow_transport.ArtifactDispositionSetIdentityDocument) -> None"
+            "schema_sha256": "5d9520bbc343d2b012d0dc1097af4b519366d62d84c1922f078d4a5395964375",
+            "signature": "(*, format: Literal['riverhog-collection-derivation/v1'], execution_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], claim: riverhog_protocol.collection_workflow_transport.ClaimFenceDocument, recipe: riverhog_protocol.collection_workflow_transport.RecipeIdentityDocument, operation: riverhog_protocol.collection_workflow_transport.OperationIdentityDocument, input_set_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], artifact_set_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], execution_envelope_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], execution_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], controller_evidence: dict[str, typing.Any], controller_evidence_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], disposition_set: riverhog_protocol.collection_workflow_transport.ArtifactDispositionSetIdentityDocument) -> None"
           },
           "CollectionDerivationResponseDocument": {
             "kind": "class",
@@ -100421,7 +99382,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "f3cb62e7423b01ab44f34fc518e42ade02045393d78c7ca47e4750243c31bb70",
+            "schema_sha256": "9c695c7ea7b9395f3726186d8583ad4c36da7d5e751eb7eef54a173fd25df4d3",
             "signature": "(*, collection_id: CollectionId, document_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], derivation: riverhog_protocol.collection_workflow_transport.CollectionDerivationDocument) -> None"
           },
           "CollectionId": {
@@ -100931,7 +99892,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "93da1028e9d63bc988f9038a81b7eb5a09778b6a949ede2ddc503419e3af4053",
+            "schema_sha256": "9d71d3fac376c7ce173117cd7c605bcc77e55c047d52aff20a031799978d69c9",
             "signature": "(*, format: Literal['riverhog-processing-claim/v1'], id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], work_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], consumer: riverhog_protocol.collection_workflow_transport.ProcessingClaimConsumerDocument, purpose: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], state: Literal['active', 'settled', 'retiring', 'abandoned', 'released'], fence: Annotated[int, Ge(ge=1)], expires_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], created_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], settled_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, abandoned_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, abandonment_reason: Annotated[str | None, MinLen(min_length=1), MaxLen(max_length=1000)] = None, released_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, output_collection_id: CollectionId | None = None, work_document: dict[str, typing.Any], work_document_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], inputs: riverhog_protocol.collection_workflow_transport.ReceivingSetDocument, plan: riverhog_protocol.collection_workflow_transport.ProcessingClaimPlanDocument | None = None, outcomes: riverhog_protocol.collection_workflow_transport.OutcomeSetDocument, outcome_settlement: riverhog_protocol.collection_workflow_transport.ProcessingClaimOutcomeSettlementDocument | None = None) -> None"
           },
           "ProcessingClaimFenceDocument": {
@@ -100956,7 +99917,7 @@
           },
           "ProcessingClaimPageDocument": {
             "kind": "class",
-            "schema_sha256": "505f800a7f311f7e9c1bd961b0dbfb21307adcb49af3b07784aaa8a4a5430d66",
+            "schema_sha256": "9d245807b3d4027ff191a556a26abf6a055123c28625eb457786f75687e274a0",
             "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
           },
           "ProcessingClaimPlanSealDocument": {
@@ -100982,7 +99943,7 @@
           },
           "ProcessingClaimSettleDocument": {
             "kind": "class",
-            "schema_sha256": "72e0ff7cc330c132ea376558264f90ac026c6ac2976e98e4f9b7ad1f7f045eeb",
+            "schema_sha256": "682a1ec87a74c11eae2be43f2f99840117d339d2c518bfa188b2e15fc1513100",
             "signature": "(*, fence: Annotated[int, Ge(ge=1)], output_collection_id: CollectionId, derivation: riverhog_protocol.collection_workflow_transport.CollectionDerivationDocument, outcome: riverhog_protocol.collection_workflow_transport.ProcessingOutcomeBindingDocument | None = None) -> None"
           },
           "ProcessingClaimSort": {
@@ -101265,11 +100226,6 @@
                 "type": "'dict[str, JsonValue]'"
               },
               {
-                "default": "required",
-                "name": "output_tags",
-                "type": "'tuple[str, ...]'"
-              },
-              {
                 "default": "'retain'",
                 "name": "retirement_policy",
                 "type": "'RetirementPolicy'"
@@ -101300,14 +100256,14 @@
               },
               "seal": {
                 "kind": "classmethod",
-                "signature": "(cls, *, recipe: 'RecipeIdentity', operation: 'OperationIdentity', inputs: 'Sequence[CollectionRootIdentity]', effective_intent: 'Mapping[str, object]', output_tags: 'Sequence[str]', retirement_policy: 'RetirementPolicy' = 'retain', retirement_grace_seconds: 'int' = 0) -> 'TransformIntent'"
+                "signature": "(cls, *, recipe: 'RecipeIdentity', operation: 'OperationIdentity', inputs: 'Sequence[CollectionRootIdentity]', effective_intent: 'Mapping[str, object]', retirement_policy: 'RetirementPolicy' = 'retain', retirement_grace_seconds: 'int' = 0) -> 'TransformIntent'"
               },
               "to_json_bytes": {
                 "kind": "method",
                 "signature": "(self) -> 'bytes'"
               }
             },
-            "signature": "(transform_id: 'str', recipe: 'RecipeIdentity', operation: 'OperationIdentity', inputs: 'tuple[CollectionRootIdentity, ...]', effective_intent: 'dict[str, JsonValue]', output_tags: 'tuple[str, ...]', retirement_policy: 'RetirementPolicy' = 'retain', retirement_grace_seconds: 'int' = 0) -> None"
+            "signature": "(transform_id: 'str', recipe: 'RecipeIdentity', operation: 'OperationIdentity', inputs: 'tuple[CollectionRootIdentity, ...]', effective_intent: 'dict[str, JsonValue]', retirement_policy: 'RetirementPolicy' = 'retain', retirement_grace_seconds: 'int' = 0) -> None"
           },
           "Unauthorized": {
             "kind": "class",
@@ -103755,15 +102711,10 @@
                 "default": "required",
                 "name": "operation",
                 "type": "'OperationIdentity'"
-              },
-              {
-                "default": "required",
-                "name": "output_tags",
-                "type": "'tuple[str, ...]'"
               }
             ],
             "kind": "class",
-            "signature": "(inputs: 'tuple[CollectionRootIdentity, ...]', recipe: 'RecipeIdentity', operation: 'OperationIdentity', output_tags: 'tuple[str, ...]') -> None"
+            "signature": "(inputs: 'tuple[CollectionRootIdentity, ...]', recipe: 'RecipeIdentity', operation: 'OperationIdentity') -> None"
           },
           "DerivedCollectionWriter": {
             "kind": "class",
@@ -103880,7 +102831,7 @@
               },
               "create_work": {
                 "kind": "method",
-                "signature": "(self, recipe_id: 'str', collection_ids: 'Sequence[int]', *, preview_sha256: 'str', recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkView'"
+                "signature": "(self, recipe_id: 'str', inputs: 'Sequence[CollectionRootRef]', *, preview_sha256: 'str', recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkView'"
               },
               "get_artifact_selection": {
                 "kind": "method",
@@ -103928,7 +102879,7 @@
               },
               "preview_workflow": {
                 "kind": "method",
-                "signature": "(self, recipe_id: 'str', collection_ids: 'Sequence[int]', *, recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkflowPreview'"
+                "signature": "(self, recipe_id: 'str', inputs: 'Sequence[CollectionRootRef]', *, recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkflowPreview'"
               },
               "retry_evaluation_variant": {
                 "kind": "method",
@@ -103944,7 +102895,7 @@
               },
               "run_scheduler": {
                 "kind": "method",
-                "signature": "(self, *, role: 'SchedulerRole' = 'combined', event_limit: 'int' = 100, work_limit: 'int' = 25) -> 'SchedulerRun'"
+                "signature": "(self, *, role: 'SchedulerRole' = 'combined', work_limit: 'int' = 25) -> 'SchedulerRun'"
               },
               "scheduler_status": {
                 "kind": "method",
@@ -104698,7 +103649,7 @@
           },
           "RecipeCatalogView": {
             "kind": "class",
-            "schema_sha256": "8622f2f8960791463fbcbae7f528f0d823058d1e79528ff2bb4c8753905775fb",
+            "schema_sha256": "08ee97d6df95f95a30d8ad8dd11a1688c3645e24bbed03251383f15e8a5e353c",
             "signature": "(*, catalog_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], recipes: tuple[stove0_operator_contracts.RecipeView, ...]) -> None"
           },
           "RecipeView": {
@@ -104713,7 +103664,7 @@
                 "signature": "(cls, definition: 'RecipeDefinition') -> 'RecipeView'"
               }
             },
-            "schema_sha256": "adc8bef02dda5360487574dd8d5e1b2c67a01af325348ae3c1c97c52aa2e688a",
+            "schema_sha256": "7eee2b5e52261c8b2e7fee8a80d320dcd30aa7ff4511193c970ec212ddd62a4c",
             "signature": "(*, definition: stove0_recipe_config.models.RecipeDefinition, sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "STOVE0_EVENT_SOURCE": {
@@ -104730,11 +103681,6 @@
               "io.riverhog.stove0.work.created",
               "io.riverhog.stove0.work.updated"
             ]
-          },
-          "SchedulerEventBatch": {
-            "kind": "class",
-            "schema_sha256": "9081d0e318f2e2c60201c1e5238ca2a662c72bb5bdff7ce6eef5a70253d21743",
-            "signature": "(*, events: Annotated[int, Ge(ge=0)], next_cursor: str | None, has_more: bool, work_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], ...], failures: tuple[stove0_operator_contracts.SchedulerFailure, ...] = ()) -> None"
           },
           "SchedulerFailure": {
             "kind": "class",
@@ -104758,18 +103704,18 @@
           },
           "SchedulerRun": {
             "kind": "class",
-            "schema_sha256": "fac83550e4cac7b9cf4bd58b85a5275b204b104632f4a574fda87bdafe45e887",
-            "signature": "(*, pruning: stove0_operator_contracts.SchedulerPruning | None, events: stove0_operator_contracts.SchedulerEventBatch, work: stove0_operator_contracts.SchedulerWorkBatch) -> None"
+            "schema_sha256": "2dc7f56485db2e9ef9ca0e2d3cc07726cdc00b8a1f076903dcff19dad96b56a3",
+            "signature": "(*, pruning: stove0_operator_contracts.SchedulerPruning | None, work: stove0_operator_contracts.SchedulerWorkBatch) -> None"
           },
           "SchedulerRunIn": {
             "kind": "class",
-            "schema_sha256": "5984966cf16d85045941491afed11863a4c00b947c864db91731dbdb8f880948",
-            "signature": "(*, role: Literal['controller', 'worker', 'combined'] = 'combined', event_limit: Annotated[int, Ge(ge=1), Le(le=100)] = 100, work_limit: Annotated[int, Ge(ge=1), Le(le=100)] = 25) -> None"
+            "schema_sha256": "bb6999171d296c228fdb5ff3ba85eb17a54fcbccdc9cfd7f0af37f0db3209dd5",
+            "signature": "(*, role: Literal['controller', 'worker', 'combined'] = 'combined', work_limit: Annotated[int, Ge(ge=1), Le(le=100)] = 25) -> None"
           },
           "SchedulerStatus": {
             "kind": "class",
-            "schema_sha256": "6a9e3ac779b2f0b1b7df7df5ef60e92723b30393449505f472ad9cec68973ed4",
-            "signature": "(*, running: bool, interval_seconds: Annotated[float, Gt(gt=0)], cursor: str, roles: tuple[typing.Literal['controller', 'worker', 'combined'], ...]) -> None"
+            "schema_sha256": "7a4eac0cdfe53ec109a9dd097dd163c7a16e9c52f9f04684ef04035f8d303bd5",
+            "signature": "(*, running: bool, interval_seconds: Annotated[float, Gt(gt=0)], roles: tuple[typing.Literal['controller', 'worker', 'combined'], ...]) -> None"
           },
           "SchedulerWorkBatch": {
             "kind": "class",
@@ -104836,8 +103782,8 @@
           },
           "WorkCreateIn": {
             "kind": "class",
-            "schema_sha256": "8d612219ee6a2a0472b4fb01e83d6845001d357fa54bf7ac3595d50ea9216829",
-            "signature": "(*, recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int | None, Ge(ge=1)] = None, collection_ids: Annotated[tuple[int, ...], MinLen(min_length=1)], effective_intent: dict[str, JsonValue] = <factory>, preview_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
+            "schema_sha256": "ea611476780c1760169ddacd75b984a7c9b035cf96394d12250b835495e6a748",
+            "signature": "(*, recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int | None, Ge(ge=1)] = None, inputs: Annotated[tuple[stove0_protocol.models.CollectionRootRef, ...], MinLen(min_length=1)], effective_intent: dict[str, JsonValue] = <factory>, preview_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "WorkCreatedEvent": {
             "kind": "class",
@@ -104873,7 +103819,7 @@
                 "signature": "(cls, page: 'Mapping[str, Any]') -> 'WorkPage'"
               }
             },
-            "schema_sha256": "f33000af3810446a4b3ed6ce275f74fa9766322715b22454462616ac2eb71ff9",
+            "schema_sha256": "d4dcd0f75a6790af3eececd4020f2a6b942bf376472f88997fc91584c8ce8095",
             "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
           },
           "WorkPhase": {
@@ -104906,19 +103852,19 @@
                 "signature": "(cls, record: 'BaseModel | Mapping[str, Any]') -> 'WorkView'"
               }
             },
-            "schema_sha256": "c4929601f30cb898e17de94ca67696b1c1593f18ad170290c7c7124fd96e45bd",
+            "schema_sha256": "4653eff1d6b27ef7d65f8577e7299e62b66330454054717075c27843f3dc1246",
             "signature": "(*, format: Literal['stove0-work-view/v1'] = 'stove0-work-view/v1', work_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], work: stove0_protocol.models.WorkIdentity, phase: Literal['eligible', 'claimed', 'observing', 'planning', 'target_preflight', 'queued', 'executing', 'output_finalizing', 'verifying', 'settled', 'retirement_pending', 'coordinating', 'abandon_pending', 'complete', 'inapplicable', 'failed', 'canceled'], revision: Annotated[int, Ge(ge=1)], claim: stove0_operator_contracts.WorkClaimView | None = None, preview_acceptance: stove0_operator_contracts.PreviewAcceptanceView | None = None, expected_target_plan_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, observation_requests: tuple[stove0_protocol.models.ObservationRequest, ...] = (), observation_results: tuple[stove0_protocol.models.ObservationResult, ...] = (), branch_set_plan: stove0_protocol.fork_join.BranchSetPlan | None = None, coordination_settlement: stove0_protocol.fork_join.CoordinationSettlement | None = None, join_plan: stove0_protocol.fork_join.JoinPlan | None = None, coordination_cancel_requested: bool = False, workflow_plan: stove0_protocol.models.WorkflowPlan | None = None, target_plan: Optional[Annotated[stove0_target_protocol.protocol.TransformPlan | stove0_target_protocol.protocol.EffectPlan, FieldInfo(annotation=NoneType, required=True, discriminator='protocol')]] = None, controller_evidence: stove0_protocol.models.ControllerEvidence | None = None, target_request: stove0_target_protocol.protocol.AcceptedTargetJob | None = None, target_status: stove0_target_protocol.protocol.TargetJobStatus | None = None, output: stove0_target_protocol.protocol.OutputCollectionRef | None = None, target_settlement: stove0_target_protocol.protocol.TargetSettlementAuthority | None = None, retirement_remaining: tuple[int, ...] = (), failure: stove0_operator_contracts.WorkFailureView | None = None, inapplicable: stove0_operator_contracts.WorkInapplicableView | None = None, abandon_outcome: Optional[Literal['inapplicable', 'failed', 'canceled']] = None) -> None"
           },
           "WorkflowPreviewIn": {
             "kind": "class",
             "members": {
-              "canonical_collections": {
+              "canonical_inputs": {
                 "kind": "classmethod",
-                "signature": "(cls, value: 'tuple[int, ...]') -> 'tuple[int, ...]'"
+                "signature": "(cls, value: 'tuple[CollectionRootRef, ...]') -> 'tuple[CollectionRootRef, ...]'"
               }
             },
-            "schema_sha256": "07d332c26362e3beb748599ac75fdea19cd73b01d4509373f1abf4eee2aa5bee",
-            "signature": "(*, recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int | None, Ge(ge=1)] = None, collection_ids: Annotated[tuple[int, ...], MinLen(min_length=1)], effective_intent: dict[str, JsonValue] = <factory>) -> None"
+            "schema_sha256": "d481dd8506429b4854eac08e0da41af254197bca3e7951499e90d837ad076ba9",
+            "signature": "(*, recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int | None, Ge(ge=1)] = None, inputs: Annotated[tuple[stove0_protocol.models.CollectionRootRef, ...], MinLen(min_length=1)], effective_intent: dict[str, JsonValue] = <factory>) -> None"
           },
           "parse_stove0_event": {
             "kind": "function",
@@ -105088,7 +104034,7 @@
                 "signature": "(cls, *, parent_work: 'WorkIdentity', branch_id: 'str', decision_sha256: 'str', selection: 'ArtifactSelection', recipe: 'RecipeRef', effective_intent: 'Mapping[str, JsonValue]', workflow_intent: 'WorkflowPlanIntent', observations: 'tuple[ObservationEvidence, ...]' = ()) -> 'BranchPlan'"
               }
             },
-            "schema_sha256": "2d5cc4248c2bc59c3fa7087db8e7df1df543483d62fdd046d8119fc2655d49dc",
+            "schema_sha256": "d046c81f10004092168d1b8ac2d4f31967cb97231750a656d0c8cbf085468178",
             "signature": "(*, kind: Literal['leaf'] = 'leaf', branch_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], artifact_selection: stove0_protocol.fork_join.ArtifactSelectionRef, workflow_plan: stove0_protocol.models.WorkflowPlan) -> None"
           },
           "BranchSetDecision": {
@@ -105119,12 +104065,12 @@
                 "signature": "(self) -> 'dict[str, ArtifactSelection]'"
               }
             },
-            "schema_sha256": "c772e85d9235ca21fba09c49a8a377b87bc708cad42fdec0d573c1928f4d9e46",
+            "schema_sha256": "7002a62c586004f4b0d38994ee4ab49a26cfdf6186d266401bb6e891beca18aa",
             "signature": "(*, plan: stove0_protocol.fork_join.BranchSetPlan, selections: tuple[stove0_protocol.fork_join.ArtifactSelection, ...], branch_sets: tuple[stove0_protocol.fork_join.BranchSetPlan, ...] = ()) -> None"
           },
           "BranchSetEvaluation": {
             "kind": "class",
-            "schema_sha256": "dca63879aa52198426787b2adf91cc3fa661f14e9c4dcbccf4e65b7f32b99c8c",
+            "schema_sha256": "cf1eb8915ebea499a8253c4e4fca1c5582de70e008456ec3d105232989796362",
             "signature": "(*, branch_set_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], succeeded_branches: tuple[stove0_protocol.fork_join.BranchSettlement, ...], succeeded_effects: tuple[stove0_protocol.fork_join.BranchEffectSettlement, ...], succeeded_coordinations: tuple[stove0_protocol.fork_join.CoordinationSettlement, ...], unsettled_branch_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...], failed_branch_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...], inapplicable_branch_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...], interrupted_branch_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...], canceled_branch_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...], join_ready: bool, resolved_join_plan: stove0_protocol.fork_join.JoinPlan | None, join_state: Literal['not-declared', 'waiting', 'ready', 'succeeded', 'failed', 'inapplicable', 'interrupted', 'canceled'], join_settlement: stove0_protocol.fork_join.JoinSettlement | None, unsettled_work_ids: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], ...], branch_set_succeeded: bool, coordination_settlement: stove0_protocol.fork_join.CoordinationSettlement | None, retirement_requested: bool, coordination_complete_for_retirement: bool) -> None"
           },
           "BranchSetPlan": {
@@ -105151,7 +104097,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "1cef549673d9247e7d0e8af6f7df792f3916ec7e93fb7a38c4434fe70fa9768c",
+            "schema_sha256": "11539570d1e9fdacda5e7aab1672281a8835e6d6b717b0faa07d8da1aabc0294",
             "signature": "(*, format: Literal['stove0-branch-set/v1'] = 'stove0-branch-set/v1', parent_work: stove0_protocol.models.WorkIdentity, decision_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], evidence_sha256s: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], ...] = (), branches: Annotated[tuple[Annotated[stove0_protocol.fork_join.BranchPlan | stove0_protocol.fork_join.CoordinationBranchPlan, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], join: stove0_protocol.fork_join.JoinDeclaration | None = None, retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, branch_set_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "BranchSettlement": {
@@ -105214,12 +104160,12 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "ff65fcf4962789487f96f72d2f377b18ad52bcf7b90fec38732553c37c8da344",
+            "schema_sha256": "4083962837a0d61423ed20edd5491176f060c2344623a14012265212866cd177",
             "signature": "(*, format: Literal['stove0-controller-evidence/v1'] = 'stove0-controller-evidence/v1', execution_envelope: stove0_protocol.models.ExecutionEnvelope, controller_evidence_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "ControllerEvidencePayload": {
             "kind": "class",
-            "schema_sha256": "9f01b7b8f7422c1ba9a8c6c3e3cf340a32d8f20e313c88243a8a8deb169aa455",
+            "schema_sha256": "3c3aad377f9e1e0b63e741284adbda66871bea711a3f40763d750f55966ed91b",
             "signature": "(*, format: Literal['stove0-controller-evidence/v1'] = 'stove0-controller-evidence/v1', execution_envelope: stove0_protocol.models.ExecutionEnvelope) -> None"
           },
           "CoordinationBranchPlan": {
@@ -105368,7 +104314,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "748bb5cf4512b8f8ccc819205708a045537e435691baace3ac7d6f85e22886e5",
+            "schema_sha256": "5f6955d3291863e0bdb8bc5e043504aa895c10bca411253c174cf22da6af370f",
             "signature": "(*, format: Literal['stove0-execution-envelope/v1'] = 'stove0-execution-envelope/v1', claim_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], fence: Annotated[int, Ge(ge=1)], workflow_plan: stove0_protocol.models.WorkflowPlan, target_plan: stove0_protocol.models.TargetPlanBinding, execution_envelope_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "ExecutionEnvelopePayload": {
@@ -105383,7 +104329,7 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "956d9c6b63a1869840ced756300254a9aaabc94043ba0e0406656f65a2359e22",
+            "schema_sha256": "07fd0c9dee16b72ccd9cb2e451adfdd8515d19c459761a5e09fc57daea06cf92",
             "signature": "(*, format: Literal['stove0-execution-envelope/v1'] = 'stove0-execution-envelope/v1', claim_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], fence: Annotated[int, Ge(ge=1)], workflow_plan: stove0_protocol.models.WorkflowPlan, target_plan: stove0_protocol.models.TargetPlanBinding) -> None"
           },
           "ForkJoinBinding": {
@@ -105438,7 +104384,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "6594d8d9e4e8130b7eaae46c95bc09e81a6cfa9159c36fe94a39b4cbaa2c48cb",
+            "schema_sha256": "59b7a82cb0367a896054d30d8696a7585892d491b7e53c80ef5205434d902f06",
             "signature": "(*, format: Literal['stove0-join-declaration/v1'] = 'stove0-join-declaration/v1', members: Annotated[tuple[stove0_protocol.fork_join.JoinMemberDeclaration, ...], MinLen(min_length=2)], recipe: stove0_protocol.models.RecipeRef, effective_intent: dict[str, JsonValue] = <factory>, workflow_intent: stove0_protocol.models.WorkflowPlanIntent, join_declaration_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "JoinEvaluationState": {
@@ -105486,7 +104432,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "f4648a84c76acb5e6f2aa9f4d758ed687d0d76ac8f462e889e11878069f9e558",
+            "schema_sha256": "8210d3195621df847cfbceceea08fa633e6b88328b7bba90ca04fc6faa47280a",
             "signature": "(*, format: Literal['stove0-join-plan/v1'] = 'stove0-join-plan/v1', parent_work_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], branch_set_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], declaration: stove0_protocol.fork_join.JoinDeclaration, inputs: Annotated[tuple[stove0_protocol.fork_join.JoinInputPlan, ...], MinLen(min_length=2)], work: stove0_protocol.models.WorkIdentity, workflow_plan: stove0_protocol.models.WorkflowPlan, join_plan_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "JoinSettlement": {
@@ -105702,16 +104648,12 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "2041cff7e8a97b38488aac103f60d85f44e714c52650645e32b013e8309222be",
-            "signature": "(*, format: Literal['stove0-workflow-plan/v1'] = 'stove0-workflow-plan/v1', work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', output_tags: tuple[str, ...] = (), retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>, workflow_plan_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
+            "schema_sha256": "dc8f2cc9d162e6b40e2d3abe594494d91c2fa0d071396788b9a0b7df86f64088",
+            "signature": "(*, format: Literal['stove0-workflow-plan/v1'] = 'stove0-workflow-plan/v1', work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>, workflow_plan_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "WorkflowPlanIntent": {
             "kind": "class",
             "members": {
-              "canonical_tags": {
-                "kind": "classmethod",
-                "signature": "(cls, value: 'tuple[str, ...]') -> 'tuple[str, ...]'"
-              },
               "from_plan": {
                 "kind": "classmethod",
                 "signature": "(cls, plan: 'WorkflowPlan') -> 'WorkflowPlanIntent'"
@@ -105725,8 +104667,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "fbb8f6f827530aef8c0d8bb15bb3b5be3316964400aacca73e48fca449ccfcfd",
-            "signature": "(*, operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', output_tags: tuple[str, ...] = (), retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>) -> None"
+            "schema_sha256": "3ee63b3d0a336d7ca1790729a7ffab36688bc08ad7cc692e025e59701be915b8",
+            "signature": "(*, operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>) -> None"
           },
           "WorkflowPlanPayload": {
             "kind": "class",
@@ -105735,17 +104677,13 @@
                 "kind": "classmethod",
                 "signature": "(cls, value: 'tuple[ObservationEvidence, ...]') -> 'tuple[ObservationEvidence, ...]'"
               },
-              "canonical_tags": {
-                "kind": "classmethod",
-                "signature": "(cls, value: 'tuple[str, ...]') -> 'tuple[str, ...]'"
-              },
               "protect_evaluation_sources": {
                 "kind": "method",
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "ce90b2148a69b903f59876bbefdeca4ddcbd6893c9ce6c9d1a76cf9c6185e631",
-            "signature": "(*, format: Literal['stove0-workflow-plan/v1'] = 'stove0-workflow-plan/v1', work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', output_tags: tuple[str, ...] = (), retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>) -> None"
+            "schema_sha256": "e13c1c2b2adac8dde0ce9197a2b19bded89f69aa6ec359fd68445674beb8af60",
+            "signature": "(*, format: Literal['stove0-workflow-plan/v1'] = 'stove0-workflow-plan/v1', work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), operation: stove0_protocol.models.OperationRef, result_kind: Literal['collection', 'external-effect'] = 'collection', target_registration_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$', ascii_only=None)], target_contract_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], requested_target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, output_policy: dict[str, JsonValue] = <factory>) -> None"
           },
           "WorkflowPreview": {
             "kind": "class",
@@ -105759,7 +104697,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "7668648b66abf6a934eb475eb9452fd6a01ae7583323656a702c4a30e4d1d0fc",
+            "schema_sha256": "6151382a075394584ab8c2e21fde7b1cf1955791b21e983ab5119792ed3f02de",
             "signature": "(*, format: Literal['stove0-workflow-preview/v1'] = 'stove0-workflow-preview/v1', preview_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], state: Literal['ready', 'inapplicable', 'failed', 'canceled'], work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), branch_set_plan: stove0_protocol.fork_join.BranchSetPlan | None = None, branch_sets: tuple[stove0_protocol.fork_join.BranchSetPlan, ...] = (), selections: tuple[stove0_protocol.fork_join.ArtifactSelection, ...] = (), target_plans: tuple[stove0_protocol.fork_join.BranchTargetPreview, ...] = (), outcome: stove0_protocol.models.PreviewOutcome | None = None, warnings: tuple[str, ...] = (), preview_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "WorkflowPreviewPayload": {
@@ -105790,7 +104728,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "b0d61aab40fb899f4aa4cdcf76bb66f29c383f05cca7ccc2e8cf813bc4c7cd6f",
+            "schema_sha256": "d00182a18c04ab8c9d3c43ca2ae7af712130f80e1cb52991252abfadbddcb4a9",
             "signature": "(*, format: Literal['stove0-workflow-preview/v1'] = 'stove0-workflow-preview/v1', preview_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], state: Literal['ready', 'inapplicable', 'failed', 'canceled'], work: stove0_protocol.models.WorkIdentity, observations: tuple[stove0_protocol.models.ObservationEvidence, ...] = (), branch_set_plan: stove0_protocol.fork_join.BranchSetPlan | None = None, branch_sets: tuple[stove0_protocol.fork_join.BranchSetPlan, ...] = (), selections: tuple[stove0_protocol.fork_join.ArtifactSelection, ...] = (), target_plans: tuple[stove0_protocol.fork_join.BranchTargetPreview, ...] = (), outcome: stove0_protocol.models.PreviewOutcome | None = None, warnings: tuple[str, ...] = ()) -> None"
           },
           "WorkflowPreviewRequest": {
@@ -105908,10 +104846,6 @@
                 "kind": "classmethod",
                 "signature": "(cls, path: 'Path') -> 'RecipeCatalog'"
               },
-              "matching": {
-                "kind": "method",
-                "signature": "(self, tags: 'tuple[str, ...] | list[str]') -> 'tuple[RecipeDefinition, ...]'"
-              },
               "operation": {
                 "kind": "method",
                 "signature": "(self, operation_id: 'str') -> 'OperationContract'"
@@ -105933,7 +104867,7 @@
                 "signature": "(self) -> 'dict[str, JsonValue]'"
               }
             },
-            "schema_sha256": "d0e2f2857fe883ac12d44f9d8d21f8de9454fc83805b9b5c1510612fb3a34cac",
+            "schema_sha256": "d917d4c47bebfc8abcea36832e60bdf80ca2ac7cd717d0f30305b3d377409fd5",
             "signature": "(*, format: Literal['stove0-recipes/v1'] = 'stove0-recipes/v1', operations: tuple[stove0_target_protocol.protocol.OperationContract, ...], recipes: tuple[stove0_recipe_config.models.RecipeDefinition, ...]) -> None"
           },
           "RecipeCoordinationRoute": {
@@ -105967,8 +104901,8 @@
                 "signature": "(self) -> 'str'"
               }
             },
-            "schema_sha256": "f60c580e955e2a828c42ce499d039e503b0227fe9df0711ce4932792364792ce",
-            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], revision: Annotated[int, Ge(ge=1)], input_tags: Annotated[tuple[str, ...], MinLen(min_length=1)], event_input_closure: Literal['single-finalized-collection'] = 'single-finalized-collection', artifact_associations: tuple[stove0_recipe_config.models.ArtifactAssociation, ...] = (), observers: tuple[stove0_recipe_config.models.ObserverUse, ...] = (), routes: Annotated[tuple[Annotated[stove0_recipe_config.models.RecipeRoute | stove0_recipe_config.models.RecipeCoordinationRoute, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], unmatched_artifact_disposition: Literal['retain-in-source', 'reject-work'], allow_derived_inputs: bool = False, source_retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, join: stove0_recipe_config.models.RecipeJoin | None = None) -> None"
+            "schema_sha256": "6c28d2c8a41f504854067b2123a03ac0343f7c20f4281141a0871f4e6e4deb50",
+            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], revision: Annotated[int, Ge(ge=1)], event_input_closure: Literal['single-finalized-collection'] = 'single-finalized-collection', artifact_associations: tuple[stove0_recipe_config.models.ArtifactAssociation, ...] = (), observers: tuple[stove0_recipe_config.models.ObserverUse, ...] = (), routes: Annotated[tuple[Annotated[stove0_recipe_config.models.RecipeRoute | stove0_recipe_config.models.RecipeCoordinationRoute, FieldInfo(annotation=NoneType, required=True, discriminator='kind')], ...], MinLen(min_length=1)], unmatched_artifact_disposition: Literal['retain-in-source', 'reject-work'], allow_derived_inputs: bool = False, source_retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0, join: stove0_recipe_config.models.RecipeJoin | None = None) -> None"
           },
           "RecipeJoin": {
             "kind": "class",
@@ -105978,8 +104912,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "97e1ba8738a73a9cc73aa99990401159f972e7cd6e98208b89ba8c5cf9af1ddd",
-            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], members: Annotated[tuple[stove0_recipe_config.models.RecipeJoinMember, ...], MinLen(min_length=2)], operation_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], target_registration_id: str, intent: dict[str, JsonValue] = <factory>, target_options: dict[str, JsonValue] = <factory>, projections: tuple[stove0_recipe_config.models.OperationProjection, ...] = (), input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', output_tags: Annotated[tuple[str, ...], MinLen(min_length=1)]) -> None"
+            "schema_sha256": "5fef83beb5dcd069ffebfd5201605f3b9a08ae25dab3e7e9504bf4b01666daf8",
+            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], members: Annotated[tuple[stove0_recipe_config.models.RecipeJoinMember, ...], MinLen(min_length=2)], operation_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], target_registration_id: str, intent: dict[str, JsonValue] = <factory>, target_options: dict[str, JsonValue] = <factory>, projections: tuple[stove0_recipe_config.models.OperationProjection, ...] = (), input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only') -> None"
           },
           "RecipeJoinMember": {
             "kind": "class",
@@ -105994,8 +104928,8 @@
           },
           "RecipeRoute": {
             "kind": "class",
-            "schema_sha256": "4da8f60d8b2069811b9b192c561056052d1f2f6ba6db6351f98543476757db33",
-            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], when: tuple[stove0_recipe_config.models.FactPredicate, ...] = (), artifact_rules: tuple[stove0_recipe_config.models.ArtifactRule, ...] = (ArtifactRule(glob='*', role='stove0.source/v1', media_type=None),), primary_role: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)]] = None, associated_roles: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...] = (), intent: dict[str, JsonValue] = <factory>, projections: tuple[stove0_recipe_config.models.OperationProjection, ...] = (), kind: Literal['operation'] = 'operation', operation_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], target_registration_id: str, target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only', output_tags: tuple[str, ...] = ()) -> None"
+            "schema_sha256": "c177dec4c92471097826d683c4b3dae92c62fdcc31cfcd5a840db283249541b4",
+            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], when: tuple[stove0_recipe_config.models.FactPredicate, ...] = (), artifact_rules: tuple[stove0_recipe_config.models.ArtifactRule, ...] = (ArtifactRule(glob='*', role='stove0.source/v1', media_type=None),), primary_role: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)]] = None, associated_roles: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], ...] = (), intent: dict[str, JsonValue] = <factory>, projections: tuple[stove0_recipe_config.models.OperationProjection, ...] = (), kind: Literal['operation'] = 'operation', operation_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$', ascii_only=None)], target_registration_id: str, target_options: dict[str, JsonValue] = <factory>, input_retrieval_policy: Literal['available-only', 'allow'] = 'available-only') -> None"
           }
         },
         "module": "stove0_recipe_config"
@@ -106085,7 +105019,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "22d469e3ebeab5fb9d52fb4a38dd797d3042f3beaafa7242f5130373d5e77a7e",
+            "schema_sha256": "d6edef74a94d6ff90c51b59d72f6c750c6e411f0d80816c3136379e41e828867",
             "signature": "(*, declaration: stove0_target_protocol.protocol.TargetJobDeclaration, request_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "EFFECT_RECEIPT_FORMAT": {
@@ -106466,7 +105400,7 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "a3bb723203ca49728c5082e65fc4090cad92b58c93c1ea7d369b405112178dae",
+            "schema_sha256": "a0db588dffc46f0fcadc83e704edb92879ec0aa3f006d9c2d369f36c76e0f4a9",
             "signature": "(*, job_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], claim_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], fence: Annotated[int, Ge(ge=1)], controller_evidence: stove0_protocol.models.ControllerEvidence, plan: stove0_target_protocol.protocol.TransformPlan | stove0_target_protocol.protocol.EffectPlan, workspace_assurance: Literal['encrypted', 'ephemeral']) -> None"
           },
           "TargetJobRequest": {
@@ -106485,7 +105419,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "6fe1c8bc4cc51b1883f7867ca22925de9dd9b98b0f42f3579f94f9cbe9aa44f4",
+            "schema_sha256": "a9548cb0b668b182a9fdebb904bc5e91d9299131bbf9c38cff8a5c19c450063e",
             "signature": "(*, declaration: stove0_target_protocol.protocol.TargetJobDeclaration, runtime: stove0_target_protocol.protocol.TargetRuntimeAuthority, callback_access: stove0_target_protocol.protocol.TargetCallbackAccess, request_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "TargetJobState": {
@@ -106716,7 +105650,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "22d469e3ebeab5fb9d52fb4a38dd797d3042f3beaafa7242f5130373d5e77a7e",
+            "schema_sha256": "d6edef74a94d6ff90c51b59d72f6c750c6e411f0d80816c3136379e41e828867",
             "signature": "(*, declaration: stove0_target_protocol.protocol.TargetJobDeclaration, request_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "DEFAULT_TERMINAL_STATE_RETENTION_SECONDS": {
@@ -107025,7 +105959,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "1ab3ed1f8f88ab24a08183485a05f89d584044b1bcf4facbb542a61b9c3f4fd4",
+            "schema_sha256": "dacd9898c46672af35bfeb83fabcf79bcb811edbef134d19b75e3c4a7f66b543",
             "signature": "(*, format: Literal['stove0-target-conformance-result/v1'] = 'stove0-target-conformance-result/v1', status: Literal['conformant', 'partially-exercised', 'inspected'], target: stove0_target_protocol.protocol.TargetContract, coverage: stove0_target_support.conformance.TargetConformanceCoverage, operations: tuple[stove0_target_support.conformance.TargetOperationConformance, ...], operation_evidence: tuple[stove0_target_support.conformance.TargetOperationConformanceEvidence, ...] = ()) -> None"
           },
           "TargetContract": {
@@ -107205,7 +106139,7 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "a3bb723203ca49728c5082e65fc4090cad92b58c93c1ea7d369b405112178dae",
+            "schema_sha256": "a0db588dffc46f0fcadc83e704edb92879ec0aa3f006d9c2d369f36c76e0f4a9",
             "signature": "(*, job_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], claim_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], fence: Annotated[int, Ge(ge=1)], controller_evidence: stove0_protocol.models.ControllerEvidence, plan: stove0_target_protocol.protocol.TransformPlan | stove0_target_protocol.protocol.EffectPlan, workspace_assurance: Literal['encrypted', 'ephemeral']) -> None"
           },
           "TargetJobRequest": {
@@ -107224,7 +106158,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "6fe1c8bc4cc51b1883f7867ca22925de9dd9b98b0f42f3579f94f9cbe9aa44f4",
+            "schema_sha256": "a9548cb0b668b182a9fdebb904bc5e91d9299131bbf9c38cff8a5c19c450063e",
             "signature": "(*, declaration: stove0_target_protocol.protocol.TargetJobDeclaration, runtime: stove0_target_protocol.protocol.TargetRuntimeAuthority, callback_access: stove0_target_protocol.protocol.TargetCallbackAccess, request_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "TargetJobState": {

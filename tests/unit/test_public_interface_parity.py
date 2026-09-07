@@ -412,7 +412,6 @@ READ_COLLECTION_OPERATIONS = {
             "list_processing_claim_dispositions",
             "list_processing_claim_inputs",
             "list_processing_claim_outcomes",
-            "list_processing_claim_output_tags",
         },
     },
     "stove0": {
@@ -507,7 +506,6 @@ PUBLIC_QUERY_SELECTORS = {
         "list_processing_claim_artifacts": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_inputs": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_outcomes": {"authority_sha256", "start_ordinal"},
-        "list_processing_claim_output_tags": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_dispositions": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_disposition_outputs": {
             "authority_sha256",

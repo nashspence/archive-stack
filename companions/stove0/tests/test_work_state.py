@@ -13,7 +13,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import text
 from stove0_core import (
     ClaimBinding,
@@ -308,7 +307,6 @@ def _branch_decision(
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         ),
     )
@@ -705,7 +703,6 @@ def _nested_branch_decision(work: WorkIdentity) -> BranchSetDecision:
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         ),
     )
@@ -771,7 +768,6 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         )
     )
@@ -853,7 +849,6 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         operation=workflow.operation.to_identity(),
         input_set_sha256=_sha("a"),
         artifact_set_sha256=_sha("b"),
-        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256=_sha("9"),
         controller_evidence=record.controller_evidence.model_dump(
@@ -955,7 +950,6 @@ def test_new_claim_fence_resets_unsettled_execution_authorities() -> None:
             operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
             target_registration_id="fixture-target",
             target_contract_sha256=target.contract_sha256,
-            output_tags=("fixture-output",),
             retirement_policy="retain",
         )
     )
@@ -1582,7 +1576,7 @@ def test_sql_branch_set_admission_rolls_back_every_document_on_child_conflict(
         operation=branch.workflow_plan.operation,
         target_registration_id=branch.workflow_plan.target_registration_id,
         target_contract_sha256=branch.workflow_plan.target_contract_sha256,
-        output_tags=("conflicting-output",),
+        requested_target_options={"conflict": True},
         retirement_policy="retain",
     ).materialize(work=branch.workflow_plan.work)
     store.create(WorkRecord(work=branch.workflow_plan.work, workflow_plan=conflicting_plan))

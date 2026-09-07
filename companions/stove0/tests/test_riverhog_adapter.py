@@ -26,7 +26,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_protocol.paths import tag_set_identity
 from stove0_core import ClaimBinding, InMemoryWorkStore, Stove0RiverhogClient, WorkRecord
 from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_protocol import (
@@ -171,7 +170,6 @@ def _authorities(
             operation=OperationRef(id="fixture.copy/v1", sha256=_sha("4")),
             target_registration_id="fixture-target",
             target_contract_sha256=_sha("5"),
-            output_tags=("fixture-output",),
             retirement_policy=retirement_policy,
         )
     )
@@ -263,7 +261,6 @@ class FixtureApi:
         self.expire_renewal = False
         self.deleted: set[int] = set()
         self.processing_outcomes: list[dict[str, object]] = []
-        self.output_tags: tuple[str, ...] = ()
 
     def create_or_resume_processing_claim(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("claim", kwargs))
@@ -312,7 +309,6 @@ class FixtureApi:
     def seal_processing_claim_plan(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("seal", {"claim_id": claim_id, **kwargs}))
         self.execution_id = kwargs["execution_id"]
-        self.output_tags = tuple(kwargs["output_tags"])
         return {
             "id": claim_id,
             "fence": kwargs["fence"],
@@ -382,7 +378,6 @@ class FixtureApi:
             "id": collection_id,
             "archive_root_sha256": _sha("7"),
             "content_identity": _sha("8"),
-            "tag_set_identity": tag_set_identity(self.output_tags),
         }
 
     def get_processing_claim_dispositions(self, claim_id: str) -> ArtifactDispositionSetDocument:
@@ -429,22 +424,6 @@ class FixtureApi:
             ],
             complete=True,
         )
-
-    def get_collection_tags(
-        self, collection_id: int, *, page_size: int, page_token: str | None
-    ) -> dict[str, Any]:
-        assert self.derivation is not None
-        assert (page_size, page_token) == (100, None)
-        self.calls.append(("get-tags", {"collection_id": collection_id}))
-        return {
-            "collection_id": collection_id,
-            "metadata_revision": 1,
-            "inventory_identity": _sha("6"),
-            "tag_count": len(self.derivation.output_tags),
-            "page_size": page_size,
-            "next_page_token": None,
-            "tags": list(self.derivation.output_tags),
-        }
 
     def get_collection_derivation(self, collection_id: int) -> dict[str, Any]:
         assert self.derivation is not None
@@ -546,7 +525,6 @@ def _verifying_record(
         operation=workflow.operation.to_identity(),
         input_set_sha256=_sha("d"),
         artifact_set_sha256=_sha("e"),
-        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=execution_id,
         execution_sha256=_sha("a"),
         controller_evidence=controller_document,
@@ -629,7 +607,6 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
 def test_post_root_settlement_restarts_from_bounded_portable_inventory_progress() -> None:
     work, workflow, _target_plan, evidence = _authorities()
     api = PagedInventoryFixtureApi()
-    api.output_tags = workflow.output_tags
     state = InMemoryWorkStore()
     record = _verifying_record(work, workflow, evidence)
     state.create(record)
@@ -661,7 +638,6 @@ def test_post_root_settlement_restarts_from_bounded_portable_inventory_progress(
 def test_post_root_settlement_fails_closed_on_non_bijective_output() -> None:
     work, workflow, _target_plan, evidence = _authorities()
     api = FixtureApi()
-    api.output_tags = workflow.output_tags
     state = InMemoryWorkStore()
     record = _verifying_record(work, workflow, evidence)
     state.create(record)

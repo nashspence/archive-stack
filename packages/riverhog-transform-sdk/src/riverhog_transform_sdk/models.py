@@ -14,7 +14,6 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.paths import (
     CollectionId,
     normalize_relpath,
-    normalize_tag,
     validate_collection_id,
 )
 
@@ -32,14 +31,12 @@ class DerivedCollectionSpec:
 
     The data-plane SDK deliberately does not depend on an orchestration
     application or workflow-specific intent model. It receives only exact
-    immutable input roots, opaque recipe/operation identities, and the authorized
-    output tags.
+    immutable input roots and opaque recipe/operation identities.
     """
 
     inputs: tuple[CollectionRootIdentity, ...]
     recipe: RecipeIdentity
     operation: OperationIdentity
-    output_tags: tuple[str, ...]
 
     def __post_init__(self) -> None:
         normalized_inputs = tuple(sorted(self.inputs))
@@ -47,9 +44,6 @@ class DerivedCollectionSpec:
             raise ValueError("derived collection inputs must be nonempty and canonical")
         if len({item.collection_id for item in normalized_inputs}) != len(normalized_inputs):
             raise ValueError("derived collection inputs must be unique")
-        tags = tuple(sorted(normalize_tag(item) for item in self.output_tags))
-        if not tags or tags != self.output_tags or len(tags) != len(set(tags)):
-            raise ValueError("derived collection output tags must be unique and canonical")
 
 
 @dataclass(frozen=True, order=True, slots=True)
