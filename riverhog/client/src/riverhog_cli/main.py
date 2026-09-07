@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import itertools
 import json
 import os
 import re
@@ -1053,28 +1054,39 @@ def _complete_collection_upload_session(
     )
 
 
-def _local_collection_manifest(root: Path) -> list[CollectionManifestEntry]:
-    files: list[CollectionManifestEntry] = []
-    for path in sorted(root.rglob("*")):
+def _iter_collection_source_paths(root: Path) -> Iterator[Path]:
+    for path in root.rglob("*"):
         if not path.is_file() or _is_provenance_control_path(root, path):
             continue
-        files.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "bytes": path.stat().st_size,
-                "sha256": _file_sha256(path),
-            }
-        )
-    if not files:
+        yield path
+
+
+def _local_collection_summary(root: Path) -> tuple[int, int, list[CollectionManifestEntry]]:
+    files_total = 0
+    bytes_total = 0
+    preview: list[CollectionManifestEntry] = []
+    for path in _iter_collection_source_paths(root):
+        entry: CollectionManifestEntry = {
+            "path": path.relative_to(root).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": _file_sha256(path),
+        }
+        files_total += 1
+        bytes_total += entry["bytes"]
+        if len(preview) < 5:
+            preview.append(entry)
+    if files_total == 0:
         raise typer.BadParameter("collection source must contain at least one file")
-    return files
+    return files_total, bytes_total, preview
 
 
 def _collection_upload_dry_run_plan(
     *,
     idempotency_key: str,
     root: Path,
-    manifest: list[CollectionManifestEntry],
+    files_total: int,
+    bytes_total: int,
+    files_preview: list[CollectionManifestEntry],
     archive_store: str | None = None,
     provenance_observer: ResolvedProvenanceObserver | None = None,
 ) -> dict[str, object]:
@@ -1085,15 +1097,15 @@ def _collection_upload_dry_run_plan(
         "collection_id": None,
         "root": str(root),
         "ingest_source": str(root),
-        "files_total": len(manifest),
-        "bytes_total": sum(item["bytes"] for item in manifest),
+        "files_total": files_total,
+        "bytes_total": bytes_total,
         "archive_store": archive_store,
         "provenance_observer": (
             provenance_observer.as_dict() if provenance_observer is not None else None
         ),
         "server_validation": "not_run",
         "created_at": utc_timestamp_now(),
-        "files_preview": manifest[:5],
+        "files_preview": files_preview,
     }
 
 
@@ -1172,60 +1184,6 @@ def _hash_collection_source(
     }
     result["provenance_journals"] = prepared.journals
     return result
-
-
-def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManifestEntry]:
-    result: list[CollectionManifestEntry] = []
-    page_token: str | None = None
-    while True:
-        payload = api.list_collection_upload_session_files(
-            collection_id,
-            page_size=100,
-            page_token=page_token,
-        )
-        values = payload.get("files")
-        if not isinstance(values, list):
-            raise RuntimeError("upload session returned an invalid file page")
-        for value in values:
-            path = value.get("path")
-            byte_count = value.get("bytes")
-            sha256 = value.get("sha256")
-            if (
-                not isinstance(path, str)
-                or not isinstance(byte_count, int)
-                or not isinstance(sha256, str)
-            ):
-                raise RuntimeError("upload session returned an invalid file identity")
-            provenance = value.get("provenance")
-            if not isinstance(provenance, Mapping):
-                raise RuntimeError("upload session returned no file provenance identity")
-            result.append(
-                {
-                    "path": path,
-                    "bytes": byte_count,
-                    "sha256": sha256,
-                    "provenance": dict(provenance),
-                }
-            )
-        next_page_token = payload.get("next_page_token")
-        if next_page_token is None:
-            break
-        if not isinstance(next_page_token, str) or not next_page_token:
-            raise RuntimeError("upload session returned an invalid next page token")
-        page_token = next_page_token
-    return result
-
-
-def _manifest_identity(manifest: list[CollectionManifestEntry]) -> list[tuple[object, ...]]:
-    return [
-        (
-            item["path"],
-            item["bytes"],
-            item["sha256"],
-            json.dumps(item.get("provenance"), sort_keys=True, separators=(",", ":")),
-        )
-        for item in manifest
-    ]
 
 
 def _put_provenance_journals(
@@ -1308,7 +1266,8 @@ def _upload_planned_units(
 def _wait_for_finalized_collection(
     api: ApiClient,
     collection_id: int,
-    manifest: list[CollectionManifestEntry] | None,
+    files_total: int | None = None,
+    bytes_total: int | None = None,
     *,
     status: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, object], UploadCompletionState]:
@@ -1349,8 +1308,8 @@ def _wait_for_finalized_collection(
             return last_payload or {
                 "collection_id": collection_id,
                 "state": "finalizing",
-                "files_total": len(manifest or ()),
-                "bytes_total": sum(item["bytes"] for item in manifest or ()),
+                "files_total": files_total or 0,
+                "bytes_total": bytes_total or 0,
             }, "timeout"
         sleep_seconds = poll_seconds
         if deadline is not None:
@@ -1386,76 +1345,75 @@ def _upload_collection_via_session(
         _log_upload(f"Collection {collection_id} already finalized for this retry key")
         return session_payload
 
+    state = str(session_payload.get("state") or "open")
     registration_constraints = _session_registration_constraints(session_payload)
     pack_member_bytes = registration_constraints.pack_member_bytes
     raw_part_plaintext_bytes = registration_constraints.raw_part_plaintext_bytes
-    paths = [
-        path
-        for path in sorted(resolved_root.rglob("*"))
-        if path.is_file() and not _is_provenance_control_path(resolved_root, path)
-    ]
-    if not paths:
-        raise typer.BadParameter("collection source must contain at least one file")
-    bytes_total = sum(path.stat().st_size for path in paths)
+    files_total = int(session_payload.get("files_total") or 0) if state != "open" else 0
+    bytes_total = int(session_payload.get("bytes_total") or 0) if state != "open" else 0
     progress = make_collection_upload_progress(
         collection_id=collection_id,
-        files_total=len(paths),
+        files_total=files_total,
         bytes_total=bytes_total,
         files_hashed=0,
         files_registered=0,
         file_concurrency=file_concurrency,
         chunk_bytes=raw_part_plaintext_bytes,
+        discovery_complete=state != "open",
         json_mode=json_mode,
         interval_seconds=UPLOAD_PROGRESS_INTERVAL_SECONDS,
     )
 
     with progress:
-        progress.notice("Hashing source identities", phase="hashing")
-
-        def hash_one(path: Path) -> CollectionManifestEntry:
-            return _hash_collection_source(
-                resolved_root,
-                path,
-                pack_member_bytes=pack_member_bytes,
-                raw_part_plaintext_bytes=raw_part_plaintext_bytes,
-                provenance=provenance,
-                omit_provenance=omit_provenance,
-                provenance_observer_factory=provenance_observer_factory,
+        if state == "open":
+            progress.notice(
+                "Discovering, hashing, and transferring bounded source windows",
+                phase="discovering/uploading",
             )
 
-        with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
-            manifest = []
-            for entry in executor.map(hash_one, paths):
-                manifest.append(entry)
-                progress.hashed_file()
-
-        state = str(session_payload.get("state") or "open")
-        if state == "open":
-            progress.notice("Uploading validated provenance journals", phase="registering")
-            _put_provenance_journals(api, collection_id, manifest)
-            progress.notice("Registering the canonical file manifest", phase="registering")
-            for start in range(0, len(manifest), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
-                batch = manifest[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
-                _register_collection_upload_session_files(
-                    api,
-                    collection_id,
-                    batch,
-                    registration_constraints=registration_constraints,
+            def hash_one(path: Path) -> CollectionManifestEntry:
+                return _hash_collection_source(
+                    resolved_root,
+                    path,
+                    pack_member_bytes=pack_member_bytes,
+                    raw_part_plaintext_bytes=raw_part_plaintext_bytes,
+                    provenance=provenance,
+                    omit_provenance=omit_provenance,
+                    provenance_observer_factory=provenance_observer_factory,
                 )
-                _register_collection_upload_raw_digests(api, collection_id, batch)
-                for _ in batch:
-                    progress.registered_file()
-        else:
-            _put_provenance_journals(api, collection_id, manifest)
-            existing = _server_manifest(api, collection_id)
-            if _manifest_identity(existing) != _manifest_identity(manifest):
-                raise Conflict("local collection identity differs from the resumable session")
-            for entry in manifest:
-                spool = entry.pop("raw_digest_spool", None)
-                if spool is not None:
-                    spool.close()
-            for _ in manifest:
-                progress.registered_file()
+
+            paths = iter(_iter_collection_source_paths(resolved_root))
+            with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
+                while path_batch := list(
+                    itertools.islice(paths, COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES)
+                ):
+                    batch = list(executor.map(hash_one, path_batch))
+                    files_total += len(batch)
+                    bytes_total += sum(item["bytes"] for item in batch)
+                    progress.set_totals(files_total=files_total, bytes_total=bytes_total)
+                    for _ in batch:
+                        progress.hashed_file()
+                    _put_provenance_journals(api, collection_id, batch)
+                    _register_collection_upload_session_files(
+                        api,
+                        collection_id,
+                        batch,
+                        registration_constraints=registration_constraints,
+                    )
+                    _register_collection_upload_raw_digests(api, collection_id, batch)
+                    for _ in batch:
+                        progress.registered_file()
+                    _upload_planned_units(
+                        api,
+                        collection_id,
+                        resolved_root,
+                        concurrency=file_concurrency,
+                        progress=progress,
+                        api_factory=api_factory,
+                    )
+            if files_total == 0:
+                raise typer.BadParameter("collection source must contain at least one file")
+            progress.finish_discovery()
 
         progress.notice("Closing discovery and persisting final volume plans", phase="planning")
         _complete_collection_upload_session(api, collection_id)
@@ -1468,12 +1426,12 @@ def _upload_collection_via_session(
             progress=progress,
             api_factory=api_factory,
         )
-        for _ in manifest:
-            progress.complete_file()
+        progress.complete_all_files()
         final_payload, completion_state = _wait_for_finalized_collection(
             api,
             collection_id,
-            manifest,
+            files_total,
+            bytes_total,
             status=lambda message: progress.notice(message, phase="finalizing"),
         )
         if completion_state == "timeout":
@@ -1654,7 +1612,7 @@ def upload_cmd(
         missing_sidecar = next(
             (
                 path
-                for path in sorted(resolved_root.rglob("*"))
+                for path in resolved_root.rglob("*")
                 if path.is_file()
                 and not _is_provenance_control_path(resolved_root, path)
                 and not canonical_sidecar_path(path).is_file()
@@ -1670,17 +1628,18 @@ def upload_cmd(
     if dry_run:
         _log_upload(f"Hashing collection manifest from {resolved_root}")
         manifest_started_at = time.monotonic()
-        manifest = _local_collection_manifest(resolved_root)
-        manifest_bytes = sum(item["bytes"] for item in manifest)
+        files_total, manifest_bytes, files_preview = _local_collection_summary(resolved_root)
         _log_upload(
             "Manifest hashed: "
-            f"{len(manifest)} files, {_format_bytes(manifest_bytes)} "
+            f"{files_total} files, {_format_bytes(manifest_bytes)} "
             f"in {time.monotonic() - manifest_started_at:.1f}s"
         )
         payload = _collection_upload_dry_run_plan(
             idempotency_key=resolved_idempotency_key,
             root=resolved_root,
-            manifest=manifest,
+            files_total=files_total,
+            bytes_total=manifest_bytes,
+            files_preview=files_preview,
             archive_store=archive_store,
             provenance_observer=resolved_observer,
         )

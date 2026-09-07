@@ -74,9 +74,7 @@ from riverhog_api_client.producer import (
     ProducerArtifactIdentity,
     ProducerFile,
     ProducerInput,
-    ProducerProvenance,
     ProducerStream,
-    ProvenanceBuilder,
     RangeReader,
 )
 
@@ -89,8 +87,6 @@ __all__ += [
     "ProducerArtifactCustody",
     "ProducerFile",
     "ProducerInput",
-    "ProducerProvenance",
     "ProducerStream",
-    "ProvenanceBuilder",
     "RangeReader",
 ]

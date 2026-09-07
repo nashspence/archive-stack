@@ -16,7 +16,6 @@ from riverhog_api_client.producer import (
     ProducedCollection,
     ProducerArtifactIdentity,
     ProducerFile,
-    ProducerProvenance,
     ProducerStream,
 )
 from riverhog_protocol import (
@@ -775,6 +774,21 @@ class ProvenanceTransformApi(UploadApi):
         )
 
 
+def test_producer_rejects_empty_iterable_before_opening_construction() -> None:
+    api = UploadApi()
+
+    with pytest.raises(ValueError, match="at least one source file"):
+        CollectionProducer(
+            api,  # type: ignore[arg-type]
+            producer_app="fixture-transform",
+            adapter_id="test-transform/v1",
+            adapter_version="1",
+            ingest_source="transform:test",
+        ).publish_inputs(iter(()), source_event_id="empty")
+
+    assert api.session_calls == 0
+
+
 def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -810,22 +824,23 @@ def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
     assert uploaded_by_path["video/output.mkv"] == content
 
 
-def test_producer_batches_large_exact_manifests_without_limiting_collection_size(
+def test_producer_streams_bounded_batches_without_limiting_collection_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
     api = UploadApi()
-    streams = tuple(
-        ProducerStream(
-            path=f"audio/item-{index:04}.wav",
-            bytes=1,
-            sha256=hashlib.sha256(bytes([index % 251])).hexdigest(),
-            read_range=lambda offset, size, value=bytes([index % 251]): value[
-                offset : offset + size
-            ],
-        )
-        for index in range(128)
-    )
+
+    def streams() -> Iterator[ProducerStream]:
+        for index in range(128):
+            if index == 16:
+                assert api.registered
+            value = bytes([index % 251])
+            yield ProducerStream(
+                path=f"audio/item-{index:04}.wav",
+                bytes=1,
+                sha256=hashlib.sha256(value).hexdigest(),
+                read_range=lambda offset, size, content=value: content[offset : offset + size],
+            )
 
     receipt = CollectionProducer(
         api,  # type: ignore[arg-type]
@@ -833,14 +848,14 @@ def test_producer_batches_large_exact_manifests_without_limiting_collection_size
         adapter_id="test-transform/v1",
         adapter_version="1",
         ingest_source="transform:test",
-    ).publish_inputs(streams, source_event_id="event-many")
+    ).publish_inputs(streams(), source_event_id="event-many")
 
     assert receipt.collection_id == 7
-    assert [len(batch) for batch in api.registration_batches] == [16] * 8 + [1]
+    assert all(1 <= len(batch) <= 16 for batch in api.registration_batches)
     assert len(api.registered) == 129
 
 
-def test_producer_builds_provenance_after_exact_stream_verification(
+def test_producer_streams_exact_provenance_binding_and_journal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -885,37 +900,13 @@ def test_producer_builds_provenance_after_exact_stream_verification(
         calls += 1
         return content[offset : offset + size]
 
-    def build(
-        collection_id: int,
-        resumed: bool,
-        artifacts: tuple[ProducerArtifactIdentity, ...],
-    ) -> ProducerProvenance:
-        assert collection_id == 7
-        assert resumed is False
-        assert artifacts == (
-            ProducerArtifactIdentity(
-                path="video/output.mkv",
-                bytes=len(content),
-                sha256=hashlib.sha256(content).hexdigest(),
-            ),
-        )
-        return ProducerProvenance(
-            bindings={
-                "video/output.mkv": {
-                    "status": "captured",
-                    "journal_id": summary.journal_id,
-                    "current_state_id": summary.current_state_id,
-                }
-            },
-            journals={summary.journal_id: journal},
-        )
-
     CollectionProducer(
         api,  # type: ignore[arg-type]
         producer_app="fixture-transform",
         adapter_id="test-transform/v1",
         adapter_version="1",
         ingest_source="transform:test",
+        provenance_mode="captured",
     ).publish_inputs(
         (
             ProducerStream(
@@ -923,10 +914,15 @@ def test_producer_builds_provenance_after_exact_stream_verification(
                 bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 read_range=read_range,
+                provenance={
+                    "status": "captured",
+                    "journal_id": summary.journal_id,
+                    "current_state_id": summary.current_state_id,
+                },
             ),
         ),
         source_event_id="event-1",
-        provenance_builder=build,
+        provenance_journals=((summary.journal_id, journal),),
     )
 
     registered = {item["path"]: item for item in api.registered}

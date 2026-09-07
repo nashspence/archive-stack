@@ -364,10 +364,6 @@ class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocum
     pass
 
 
-class CompleteCollectionUploadSessionRequest(RiverhogModel):
-    pass
-
-
 class CollectionSummaryOut(RiverhogModel):
     id: CollectionId
     created_at: str

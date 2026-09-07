@@ -358,6 +358,11 @@ class CollectionUploadProgress:
             self.files_uploaded = min(self.files_uploaded + 1, max(self.files_total, 0))
             self._render_locked(force=False)
 
+    def complete_all_files(self) -> None:
+        with self.lock:
+            self.files_uploaded = self.files_total
+            self._render_locked(force=True)
+
     def notice(self, message: str, *, phase: str | None = None, force: bool = True) -> None:
         with self.lock:
             if phase is not None:

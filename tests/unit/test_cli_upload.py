@@ -40,7 +40,7 @@ def test_upload_runtime_settings_have_explicit_parsers(
     assert riverhog_main._upload_finalize_timeout_seconds() == 12.5
 
 
-def test_local_collection_manifest_streams_file_hashes(
+def test_local_collection_summary_streams_file_hashes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -55,13 +55,17 @@ def test_local_collection_manifest_streams_file_hashes(
 
     monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
 
-    assert riverhog_main._local_collection_manifest(root) == [
-        {
-            "path": "clip.bin",
-            "bytes": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
-        }
-    ]
+    assert riverhog_main._local_collection_summary(root) == (
+        1,
+        len(content),
+        [
+            {
+                "path": "clip.bin",
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ],
+    )
 
 
 def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
@@ -408,7 +412,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
     )
 
     assert payload["state"] == "finalized"
-    assert [item["path"] for item in registered] == ["a.txt", "b.txt"]
+    assert sorted(str(item["path"]) for item in registered) == ["a.txt", "b.txt"]
     assert all(item["provenance"]["status"] == "captured" for item in registered)  # type: ignore[index]
     assert bytes(uploaded) == b"alphabravo"
 

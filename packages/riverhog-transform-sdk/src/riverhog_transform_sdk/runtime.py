@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 from riverhog_api_client import ApiClient
-from riverhog_api_client.producer import ProducerArtifactIdentity, ProducerInput
+from riverhog_api_client.producer import (
+    ProducerArtifactCustody,
+    ProducerArtifactIdentity,
+    ProducerInput,
+)
 from riverhog_protocol.collection_workflows import (
     ArtifactDispositionSetIdentity,
     CollectionRootIdentity,
@@ -414,7 +418,7 @@ class CollectionTransformRuntime:
         source: ProducerInput,
         *,
         identity: ProducerArtifactIdentity,
-    ) -> tuple[object, ...]:
+    ) -> tuple[ProducerArtifactCustody, ...]:
         if writer is not self._incremental_writer:
             raise ValueError("incremental writer does not belong to this transform runtime")
         return writer.append(source, identity=identity)
