@@ -178,6 +178,10 @@ WITNESSES = (
             "test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags",
             "tests/unit/test_collection_tags.py::"
             "test_provider_nodes_for_retained_exact_revisions_remain_recoverable",
+            "tests/unit/test_collection_tags.py::"
+            "test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts",
+            "tests/integration/test_catalog_schema_postgres.py::"
+            "test_postgres_tag_history_cleanup_serializes_its_row_work_budget",
         ),
         gates=("make unit", "make compose-smoke", "make provider-qualification"),
     ),

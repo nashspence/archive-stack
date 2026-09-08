@@ -12,6 +12,7 @@ from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArc
 from riverhog_protocol import (
     COLLECTION_DESCRIPTION_RELATIVE_PATH,
     CollectionDescriptionDocument,
+    collection_tag_node_path,
 )
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
@@ -204,6 +205,41 @@ class _MemoryAdapter:
         )
 
 
+class _VersionedMemoryAdapter(_MemoryAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.revisions: dict[tuple[str, str], _Stored] = {}
+
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
+        revision = request.object.revision
+        if revision is None:
+            return super().head_object(request)
+        stored = self.revisions.get((request.object.object_path, revision))
+        if stored is None:
+            return None
+        return ObjectMetadataReceipt(
+            object_path=request.object.object_path,
+            revision=stored.revision,
+            entity_token=f"entity-{stored.revision}",
+            content_type=stored.content_type,
+            stored_bytes=len(stored.content),
+            stored_sha256=hashlib.sha256(stored.content).hexdigest(),
+            observed_identity_assertions=stored.identity,
+            verified_placement=request.expected_placement,
+            completed_at=stored.completed_at,
+        )
+
+    def delete_object(self, request: DeleteObjectRequest) -> None:
+        self.deleted.append(request)
+        path = request.object.object_path
+        if request.mode == "current":
+            self.objects.pop(path, None)
+            return
+        assert request.mode == "exact_revision"
+        assert request.object.revision is not None
+        self.revisions.pop((path, request.object.revision), None)
+
+
 def _store(adapter: _MemoryAdapter) -> StorageAdapterArchiveStore:
     return StorageAdapterArchiveStore(
         RuntimeConfig(),
@@ -380,6 +416,33 @@ def test_collection_description_is_replaced_idempotently_without_readback() -> N
     )
     assert path not in adapter.objects
     assert adapter.deleted[-1].mode == "all_versions"
+
+
+def test_tag_node_gc_removes_current_then_its_exact_data_revision() -> None:
+    adapter = _VersionedMemoryAdapter()
+    digest = "a" * 64
+    path = f"archives/opaque/{collection_tag_node_path(digest)}"
+    stored = _Stored(
+        content=b"ciphertext",
+        content_type="application/vnd.riverhog.collection-tag-node.v1+age",
+        identity={},
+        placement="immediate",
+        revision="provider-revision-1",
+    )
+    adapter.objects[path] = stored
+    adapter.revisions[(path, stored.revision)] = stored
+
+    _store(adapter).delete_collection_tag_node(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        digest=digest,
+        expected_current_stored_sha256=hashlib.sha256(stored.content).hexdigest(),
+        provider_revision=stored.revision,
+    )
+
+    assert [request.mode for request in adapter.deleted] == ["current", "exact_revision"]
+    assert path not in adapter.objects
+    assert (path, stored.revision) not in adapter.revisions
 
 
 def test_discard_removes_completed_objects_from_the_exact_archive_namespace() -> None:

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from http_api_contracts import BrowseTokenCodec
 from riverhog_age import decrypt_age_scrypt
 from riverhog_application_access import ApplicationAccess
 from riverhog_core.app_permissions import (
@@ -26,8 +27,10 @@ from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
+    CollectionTagMutationNodeReferenceRecord,
     CollectionTagMutationRecord,
     CollectionTagNodeGcRecord,
+    CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
     CollectionTagPublicationRecord,
     CollectionTagPublishedNodeRecord,
@@ -37,7 +40,10 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.ports.archive_store import CollectionTagObjectReceipt
 from riverhog_core.runtime_config import DEV_ARCHIVE_PASSPHRASE, RuntimeConfig
-from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
+from riverhog_core.services.catalog_sync import (
+    SqlAlchemyCatalogSyncService,
+    _reap_unreferenced_tag_history,
+)
 from riverhog_core.services.collection_tags import (
     SqlAlchemyCollectionTagService,
     build_collection_tag_set,
@@ -53,7 +59,7 @@ from riverhog_protocol import (
     collection_tag_sha256,
 )
 from riverhog_protocol.errors import NotFound, PreconditionFailed, ServiceUnavailable
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from time_formats import utc_timestamp_now
 
 from tests.unit.archive_object_fixtures import (
@@ -381,6 +387,190 @@ def test_tag_exact_revision_membership_and_bounded_pages(tmp_path: Path) -> None
     }
 
 
+def test_pending_mutation_nodes_survive_maintenance_and_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    service, factory, store = _service(path)
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+
+    entered = threading.Event()
+    resume = threading.Event()
+    finish = service._finish_mutation
+
+    def paused_finish(collection_id: int, operation_id: str) -> None:
+        entered.set()
+        assert resume.wait(timeout=10)
+        finish(collection_id, operation_id)
+
+    monkeypatch.setattr(service, "_finish_mutation", paused_finish)
+    catalog = SqlAlchemyCatalogSyncService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        session_factory=factory,
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        mutation = executor.submit(
+            service.add,
+            1,
+            tag="workflow:archive",
+            operation_id="pause-after-construction",
+            expected_revision=1,
+            expected_tag_set_identity=initial_identity,
+            principal=principal,
+        )
+        assert entered.wait(timeout=10)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            pending = session.get(
+                CollectionTagMutationRecord,
+                (1, "pause-after-construction"),
+            )
+            protected = set(
+                session.scalars(
+                    select(CollectionTagMutationNodeReferenceRecord.node_digest).where(
+                        CollectionTagMutationNodeReferenceRecord.collection_id == 1,
+                        CollectionTagMutationNodeReferenceRecord.operation_id
+                        == "pause-after-construction",
+                    )
+                )
+            )
+            assert pending is not None and pending.state == "pending"
+            assert protected
+
+        assert catalog.reap_expired_history(limit=100) == 0
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            assert protected <= set(session.scalars(select(CollectionTagNodeRecord.digest)))
+            assert protected == set(
+                session.scalars(
+                    select(CollectionTagMutationNodeReferenceRecord.node_digest).where(
+                        CollectionTagMutationNodeReferenceRecord.collection_id == 1,
+                        CollectionTagMutationNodeReferenceRecord.operation_id
+                        == "pause-after-construction",
+                    )
+                )
+            )
+        resume.set()
+        result = mutation.result(timeout=10)
+
+    restarted = SqlAlchemyCollectionTagService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=make_session_factory(sqlite_url(path)),
+    )
+    first = restarted.list_collection(
+        1,
+        page_size=1,
+        position=None,
+        expected_revision=2,
+        expected_tag_set_identity=str(result["tag_set_identity"]),
+        principal=principal,
+    )
+    second = restarted.list_collection(
+        1,
+        page_size=1,
+        position=first["_next_position"],  # type: ignore[arg-type]
+        expected_revision=2,
+        expected_tag_set_identity=str(result["tag_set_identity"]),
+        principal=principal,
+    )
+    assert set(first["tags"]) | set(second["tags"]) == {
+        "source:camera",
+        "workflow:archive",
+    }
+    head, recovered = _recover_stored_tags(store)
+    assert head.revision == 2
+    assert recovered == {"source:camera", "workflow:archive"}
+
+    catalog.reap_expired_history(limit=100)
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert not list(session.scalars(select(CollectionTagMutationNodeReferenceRecord)))
+
+
+def test_pending_mutation_reuses_a_retiring_root_without_a_retention_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    service, factory, store = _service(path)
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+        initial_root = collection.tag_root_sha256
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="establish-intermediate-root",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        retired = session.get(CollectionTagRevisionRecord, (1, 1))
+        assert retired is not None and retired.root_sha256 == initial_root
+        retired.cleanup_started_at = "2026-01-01T00:00:00.000000Z"
+
+    entered = threading.Event()
+    resume = threading.Event()
+    finish = service._finish_mutation
+
+    def paused_finish(collection_id: int, operation_id: str) -> None:
+        entered.set()
+        assert resume.wait(timeout=10)
+        finish(collection_id, operation_id)
+
+    monkeypatch.setattr(service, "_finish_mutation", paused_finish)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        mutation = executor.submit(
+            service.remove,
+            1,
+            tag="workflow:archive",
+            operation_id="reuse-retiring-root",
+            expected_revision=2,
+            expected_tag_set_identity=str(added["tag_set_identity"]),
+            principal=principal,
+        )
+        assert entered.wait(timeout=10)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            pending = session.get(CollectionTagMutationRecord, (1, "reuse-retiring-root"))
+            assert pending is not None and pending.result_root_sha256 == initial_root
+            assert session.get(CollectionTagNodeRecord, initial_root) is not None
+            assert session.scalar(
+                select(
+                    exists().where(
+                        CollectionTagPublicationFrontierRecord.collection_id == 1,
+                        CollectionTagPublicationFrontierRecord.head_identity
+                        == pending.result_head_identity,
+                        CollectionTagPublicationFrontierRecord.node_digest == initial_root,
+                    )
+                )
+            )
+
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            _reap_unreferenced_tag_history(
+                session,
+                limit=1_000,
+                cleanup_before="2026-02-01T00:00:00.000000Z",
+                cleanup_started_at="2026-02-01T00:00:00.000000Z",
+            )
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            assert session.get(CollectionTagRevisionRecord, (1, 1)) is None
+            assert session.get(CollectionTagNodeRecord, initial_root) is not None
+        resume.set()
+        result = mutation.result(timeout=10)
+
+    assert result["revision"] == 3
+    assert result["tag_set_identity"] == initial_identity
+    head, recovered = _recover_stored_tags(store)
+    assert head.revision == 3
+    assert recovered == {"source:camera"}
+
+
 def test_maximum_length_tag_is_a_nonfinal_browse_page(tmp_path: Path) -> None:
     service, factory, _store = _service(tmp_path / "catalog.sqlite3")
     maximum = "m" * COLLECTION_TAG_UTF8_BYTES_MAX
@@ -472,10 +662,22 @@ def test_provider_nodes_for_retained_exact_revisions_remain_recoverable(
             catalog_sync_history_retention=timedelta(days=1),
             catalog_sync_bootstrap_lifetime=timedelta(hours=1),
             catalog_sync_cursor_lifetime=timedelta(hours=1),
+            browse_token_lifetime=timedelta(hours=1),
         ),
         session_factory=factory,
     )
     assert catalog.reap_expired_history(limit=100) == 2
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 1, 0, 1, tzinfo=UTC),
+    )
+    for _ in range(256):
+        catalog.reap_expired_history(limit=100)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            if list(session.scalars(select(CollectionTagRevisionRecord.revision))) == [3]:
+                break
+    else:  # pragma: no cover - fixed cleanup state is much smaller
+        raise AssertionError("retired exact tag authorities did not converge")
     for _ in range(256):
         if service.process_due(limit=1) == 0:
             break
@@ -668,6 +870,7 @@ class _DelayedTagDeleteStore(MemoryArchiveStore):
         archive_storage_prefix: str,
         digest: str,
         expected_current_stored_sha256: str,
+        provider_revision: str | None,
     ) -> None:
         if self.delay_next_delete:
             self.delay_next_delete = False
@@ -678,6 +881,7 @@ class _DelayedTagDeleteStore(MemoryArchiveStore):
             archive_storage_prefix=archive_storage_prefix,
             digest=digest,
             expected_current_stored_sha256=expected_current_stored_sha256,
+            provider_revision=provider_revision,
         )
 
 
@@ -759,12 +963,14 @@ class _AmbiguousTagDeleteStore(MemoryArchiveStore):
         archive_storage_prefix: str,
         digest: str,
         expected_current_stored_sha256: str,
+        provider_revision: str | None,
     ) -> None:
         super().delete_collection_tag_node(
             collection_id=collection_id,
             archive_storage_prefix=archive_storage_prefix,
             digest=digest,
             expected_current_stored_sha256=expected_current_stored_sha256,
+            provider_revision=provider_revision,
         )
         if self.fail_delete_once:
             self.fail_delete_once = False
@@ -825,6 +1031,106 @@ def test_tag_node_gc_resumes_idempotently_after_an_ambiguous_delete(tmp_path: Pa
         assert session.scalar(select(CollectionTagNodeGcRecord)) is None
 
 
+def test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    service, factory, _store = _service(path)
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+    service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="make-initial-revision-retired",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+
+    frontier_rows = 4_096
+    terminal_mutations = 257
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        retired = session.get(CollectionTagRevisionRecord, (1, 1))
+        assert retired is not None
+        retired_head_identity = retired.head_identity
+        retired.cleanup_started_at = utc_timestamp_now()
+        session.query(CollectionTagMutationNodeReferenceRecord).delete(synchronize_session=False)
+        session.add_all(
+            CollectionTagPublicationFrontierRecord(
+                collection_id=1,
+                store="archive",
+                head_identity=retired.head_identity,
+                node_digest=f"{index + 1:064x}",
+                expanded=True,
+                published=True,
+            )
+            for index in range(frontier_rows)
+        )
+        tag_digest = collection_tag_sha256("source:camera")
+        now = utc_timestamp_now()
+        session.add_all(
+            CollectionTagMutationRecord(
+                collection_id=1,
+                operation_id=f"retired-noop-{index:04d}",
+                action="add",
+                tag="source:camera",
+                tag_sha256=tag_digest,
+                expected_revision=1,
+                expected_tag_set_identity=retired.tag_set_identity,
+                result_revision=1,
+                result_root_sha256=retired.root_sha256,
+                result_tag_set_identity=retired.tag_set_identity,
+                result_head_identity=retired.head_identity,
+                changed=False,
+                state="succeeded",
+                initiated_by_app="fixture",
+                initiated_by_key_id="fixture-key",
+                created_at=now,
+                updated_at=now,
+                failure=None,
+            )
+            for index in range(terminal_mutations)
+        )
+
+    steps = 0
+    work_limit = 1
+    while True:
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            if session.get(CollectionTagRevisionRecord, (1, 1)) is None:
+                break
+            metrics = _reap_unreferenced_tag_history(
+                session,
+                limit=work_limit,
+                cleanup_before="9999-12-31T23:59:59.999999Z",
+                cleanup_started_at="9999-12-31T23:59:59.999999Z",
+            )
+            assert 1 <= metrics.selected_rows <= work_limit
+            assert metrics.locked_rows == metrics.selected_rows
+            assert metrics.changed_rows == metrics.selected_rows
+            assert metrics.deleted_rows == metrics.changed_rows
+        steps += metrics.changed_rows
+        work_limit = 97
+    assert steps == frontier_rows + terminal_mutations + 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert not list(
+            session.scalars(
+                select(CollectionTagPublicationFrontierRecord).where(
+                    CollectionTagPublicationFrontierRecord.head_identity == retired_head_identity
+                )
+            )
+        )
+        assert not list(
+            session.scalars(
+                select(CollectionTagMutationRecord).where(
+                    CollectionTagMutationRecord.result_revision == 1
+                )
+            )
+        )
+
+
 def test_exact_tag_revisions_expire_with_the_catalog_history_that_names_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -868,7 +1174,7 @@ def test_exact_tag_revisions_expire_with_the_catalog_history_that_names_them(
         )
         assert len(events) == 2
         events[0].committed_at = "2026-01-01T00:00:00.000000Z"
-        events[1].committed_at = "2026-09-08T00:00:00.000000Z"
+        events[1].committed_at = "2026-09-07T00:00:00.000000Z"
     monkeypatch.setattr(
         "riverhog_core.services.catalog_sync.utc_now",
         lambda: datetime(2026, 9, 8, tzinfo=UTC),
@@ -879,13 +1185,98 @@ def test_exact_tag_revisions_expire_with_the_catalog_history_that_names_them(
             catalog_sync_history_retention=timedelta(days=1),
             catalog_sync_bootstrap_lifetime=timedelta(hours=1),
             catalog_sync_cursor_lifetime=timedelta(hours=1),
+            browse_token_lifetime=timedelta(hours=1),
         ),
         session_factory=factory,
     )
     assert catalog.reap_expired_history(limit=1) == 1
+    for _ in range(32):
+        assert catalog.reap_expired_history(limit=1) == 0
+    restarted = SqlAlchemyCollectionTagService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        ArchiveStoreRegistry({"archive": archive_store_binding(_store)}),
+        session_factory=make_session_factory(sqlite_url(path)),
+    )
+    first = restarted.list_collection(
+        1,
+        page_size=1,
+        position=None,
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+    browse_now = [datetime(2026, 9, 8, tzinfo=UTC).timestamp()]
+    browse_tokens = BrowseTokenCodec(
+        b"exact-tag-revision-lifetime-test-key",
+        lifetime_seconds=60 * 60,
+        clock=lambda: browse_now[0],
+    )
+    first_token = browse_tokens.issue(
+        operation="list_collection_tags",
+        principal="reader",
+        selectors={"collection_id": 1, "revision": 2},
+        position=first["_next_position"],  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 0, 0, 1, tzinfo=UTC),
+    )
+    assert catalog.reap_expired_history(limit=1) == 1
     assert catalog.reap_expired_history(limit=1) == 0
     with pytest.raises(PreconditionFailed):
-        service.contains(
+        restarted.list_collection(
+            1,
+            page_size=1,
+            position=None,
+            expected_revision=2,
+            expected_tag_set_identity=str(added["tag_set_identity"]),
+            principal=principal,
+        )
+    monkeypatch.setattr(
+        "riverhog_core.services.collection_tags.utc_timestamp_now",
+        lambda: "2026-09-08T00:59:59.000000Z",
+    )
+    browse_now[0] += (60 * 60) - 1
+    continuation = browse_tokens.verify(
+        first_token,
+        operation="list_collection_tags",
+        principal="reader",
+        selectors={"collection_id": 1, "revision": 2},
+    )
+    second = restarted.list_collection(
+        1,
+        page_size=1,
+        position=continuation,
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+    assert set(first["tags"]) | set(second["tags"]) == {
+        "source:camera",
+        "workflow:archive",
+    }
+
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 1, 0, 2, tzinfo=UTC),
+    )
+    catalog.reap_expired_history(limit=100)
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.get(CollectionTagRevisionRecord, (1, 2)) is not None
+
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 2, 0, tzinfo=UTC),
+    )
+    for _ in range(256):
+        catalog.reap_expired_history(limit=1)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            if session.get(CollectionTagRevisionRecord, (1, 2)) is None:
+                break
+    else:  # pragma: no cover - fixed cleanup state is much smaller
+        raise AssertionError("retired exact tag authority did not converge")
+    with pytest.raises(PreconditionFailed):
+        restarted.contains(
             1,
             tag="workflow:archive",
             revision=2,

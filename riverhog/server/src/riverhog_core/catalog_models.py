@@ -345,6 +345,37 @@ class CollectionTagNodeRecord(Base):
     )
 
 
+class CollectionTagNodeEdgeRecord(Base):
+    """One immutable structural edge in the content-addressed tag tree."""
+
+    __tablename__ = "collection_tag_node_edges"
+
+    parent_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    child_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["parent_digest"],
+            ["collection_tag_nodes.digest"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(["child_digest"], ["collection_tag_nodes.digest"]),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("parent_digest", 64),
+            name="ck_collection_tag_node_edges_parent_digest",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("child_digest", 64),
+            name="ck_collection_tag_node_edges_child_digest",
+        ),
+        Index(
+            "ix_collection_tag_node_edges_child",
+            "child_digest",
+            "parent_digest",
+        ),
+    )
+
+
 class CollectionTagRevisionRecord(Base):
     __tablename__ = "collection_tag_revisions"
 
@@ -354,6 +385,7 @@ class CollectionTagRevisionRecord(Base):
     tag_set_identity: Mapped[str] = mapped_column(String(64))
     head_identity: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String)
+    cleanup_started_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
@@ -372,6 +404,12 @@ class CollectionTagRevisionRecord(Base):
         CheckConstraint(
             _fixed_lowercase_integer_check("head_identity", 64),
             name="ck_collection_tag_revisions_head_identity",
+        ),
+        Index(
+            "ix_collection_tag_revisions_cleanup",
+            "cleanup_started_at",
+            "collection_id",
+            "revision",
         ),
     )
 
@@ -435,6 +473,35 @@ class CollectionTagMutationRecord(Base):
             name="ck_collection_tag_mutations_head_identity",
         ),
         Index("ix_collection_tag_mutations_work", "state", "updated_at", "collection_id"),
+    )
+
+
+class CollectionTagMutationNodeReferenceRecord(Base):
+    """Construction protection for nodes introduced by one unsettled mutation."""
+
+    __tablename__ = "collection_tag_mutation_node_references"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "operation_id"],
+            ["collection_tag_mutations.collection_id", "collection_tag_mutations.operation_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(["node_digest"], ["collection_tag_nodes.digest"]),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_tag_mutation_node_references_digest",
+        ),
+        Index(
+            "ix_collection_tag_mutation_node_references_digest",
+            "node_digest",
+            "collection_id",
+            "operation_id",
+        ),
     )
 
 

@@ -638,6 +638,35 @@ def test_deletion_is_exact_and_prefix_cleanup_removes_all_versions() -> None:
     assert all(item["Key"] == "owned/archives/collection/manifest.age" for item in client.deleted)
 
 
+def test_fenced_current_removal_then_exact_reclamation_removes_data_revision() -> None:
+    client = _FakeS3Client()
+    adapter = S3StorageAdapter(client, _config())
+    receipt = adapter.put_small_object(_small_request(b"obsolete-tag-node"), b"obsolete-tag-node")
+    key = "owned/archives/collection/manifest.age"
+
+    adapter.delete_object(
+        DeleteObjectRequest(
+            object=ObjectLocator(object_path=receipt.object_path),
+            mode="current",
+            expected_current_stored_sha256=receipt.stored_sha256,
+        )
+    )
+    assert key not in client.current
+    assert (key, receipt.revision or "") in client.versions
+
+    restarted = S3StorageAdapter(client, _config())
+    restarted.delete_object(
+        DeleteObjectRequest(
+            object=ObjectLocator(
+                object_path=receipt.object_path,
+                revision=receipt.revision,
+            ),
+            mode="exact_revision",
+        )
+    )
+    assert (key, receipt.revision or "") not in client.versions
+
+
 def test_read_preparation_mechanics_remain_adapter_private() -> None:
     class Preparation:
         def __init__(self) -> None:

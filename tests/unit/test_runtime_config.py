@@ -254,6 +254,12 @@ def test_catalog_sync_cursor_lifetimes_fit_the_retained_history(tmp_path: Path) 
             catalog_sync_cursor_lifetime=timedelta(days=2),
             catalog_sync_history_retention=timedelta(days=1),
         )
+    with pytest.raises(ValueError, match="must not exceed"):
+        _config(
+            tmp_path,
+            browse_token_lifetime=timedelta(days=2),
+            catalog_sync_history_retention=timedelta(days=1),
+        )
 
 
 def test_load_runtime_config_defaults_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:

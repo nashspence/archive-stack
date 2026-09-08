@@ -31,6 +31,7 @@ from riverhog_core.catalog_models import (
     CatalogSyncStateRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionRecord,
+    CollectionTagNodeRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadRecord,
     RetrievalPlanObjectRecord,
@@ -282,6 +283,49 @@ def test_postgres_catalog_revisions_serialize_commit_and_restart(
     checkpoint = restarted.checkpoint(principal=reader)
     page = restarted.collections(cursor=checkpoint.catalog_cursor, limit=100, principal=reader)
     assert [item.collection_id for item in page.collections] == [1, 2]
+
+
+def test_postgres_tag_history_cleanup_serializes_its_row_work_budget(
+    isolated_database_url: str,
+) -> None:
+    initialize_db(isolated_database_url)
+    factory = make_session_factory(isolated_database_url)
+    with session_scope(factory) as session:
+        session.add_all(
+            CollectionTagNodeRecord(
+                digest=f"{index:064x}",
+                encoded=f"node-{index}".encode(),
+                created_at="2026-09-08T00:00:00.000000Z",
+            )
+            for index in range(1, 5)
+        )
+
+    def reap_one() -> int:
+        service = SqlAlchemyCatalogSyncService(
+            RuntimeConfig(
+                database_url=isolated_database_url,
+                catalog_sync_history_reap_batch_size=1,
+            ),
+            session_factory=make_session_factory(isolated_database_url),
+        )
+        return service.reap_expired_history()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert list(executor.map(lambda _index: reap_one(), range(2))) == [0, 0]
+    with session_scope(factory) as session:
+        assert len(list(session.scalars(select(CollectionTagNodeRecord)))) == 2
+
+    restarted = SqlAlchemyCatalogSyncService(
+        RuntimeConfig(
+            database_url=isolated_database_url,
+            catalog_sync_history_reap_batch_size=1,
+        ),
+        session_factory=make_session_factory(isolated_database_url),
+    )
+    assert restarted.reap_expired_history() == 0
+    assert restarted.reap_expired_history() == 0
+    with session_scope(factory) as session:
+        assert not list(session.scalars(select(CollectionTagNodeRecord)))
 
 
 def test_postgres_archive_sequence_state_round_trips_full_v1_domain(

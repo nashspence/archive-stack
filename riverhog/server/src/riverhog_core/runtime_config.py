@@ -213,6 +213,7 @@ class RuntimeConfig:
         if self.catalog_sync_history_retention.total_seconds() <= 0:
             raise ValueError("RIVERHOG_CATALOG_SYNC_HISTORY_RETENTION must be positive")
         for name, lifetime in (
+            ("RIVERHOG_BROWSE_TOKEN_LIFETIME", self.browse_token_lifetime),
             ("RIVERHOG_CATALOG_SYNC_BOOTSTRAP_LIFETIME", self.catalog_sync_bootstrap_lifetime),
             ("RIVERHOG_CATALOG_SYNC_CURSOR_LIFETIME", self.catalog_sync_cursor_lifetime),
         ):

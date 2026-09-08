@@ -157,6 +157,7 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str,
         digest: str,
         expected_current_stored_sha256: str,
+        provider_revision: str | None,
     ) -> None: ...
 
     def read_archive_artifact(

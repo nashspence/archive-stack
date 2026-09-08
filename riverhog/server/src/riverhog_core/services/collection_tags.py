@@ -47,7 +47,9 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
+    CollectionTagMutationNodeReferenceRecord,
     CollectionTagMutationRecord,
+    CollectionTagNodeEdgeRecord,
     CollectionTagNodeGcRecord,
     CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
@@ -72,6 +74,7 @@ def build_collection_tag_set(
     result = CollectionTagSet(store)
     for tag in sorted(set(tags), key=lambda value: value.encode("utf-8")):
         result = result.insert(tag)
+    store.flush_graph()
     return result, store.put_digests
 
 
@@ -88,6 +91,7 @@ def advance_collection_tag_set(
     result = CollectionTagSet(store, CollectionTagSetRoot.seal(root_sha256))
     for tag in tags:
         result = result.insert(tag)
+    store.flush_graph()
     if retain_for_collection_id is not None:
         for digest in store.touched_digests:
             if (
@@ -110,6 +114,7 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
     def __init__(self, session: Session) -> None:
         self._session = session
         self._pending: dict[str, bytes] = {}
+        self._pending_edges: set[tuple[str, str]] = set()
         self.put_digests: set[str] = set()
         self.touched_digests: set[str] = set()
 
@@ -145,6 +150,29 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
             )
             self._pending[digest] = payload
             self.put_digests.add(digest)
+            self._pending_edges.update(
+                (digest, child.digest) for child in decode_collection_tag_node(payload).children
+            )
+
+    def flush_graph(self) -> None:
+        """Persist pending nodes before their bounded structural edges."""
+
+        self._session.flush()
+        for parent_digest, child_digest in sorted(self._pending_edges):
+            if (
+                self._session.get(
+                    CollectionTagNodeEdgeRecord,
+                    (parent_digest, child_digest),
+                )
+                is None
+            ):
+                self._session.add(
+                    CollectionTagNodeEdgeRecord(
+                        parent_digest=parent_digest,
+                        child_digest=child_digest,
+                    )
+                )
+        self._session.flush()
 
 
 class SqlAlchemyCollectionTagService:
@@ -277,6 +305,7 @@ class SqlAlchemyCollectionTagService:
                 else:
                     result = current
                     result_revision = expected_revision
+                store.flush_graph()
                 head = CollectionTagHeadDocument.seal(
                     archive_root_sha256=collection.archive_root_sha256,
                     revision=result_revision,
@@ -305,6 +334,18 @@ class SqlAlchemyCollectionTagService:
                 )
                 session.add(prior)
                 if changed:
+                    # Establish both immutable node rows and their mutation owner before
+                    # adding the composite construction references.  This remains one
+                    # transaction, while making the dependency order explicit on SQLite.
+                    session.flush()
+                    for digest in sorted(store.put_digests):
+                        session.add(
+                            CollectionTagMutationNodeReferenceRecord(
+                                collection_id=normalized_id,
+                                operation_id=normalized_operation,
+                                node_digest=digest,
+                            )
+                        )
                     collection.tag_mutation_operation_id = normalized_operation
                     publication = _current_publication_candidate(session, collection=collection)
                     if publication is None:
@@ -618,6 +659,7 @@ class SqlAlchemyCollectionTagService:
             store_name = gc.store
             digest = gc.node_digest
             prefix = copy.archive_storage_prefix
+            provider_revision = gc.provider_revision
             expected_stored_sha256 = session.scalar(
                 select(CollectionTagPublishedNodeRecord.stored_sha256).where(
                     CollectionTagPublishedNodeRecord.collection_id == gc.collection_id,
@@ -634,6 +676,7 @@ class SqlAlchemyCollectionTagService:
                 archive_storage_prefix=prefix,
                 digest=digest,
                 expected_current_stored_sha256=expected_stored_sha256,
+                provider_revision=provider_revision,
             )
         except Exception as exc:
             with session_scope(self._session_factory) as session:
@@ -857,9 +900,20 @@ class SqlAlchemyCollectionTagService:
         validate_page_size(page_size)
         with session_scope(self._session_factory) as session:
             require_collection_access(session, principal, CATALOG_READ, normalized)
-            revision = session.get(CollectionTagRevisionRecord, (normalized, expected_revision))
+            revision = session.scalar(
+                select(CollectionTagRevisionRecord)
+                .where(
+                    CollectionTagRevisionRecord.collection_id == normalized,
+                    CollectionTagRevisionRecord.revision == expected_revision,
+                )
+                .with_for_update()
+            )
             if revision is None or revision.tag_set_identity != expected_tag_set_identity:
                 raise PreconditionFailed("collection tag authority is unavailable")
+            if revision.cleanup_started_at is not None and position is None:
+                raise PreconditionFailed("collection tag authority is unavailable")
+            if revision.cleanup_started_at is not None:
+                revision.cleanup_started_at = utc_timestamp_now()
             if position is not None and (
                 len(position) != 1
                 or not isinstance(position[0], str)
