@@ -119,7 +119,7 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
     assert plan["status"] == "ready"
     target = cast(dict[str, object], plan["target_copy"])
     retained = cast(list[dict[str, object]], plan["retained_copies"])
-    assert target["object_count"] == 5
+    assert target["object_count"] == 6
     assert [current["store"] for current in retained] == ["b2"]
     assert plan["retired_retrieval_job_count"] == 0
     assert plan["challenge"]

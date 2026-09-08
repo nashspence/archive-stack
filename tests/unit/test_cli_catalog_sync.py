@@ -40,6 +40,8 @@ class _Client:
                     description="Field notes",
                     description_revision=3,
                     description_identity="e" * 64,
+                    tag_revision=2,
+                    tag_set_identity="1" * 64,
                     revision="11",
                 )
             ],
@@ -59,6 +61,8 @@ class _Client:
                     description=None,
                     description_revision=0,
                     description_identity="f" * 64,
+                    tag_revision=3,
+                    tag_set_identity="2" * 64,
                     revision="12",
                 )
             ],

@@ -70,6 +70,9 @@ class CollectionSummary:
     description_revision: int
     description_identity: str
     description_publication: str
+    tag_revision: int
+    tag_set_identity: str
+    tag_publication: str
     content_identity: str
     archive_root_sha256: str
     encryption_format: str
@@ -89,6 +92,7 @@ class CollectionListPage:
     query: str | None
     encryption_format: str | None
     passphrase_id: str | None
+    tags: tuple[str, ...]
     collections: list[CollectionSummary]
 
 

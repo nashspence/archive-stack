@@ -92,6 +92,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_api_client.downloads", "configured_download_concurrency"),
         ("riverhog_api_client.downloads", "configured_download_window"),
         ("riverhog_api_client.downloads", "download_retrieval_files"),
+        ("riverhog_protocol", "validate_collection_tag"),
         ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.errors", "NotFound"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
@@ -188,8 +189,31 @@ class FakeApi:
             "id": collection_id,
             "created_at": CREATED_AT,
             "inventory_identity": inventory_identity,
+            "tag_revision": 1,
+            "tag_set_identity": "1" * 64,
             "files": len(files),
             "bytes": sum(file.bytes for file in files),
+        }
+
+    def list_collection_tags(
+        self,
+        collection_id: int,
+        *,
+        revision: int,
+        tag_set_identity: str,
+        page_size: int,
+        page_token: str | None,
+    ) -> dict[str, object]:
+        assert (collection_id, revision, tag_set_identity) == (COLLECTION_ID, 1, "1" * 64)
+        assert page_size == 100
+        assert page_token is None
+        return {
+            "collection_id": collection_id,
+            "revision": revision,
+            "tag_set_identity": tag_set_identity,
+            "page_size": page_size,
+            "next_page_token": None,
+            "tags": ["source:camera"],
         }
 
     def create_catalog_sync_checkpoint(self) -> CatalogSyncCheckpoint:
@@ -215,6 +239,8 @@ class FakeApi:
                     description=None,
                     description_revision=0,
                     description_identity="f" * 64,
+                    tag_revision=1,
+                    tag_set_identity="1" * 64,
                     revision="1",
                 )
             ],
@@ -631,6 +657,7 @@ def test_local_list_uses_standard_human_json_and_id_views(
                 "collection_id": COLLECTION_ID,
                 "created_at": CREATED_AT,
                 "files": 2,
+                "tag_count": 1,
                 "status": "desired",
             }
         ],
@@ -640,6 +667,12 @@ def test_local_list_uses_standard_human_json_and_id_views(
         "query": "desired",
         "sort": "collection_id",
     }
+    by_tag = runner.invoke(
+        local_materialization.local_app,
+        ["list", "--query", "camera", "--json"],
+    )
+    assert by_tag.exit_code == 0
+    assert [item["collection_id"] for item in json.loads(by_tag.stdout)["collections"]] == [1]
     assert identifiers.exit_code == 0
     assert identifiers.stdout == "1\n"
 
@@ -662,6 +695,8 @@ def test_local_list_pages_and_sorts_database_aggregates(
                 db,
                 collection_id=collection_id,
                 inventory_identity=inventory_identity,
+                tag_revision=1,
+                tag_set_identity="1" * 64,
                 created_at=f"2026-07-19T20:55:0{collection_id}.000000Z",
             )
             local_materialization._store_inventory_page(

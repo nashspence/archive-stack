@@ -5,31 +5,30 @@ from pathlib import Path
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
+from riverhog_protocol import collection_tag_sha256
 
 from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 
-GROUP_ID = "a" * 64
+TAG = "docs"
+TAG_SHA256 = collection_tag_sha256(TAG)
 
 
 def _seed(path: Path) -> None:
     factory = make_session_factory(sqlite_url(path))
     with session_scope(factory) as session:
         session.add(
-            CollectionAccessGroupRecord(
-                id=GROUP_ID,
-                creation_idempotency_key="docs",
-                created_by_app="fixture",
-                display_label="docs",
-                status="active",
-                authorization_revision=1,
+            CollectionTagRecord(
+                tag_sha256=TAG_SHA256,
+                tag=TAG,
+                search_text=TAG,
                 created_at="2026-01-01T00:00:00.000000Z",
                 updated_at="2026-01-01T00:00:00.000000Z",
                 collection_count=1,
@@ -52,10 +51,9 @@ def _seed(path: Path) -> None:
             )
         )
         session.add(
-            CollectionAccessGroupMembershipRecord(
+            CollectionTagMembershipRecord(
                 collection_id=1,
-                group_id=GROUP_ID,
-                added_by_app="fixture",
+                tag_sha256=TAG_SHA256,
                 added_at="2026-01-01T00:00:00.000000Z",
             )
         )
@@ -145,14 +143,14 @@ def test_search_files_can_stream_every_database_match(tmp_path: Path) -> None:
     ]
 
 
-def test_search_applies_access_group_grants_in_the_database(tmp_path: Path) -> None:
+def test_search_applies_tag_grants_in_the_database(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed(path)
     principal = ApplicationPrincipal(
         app="reader",
         key_id="reader-key",
-        access=frozenset({ApplicationAccess(CATALOG_READ, f"group:{'b' * 64}")}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, "tag:other")}),
     )
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(

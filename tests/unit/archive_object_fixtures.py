@@ -32,6 +32,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagPublicationRecord,
+    CollectionTagRevisionRecord,
 )
 from riverhog_core.collection_metadata import (
     collection_content_identity,
@@ -61,6 +63,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveStore,
     CollectionArchiveIdentity,
     CollectionDescriptionReceipt,
+    CollectionTagObjectReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
 from riverhog_core.runtime_config import (
@@ -68,7 +71,12 @@ from riverhog_core.runtime_config import (
     DEV_ARCHIVE_PASSPHRASE_ID,
     RuntimeConfig,
 )
-from riverhog_protocol import COLLECTION_DESCRIPTION_RELATIVE_PATH
+from riverhog_protocol import (
+    COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_TAG_HEAD_RELATIVE_PATH,
+    CollectionTagHeadDocument,
+    collection_tag_node_path,
+)
 from riverhog_provenance import (
     PROVENANCE_BINDING_SEGMENT_FILES_MAX,
     PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
@@ -592,6 +600,27 @@ def add_archive_copy(
     copy.archive_storage_prefix = prefix
     copy.last_uploaded_at = UPLOADED_AT
     copy.last_verified_at = UPLOADED_AT
+    collection = session.get(CollectionRecord, archive.collection_id)
+    assert collection is not None
+    session.add(
+        CollectionTagPublicationRecord(
+            collection_id=archive.collection_id,
+            store=store,
+            desired_revision=collection.tag_revision,
+            desired_tag_set_identity=collection.tag_set_identity,
+            desired_head_identity=collection.tag_head_identity,
+            published_revision=collection.tag_revision,
+            published_tag_set_identity=collection.tag_set_identity,
+            published_head_identity=collection.tag_head_identity,
+            state="published",
+            next_attempt_at=None,
+            head_object_path=f"{prefix}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}",
+            head_provider_revision="fixture-tag-head-revision",
+            head_stored_bytes=128,
+            head_stored_sha256="f" * 64,
+            published_at=UPLOADED_AT,
+        )
+    )
     pack_receipt = receipt.require_object(archive.pack_plan.volume_id)
     pack_record = CollectionArchiveObjectRecord(
         collection_id=archive.collection_id,
@@ -761,7 +790,26 @@ def seed_archive_copy(
             file_count=len(file_rows),
             file_bytes=sum(item[1] for item in file_rows),
         )
+        empty_tag_head = CollectionTagHeadDocument.seal(
+            archive_root_sha256=current.archive_root_sha256,
+            revision=1,
+            root_sha256=None,
+        )
+        collection.tag_revision = empty_tag_head.revision
+        collection.tag_root_sha256 = empty_tag_head.root_sha256
+        collection.tag_set_identity = empty_tag_head.tag_set_identity
+        collection.tag_head_identity = empty_tag_head.head_identity
         session.add(collection)
+        session.add(
+            CollectionTagRevisionRecord(
+                collection_id=current.collection_id,
+                revision=empty_tag_head.revision,
+                root_sha256=empty_tag_head.root_sha256,
+                tag_set_identity=empty_tag_head.tag_set_identity,
+                head_identity=empty_tag_head.head_identity,
+                created_at=UPLOADED_AT,
+            )
+        )
         for file in current.files:
             session.add(
                 CollectionFileRecord(
@@ -1065,6 +1113,71 @@ class MemoryArchiveStore:
     ) -> None:
         assert collection_id == COLLECTION_ID
         object_path = f"{archive_storage_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        self.objects.pop(object_path, None)
+        self.object_metadata.pop(object_path, None)
+
+    def publish_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+        encoded: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt:
+        object_path = f"{archive_storage_prefix}/{collection_tag_node_path(digest)}"
+        return self._publish_collection_tag_object(object_path, encoded)
+
+    def publish_collection_tag_head(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt:
+        object_path = f"{archive_storage_prefix}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}"
+        return self._publish_collection_tag_object(object_path, document)
+
+    def _publish_collection_tag_object(
+        self,
+        object_path: str,
+        plaintext: bytes,
+    ) -> CollectionTagObjectReceipt:
+        ciphertext = encrypt_age_scrypt(plaintext, DEV_ARCHIVE_PASSPHRASE, log_n=1)
+        self.objects[object_path] = ciphertext
+        self.object_metadata[object_path] = {
+            "riverhog-plaintext-sha256": hashlib.sha256(plaintext).hexdigest()
+        }
+        return CollectionTagObjectReceipt(
+            object_path=object_path,
+            revision=self._version(ciphertext),
+            stored_bytes=len(ciphertext),
+            stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
+            published_at=UPLOADED_AT,
+        )
+
+    def delete_collection_tags(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None:
+        prefix = f"{archive_storage_prefix}/tags/"
+        for object_path in tuple(self.objects):
+            if object_path.startswith(prefix):
+                self.objects.pop(object_path, None)
+                self.object_metadata.pop(object_path, None)
+
+    def delete_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+    ) -> None:
+        _ = collection_id
+        object_path = f"{archive_storage_prefix}/{collection_tag_node_path(digest)}"
         self.objects.pop(object_path, None)
         self.object_metadata.pop(object_path, None)
 

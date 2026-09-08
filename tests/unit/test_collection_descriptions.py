@@ -18,13 +18,13 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagRecord,
     RetrievalCacheObjectRecord,
 )
 from riverhog_core.ports.archive_store import CollectionDescriptionReceipt
@@ -46,6 +46,8 @@ from riverhog_protocol import (
     CollectionDescription,
     CollectionDescriptionDocument,
     collection_description_identity,
+    collection_tag_set_identity,
+    collection_tag_sha256,
 )
 from riverhog_protocol.errors import PreconditionFailed, ServiceUnavailable
 from sqlalchemy import select
@@ -163,14 +165,13 @@ def _seed(
                 verified_at=NOW,
             )
         )
+        fixture_tag = "description-fixture"
+        fixture_tag_sha256 = collection_tag_sha256(fixture_tag)
         session.add(
-            CollectionAccessGroupRecord(
-                id="a" * 64,
-                creation_idempotency_key="description-fixture-group",
-                created_by_app="fixture",
-                display_label="Description fixture",
-                status="active",
-                authorization_revision=1,
+            CollectionTagRecord(
+                tag_sha256=fixture_tag_sha256,
+                tag=fixture_tag,
+                search_text=fixture_tag,
                 created_at=NOW,
                 updated_at=NOW,
                 collection_count=1,
@@ -178,10 +179,9 @@ def _seed(
         )
         session.flush()
         session.add(
-            CollectionAccessGroupMembershipRecord(
+            CollectionTagMembershipRecord(
                 collection_id=1,
-                group_id="a" * 64,
-                added_by_app="fixture",
+                tag_sha256=fixture_tag_sha256,
                 added_at=NOW,
             )
         )
@@ -215,8 +215,8 @@ def _seed(
             collection_id=1,
             occurred_at=NOW,
             inventory_identity=collection.inventory_identity,
-            before_groups=(),
-            after_groups=(),
+            before_tags=(),
+            after_tags=(fixture_tag_sha256,),
         )
     store = MemoryArchiveStore()
     registry = ArchiveStoreRegistry({"archive": archive_store_binding(store)})
@@ -325,13 +325,12 @@ def test_description_replacement_is_durable_searchable_and_syncable(tmp_path: Pa
                 )
             )
         )
-        access_rows = list(
+        tag_rows = list(
             session.execute(
                 select(
-                    CollectionAccessGroupMembershipRecord.collection_id,
-                    CollectionAccessGroupMembershipRecord.group_id,
-                    CollectionAccessGroupMembershipRecord.added_by_app,
-                    CollectionAccessGroupMembershipRecord.added_at,
+                    CollectionTagMembershipRecord.collection_id,
+                    CollectionTagMembershipRecord.tag_sha256,
+                    CollectionTagMembershipRecord.added_at,
                 )
             )
         )
@@ -406,6 +405,8 @@ def test_description_replacement_is_durable_searchable_and_syncable(tmp_path: Pa
             description=description,
             description_revision=1,
             description_identity=description_identity,
+            tag_revision=1,
+            tag_set_identity=collection_tag_set_identity(None),
             revision="2",
         )
     ]
@@ -502,14 +503,13 @@ def test_description_replacement_is_durable_searchable_and_syncable(tmp_path: Pa
             list(
                 session.execute(
                     select(
-                        CollectionAccessGroupMembershipRecord.collection_id,
-                        CollectionAccessGroupMembershipRecord.group_id,
-                        CollectionAccessGroupMembershipRecord.added_by_app,
-                        CollectionAccessGroupMembershipRecord.added_at,
+                        CollectionTagMembershipRecord.collection_id,
+                        CollectionTagMembershipRecord.tag_sha256,
+                        CollectionTagMembershipRecord.added_at,
                     )
                 )
             )
-            == access_rows
+            == tag_rows
         )
         events = list(
             session.scalars(select(CatalogEventRecord).order_by(CatalogEventRecord.revision))

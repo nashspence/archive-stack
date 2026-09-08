@@ -36,6 +36,7 @@ from riverhog_protocol import (
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
     collection_description_identity,
+    collection_tag_set_identity,
 )
 from riverhog_protocol.errors import (
     CatalogSyncCursorExpired,
@@ -102,8 +103,8 @@ def _seed(factory: object, collection_id: int) -> None:
             collection_id=collection_id,
             occurred_at=NOW,
             inventory_identity=root,
-            before_groups=(),
-            after_groups=(),
+            before_tags=(),
+            after_tags=(),
         )
 
 
@@ -159,6 +160,8 @@ def test_catalog_sync_bootstrap_and_follow_are_exact_bounded_authorities(
                 revision=0,
                 description=None,
             ),
+            tag_revision=1,
+            tag_set_identity=collection_tag_set_identity(None),
             revision="4",
         )
     ]
@@ -338,6 +341,8 @@ class _ReplicaApi:
                     description="Reference collection",
                     description_revision=2,
                     description_identity="e" * 64,
+                    tag_revision=1,
+                    tag_set_identity="f" * 64,
                     revision="1",
                 )
             ],
@@ -355,6 +360,26 @@ class _ReplicaApi:
             caught_up=True,
             through_revision="1",
         )
+
+    def list_collection_tags(
+        self,
+        collection_id: int,
+        *,
+        revision: int,
+        tag_set_identity: str,
+        page_size: int = 25,
+        page_token: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(f"tags:{collection_id}:{revision}:{page_size}:{page_token}")
+        assert collection_id > 0 and revision == 1 and len(tag_set_identity) == 64
+        return {
+            "collection_id": collection_id,
+            "revision": revision,
+            "tag_set_identity": tag_set_identity,
+            "page_size": page_size,
+            "next_page_token": None,
+            "tags": ["source:camera"],
+        }
 
 
 def test_catalog_replica_uses_one_request_per_step_and_publishes_atomically(
@@ -374,12 +399,20 @@ def test_catalog_replica_uses_one_request_per_step_and_publishes_atomically(
         replica.page()
 
     replica.step(api, limit=1)
+    assert api.calls[-1] == "tags:1:1:1:None"
+    with pytest.raises(RuntimeError):
+        replica.page()
+
+    replica.step(api, limit=1)
     assert api.calls[-1] == "changes:changes-1:1"
     page = replica.page()
     assert [item.collection_id for item in page] == [1]
     assert page[0].description == "Reference collection"
     assert page[0].description_identity == "e" * 64
     assert replica.get(1) == page[0]
+    assert replica.tag_page(1) == ["source:camera"]
+    assert [item.collection_id for item in replica.page(tags=("source:camera",))] == [1]
+    assert replica.page(tags=("source:other",)) == []
 
     replica.start(api)
     assert [item.collection_id for item in replica.page()] == [1]
@@ -429,6 +462,8 @@ def test_catalog_replica_rejects_cross_page_reordering(tmp_path: Path) -> None:
                             description=None,
                             description_revision=0,
                             description_identity="1" * 64,
+                            tag_revision=1,
+                            tag_set_identity="3" * 64,
                             revision="1",
                         )
                     ],
@@ -446,6 +481,8 @@ def test_catalog_replica_rejects_cross_page_reordering(tmp_path: Path) -> None:
                         description=None,
                         description_revision=0,
                         description_identity="2" * 64,
+                        tag_revision=1,
+                        tag_set_identity="4" * 64,
                         revision="2",
                     )
                 ],
@@ -455,6 +492,7 @@ def test_catalog_replica_rejects_cross_page_reordering(tmp_path: Path) -> None:
     api = ReorderedApi()
     replica = CatalogReplica(tmp_path / "replica.sqlite3")
     replica.start(api)
+    replica.step(api, limit=1)
     replica.step(api, limit=1)
     before = replica.status()
 
@@ -485,6 +523,7 @@ def test_catalog_replica_reclaims_settled_tombstones_in_bounded_steps(
     api = DeletedAfterCatchup()
     replica = CatalogReplica(tmp_path / "replica.sqlite3")
     replica.start(api)
+    replica.step(api, limit=1)
     replica.step(api, limit=1)
     replica.step(api, limit=1)
     replica.step(api, limit=1)
@@ -571,6 +610,8 @@ def test_catalog_sync_documents_fail_closed_on_ambiguous_continuations() -> None
             description=None,
             description_revision=0,
             description_identity="1" * 64,
+            tag_revision=1,
+            tag_set_identity="2" * 64,
             revision="0",
         )
     boundary = CatalogSyncDescriptor(
@@ -580,6 +621,8 @@ def test_catalog_sync_documents_fail_closed_on_ambiguous_continuations() -> None
         description=None,
         description_revision=0,
         description_identity="1" * 64,
+        tag_revision=1,
+        tag_set_identity="2" * 64,
         revision=str(MAX_CATALOG_SYNC_REVISION),
     )
     assert boundary.revision == str(MAX_CATALOG_SYNC_REVISION)
@@ -591,5 +634,7 @@ def test_catalog_sync_documents_fail_closed_on_ambiguous_continuations() -> None
             description=None,
             description_revision=0,
             description_identity="1" * 64,
+            tag_revision=1,
+            tag_set_identity="2" * 64,
             revision=str(MAX_CATALOG_SYNC_REVISION + 1),
         )

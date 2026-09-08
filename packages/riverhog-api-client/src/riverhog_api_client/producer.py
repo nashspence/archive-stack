@@ -15,6 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, cast
 
+from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+    CollectionDescription,
+    CollectionTag,
+)
 from riverhog_protocol.collection_upload_transport import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadRegistrationConstraintsDocument,
@@ -173,6 +178,8 @@ class CollectionProducer:
         adapter_version: str,
         ingest_source: str,
         archive_store: ArchiveStoreName | None = None,
+        description: CollectionDescription | None = None,
+        tags: Sequence[CollectionTag] = (),
         provenance_mode: Literal["captured", "omitted"] = "omitted",
         provenance_omission_reason: str = (
             "Producer did not receive host provenance; immutable producer evidence records "
@@ -186,6 +193,8 @@ class CollectionProducer:
         self.adapter_version = adapter_version
         self.ingest_source = ingest_source
         self.archive_store = archive_store
+        self.description = description
+        self.tags = tuple(tags)
         self.provenance_mode = provenance_mode
         self.server_generated_provenance = server_generated_provenance
         reason = provenance_omission_reason.strip()
@@ -246,6 +255,8 @@ class CollectionProducer:
             source_context=source_context,
             idempotency_key=idempotency_key,
             archive_store=self.archive_store,
+            description=self.description,
+            tags=self.tags,
             event_context=event_context,
             provenance_mode=(
                 "captured" if self.server_generated_provenance else self.provenance_mode
@@ -293,6 +304,8 @@ class IncrementalCollectionProducer:
         source_context: Mapping[str, object] | None = None,
         idempotency_key: str | None = None,
         archive_store: ArchiveStoreName | None = None,
+        description: CollectionDescription | None = None,
+        tags: Sequence[CollectionTag] = (),
         event_context: Mapping[str, object] | None = None,
         provenance_mode: Literal["captured", "omitted"] = "omitted",
         server_generated_provenance: bool = False,
@@ -333,9 +346,12 @@ class IncrementalCollectionProducer:
         self._heartbeat_thread: threading.Thread | None = None
         self._finalized: ProducedCollection | None = None
         self.constraints: CollectionUploadRegistrationConstraintsDocument | None
+        requested_tags = tuple(tags)
         session = api.create_or_resume_collection_upload_session(
             idempotency_key or evidence.sha256,
             ingest_source=ingest_source,
+            description=description,
+            tags=requested_tags[:COLLECTION_TAG_REQUEST_MEMBERS_MAX],
             archive_store=archive_store,
             event_context=event_context,
             provenance_mode=provenance_mode,
@@ -350,6 +366,15 @@ class IncrementalCollectionProducer:
             self._closed = True
             self.constraints = None
             return
+        for offset in range(
+            COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+            len(requested_tags),
+            COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+        ):
+            api.add_collection_upload_session_tags(
+                self.collection_id,
+                requested_tags[offset : offset + COLLECTION_TAG_REQUEST_MEMBERS_MAX],
+            )
         constraints = session.get("registration_constraints")
         if not isinstance(constraints, Mapping):
             raise RuntimeError("Riverhog upload session did not return registration constraints")

@@ -39,6 +39,15 @@ class CollectionDescriptionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionTagObjectReceipt:
+    object_path: str
+    revision: str | None
+    stored_bytes: int
+    stored_sha256: str
+    published_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveObjectIdentity:
     object_id: str
     kind: str
@@ -111,6 +120,40 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         archive_storage_prefix: str,
+    ) -> None: ...
+
+    def publish_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+        encoded: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt: ...
+
+    def publish_collection_tag_head(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt: ...
+
+    def delete_collection_tags(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None: ...
+
+    def delete_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
     ) -> None: ...
 
     def read_archive_artifact(

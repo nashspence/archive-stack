@@ -26,7 +26,6 @@ from riverhog_api_client import ApiClient
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
-    COLLECTION_ACCESS_GROUPS_MANAGE,
     PROVENANCE_READ,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -35,8 +34,8 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
 from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
+from riverhog_core.services.collection_tags import SqlAlchemyCollectionTagService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import PortableCollectionIdentityBuilder
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
@@ -521,7 +520,6 @@ class _QualificationAppKeys:
             access=frozenset(
                 {
                     ApplicationAccess(CATALOG_READ, ALL_RESOURCES),
-                    ApplicationAccess(COLLECTION_ACCESS_GROUPS_MANAGE, ALL_RESOURCES),
                     ApplicationAccess(PROVENANCE_READ, ALL_RESOURCES),
                 }
             ),
@@ -588,12 +586,12 @@ def _measure_http_path(
     application_name: str,
 ) -> dict[str, object]:
     config = RuntimeConfig(database_url=database_url)
-    access_groups = SqlAlchemyCollectionAccessGroupService(config)
+    collection_tags = SqlAlchemyCollectionTagService(config, _qualification_archive_stores())
     catalog_sync = SqlAlchemyCatalogSyncService(config)
     retrieval = SqlAlchemyRetrievalService(config, _qualification_archive_stores(), None)
     container = SimpleNamespace(
         app_keys=_QualificationAppKeys(),
-        access_groups=access_groups,
+        collection_tags=collection_tags,
         catalog_sync=catalog_sync,
         retrieval=retrieval,
         browse_tokens=BrowseTokenCodec(
@@ -613,24 +611,22 @@ def _measure_http_path(
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
-        group_rows = 0
+        tag_rows = 0
         page_token: str | None = None
         while True:
-            payload = api.list_collection_access_groups(
+            payload = api.list_tags(
                 page_size=100,
                 page_token=page_token,
-                sort="id",
-                order="asc",
             )
-            group_rows += len(payload.get("groups", []))
+            tag_rows += len(payload.get("tags", []))
             next_page_token = payload.get("next_page_token")
             if next_page_token is None:
                 break
             if not isinstance(next_page_token, str) or not next_page_token:
-                raise QualificationError("access-group browse returned an invalid page token")
+                raise QualificationError("tag browse returned an invalid page token")
             page_token = next_page_token
-        groups_ms = (time.perf_counter() - started) * 1000
-        _current, groups_peak = tracemalloc.get_traced_memory()
+        tags_ms = (time.perf_counter() - started) * 1000
+        _current, tags_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
         gc.collect()
@@ -659,7 +655,7 @@ def _measure_http_path(
         catalog_ms = (time.perf_counter() - started) * 1000
         _current, catalog_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        if catalog_rows != group_rows:
+        if catalog_rows != tag_rows:
             raise QualificationError("catalog synchronization lost a collection")
 
         gc.collect()
@@ -684,15 +680,15 @@ def _measure_http_path(
         inventory_ms = (time.perf_counter() - started) * 1000
         _current, inventory_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        if max(groups_peak, catalog_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
+        if max(tags_peak, catalog_peak, inventory_peak) > MAX_HTTP_PEAK_BYTES:
             raise QualificationError("full HTTP path exceeded its application-memory budget")
 
         headers = {"Authorization": "Bearer qualification-token"}
         with httpx.Client(base_url=base_url, headers=headers, timeout=30) as raw_client:
             with raw_client.stream(
                 "GET",
-                "/v1/collection-access-groups",
-                params={"page_size": 100, "sort": "id", "order": "asc"},
+                "/v1/tags",
+                params={"page_size": 100},
             ) as response:
                 response.raise_for_status()
                 first_chunk = next(response.iter_bytes())
@@ -710,10 +706,10 @@ def _measure_http_path(
             )
         if transactions_while_consumer_paused or transactions_after_disconnect:
             raise QualificationError("HTTP consumer lifetime retained a database transaction")
-        first = api.list_collection_access_groups(page_size=1, sort="id", order="asc")
+        first = api.list_tags(page_size=1)
         restart_token = first.get("next_page_token")
         if not isinstance(restart_token, str) or not restart_token:
-            raise QualificationError("access-group browse did not issue a restart token")
+            raise QualificationError("tag browse did not issue a restart token")
         catalog_restart_cursor = api.create_catalog_sync_checkpoint().catalog_cursor
     finally:
         api.close()
@@ -727,17 +723,15 @@ def _measure_http_path(
             timeout=30,
         ) as client:
             restart_response = client.get(
-                "/v1/collection-access-groups",
+                "/v1/tags",
                 params={
                     "page_size": 1,
                     "page_token": restart_token,
-                    "sort": "id",
-                    "order": "asc",
                 },
             )
             restart_response.raise_for_status()
             restarted_payload = restart_response.json()
-            if not restarted_payload.get("groups"):
+            if not restarted_payload.get("tags"):
                 raise QualificationError("restart browse token omitted its next row")
             catalog_restart_response = client.get(
                 "/v1/catalog-sync/collections",
@@ -750,9 +744,9 @@ def _measure_http_path(
         _stop_http_server(restarted, restarted_thread)
     return {
         "official_client_bounded_pages": {
-            "rows": group_rows,
-            "total_ms": round(groups_ms, 3),
-            "peak_application_bytes": groups_peak,
+            "rows": tag_rows,
+            "total_ms": round(tags_ms, 3),
+            "peak_application_bytes": tags_peak,
         },
         "official_client_inventory": {
             "rows": inventory_rows,

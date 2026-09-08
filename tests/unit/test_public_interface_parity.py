@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 import riverhog_api_client
 import riverhog_api_client.client as riverhog_client_module
-import riverhog_core.services.access_groups as access_group_service_module
 import riverhog_core.services.app_keys as app_key_service_module
 import riverhog_core.services.archive_copies as archive_copy_service_module
 import riverhog_core.services.archive_stores as archive_store_service_module
+import riverhog_core.services.collection_tags as tag_service_module
 import riverhog_core.services.collection_uploads as upload_service_module
 import riverhog_core.services.collection_workflows as workflow_service_module
 import riverhog_core.services.collections as collection_service_module
@@ -72,8 +72,6 @@ from riverhog_protocol import (
     ArchiveCopyState,
     ArchiveStoreSort,
     ClaimState,
-    CollectionAccessGroupSort,
-    CollectionAccessGroupStatus,
     CollectionRootIdentity,
     CollectionRootIdentityDocument,
     CollectionSort,
@@ -387,9 +385,6 @@ READ_COLLECTION_OPERATIONS = {
             "list_collection_provenance",
             "list_collection_provenance_journal_agents",
             "list_collection_archive_copies",
-            "list_collection_access_group_members",
-            "list_collection_access_groups",
-            "list_collection_access_groups_for_collection",
             "list_collection_upload_session_files",
             "list_collection_upload_sessions",
             "list_collections",
@@ -397,6 +392,7 @@ READ_COLLECTION_OPERATIONS = {
             "list_processing_claims",
             "list_retrieval_cache_objects",
             "search",
+            "list_tags",
             "trace_collection_file_provenance",
         },
         "cursor-feed": {"list_catalog_sync_changes", "list_lifecycle_events"},
@@ -409,6 +405,7 @@ READ_COLLECTION_OPERATIONS = {
             "list_processing_claim_inputs",
             "list_processing_claim_outcomes",
             "list_catalog_sync_collections",
+            "list_collection_tags",
         },
     },
     "stove0": {
@@ -467,16 +464,14 @@ PUBLIC_QUERY_SELECTORS = {
         "list_collection_provenance_journal_agents": {"page_size", "page_token"},
         "list_collection_archive_copies": {"page_size", "page_token"},
         "get_portable_collection_inventory": {"cursor", "limit"},
-        "list_collection_access_group_members": {"page_size", "page_token"},
-        "list_collection_access_groups": {
-            "order",
+        "list_tags": {"page_size", "page_token", "q"},
+        "list_collection_tags": {
             "page_size",
             "page_token",
-            "q",
-            "sort",
-            "status",
+            "revision",
+            "tag_set_identity",
         },
-        "list_collection_access_groups_for_collection": {"page_size", "page_token"},
+        "collection_contains_tag": {"revision", "tag", "tag_set_identity"},
         "list_collection_upload_session_files": {"page_size", "page_token"},
         "list_collection_upload_sessions": {
             "order",
@@ -494,6 +489,7 @@ PUBLIC_QUERY_SELECTORS = {
             "page_token",
             "q",
             "sort",
+            "tags",
         },
         "list_download_quotas": {
             "active",
@@ -554,8 +550,6 @@ NAMED_ENUM_QUERY_SELECTOR_TYPES = {
     "ArchiveCopySort": ArchiveCopySort,
     "ArchiveCopyState": ArchiveCopyState,
     "ArchiveStoreSort": ArchiveStoreSort,
-    "CollectionAccessGroupSort": CollectionAccessGroupSort,
-    "CollectionAccessGroupStatus": CollectionAccessGroupStatus,
     "CollectionSort": CollectionSort,
     "CollectionUploadSort": CollectionUploadSort,
     "CollectionUploadState": CollectionUploadState,
@@ -761,13 +755,13 @@ def test_official_client_never_drops_a_supplied_query_by_truthiness() -> None:
 
 def test_public_read_services_do_not_use_sql_offsets() -> None:
     modules = (
-        access_group_service_module,
         app_key_service_module,
         archive_copy_service_module,
         archive_store_service_module,
         upload_service_module,
         workflow_service_module,
         collection_service_module,
+        tag_service_module,
         quota_service_module,
         provenance_service_module,
         retrieval_service_module,
@@ -890,7 +884,6 @@ def test_official_client_selector_validation_projects_public_vocabularies() -> N
         "_ARCHIVE_COPY_SORTS": ArchiveCopySort,
         "_ARCHIVE_COPY_STATES": ArchiveCopyState,
         "_ARCHIVE_STORE_SORTS": ArchiveStoreSort,
-        "_COLLECTION_ACCESS_GROUP_SORTS": CollectionAccessGroupSort,
         "_COLLECTION_SORTS": CollectionSort,
         "_COLLECTION_UPLOAD_SORTS": CollectionUploadSort,
         "_COLLECTION_UPLOAD_STATES": CollectionUploadState,
@@ -951,8 +944,6 @@ def test_service_selector_validation_projects_public_vocabularies() -> None:
         (app_key_service_module, "_KEY_SORT_FIELDS", ApplicationKeySort),
         (app_key_service_module, "_ACCESS_SORT_FIELDS", ApplicationAccessSort),
         (app_key_service_module, "_SORT_ORDERS", SortOrder),
-        (access_group_service_module, "_SORT_FIELDS", CollectionAccessGroupSort),
-        (access_group_service_module, "_SORT_ORDERS", SortOrder),
         (quota_service_module, "_KEY_QUOTA_SORT_FIELDS", DownloadQuotaSort),
         (quota_service_module, "_SORT_ORDERS", SortOrder),
         (workflow_service_module, "_CLAIM_SORT_NAMES", ProcessingClaimSort),
@@ -1076,7 +1067,7 @@ def test_collection_upload_authority_and_binary_headers_are_exact() -> None:
     assert upload_identity["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
 
 
-def test_official_clients_reject_invalid_crud_controls_and_access_group_identities() -> None:
+def test_official_clients_reject_invalid_crud_controls_and_resources() -> None:
     riverhog = ApiClient()
     stove0 = Stove0ApiClient()
     try:
@@ -1088,14 +1079,12 @@ def test_official_clients_reject_invalid_crud_controls_and_access_group_identiti
             riverhog.list_app_key_access(resource="provider:internal")  # type: ignore[arg-type]
         with pytest.raises(BadRequest, match="processing-claim state must be one of"):
             riverhog.list_processing_claims(state="unknown")  # type: ignore[arg-type]
-        with pytest.raises(BadRequest, match="lowercase SHA-256"):
-            riverhog.get_collection_access_group("not-a-group")
         with pytest.raises(BadRequest, match="does not accept a scoped resource"):
             riverhog.add_app_key_access(
                 "example",
                 "0" * 16,
                 permission="keys:manage",
-                resource=f"group:{'a' * 64}",
+                resource="tag:camera",
             )
         with pytest.raises(BadRequest, match="lowercase SHA-256"):
             riverhog.get_processing_claim("not-a-claim")  # type: ignore[arg-type]

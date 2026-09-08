@@ -5,7 +5,11 @@ import secrets
 
 from riverhog_protocol import (
     COLLECTION_DESCRIPTION_UTF8_BYTES_MAX,
+    COLLECTION_TAG_NODE_BYTES_MAX,
+    COLLECTION_TAG_UTF8_BYTES_MAX,
     MAX_COLLECTION_DESCRIPTION_REVISION,
+    MAX_COLLECTION_TAG_REVISION,
+    collection_tag_set_identity,
 )
 from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
 from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
@@ -45,26 +49,14 @@ def _fixed_lowercase_integer_check(column: str, width: int) -> str:
     return f"length({column}) = {width} AND lower({column}) = {column} AND length({remainder}) = 0"
 
 
-class CollectionAccessGroupRecord(Base):
-    __tablename__ = "collection_access_groups"
+class CollectionTagRecord(Base):
+    """Rebuildable catalog projection of one exact canonical tag value."""
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    creation_idempotency_key: Mapped[str] = mapped_column(String)
-    created_by_app: Mapped[str] = mapped_column(String)
-    created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    display_label: Mapped[str | None] = mapped_column(String, nullable=True)
-    display_label_sort: Mapped[str] = mapped_column(
-        String,
-        Computed("lower(coalesce(display_label, ''))"),
-    )
-    status: Mapped[str] = mapped_column(
-        String,
-        default="active",
-        server_default=text("'active'"),
-    )
-    authorization_revision: Mapped[int] = mapped_column(
-        BigInteger, default=1, server_default=text("1")
-    )
+    __tablename__ = "collection_tags"
+
+    tag_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tag: Mapped[str] = mapped_column(Text, unique=True)
+    search_text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String)
     updated_at: Mapped[str] = mapped_column(String)
     collection_count: Mapped[int] = mapped_column(
@@ -72,44 +64,27 @@ class CollectionAccessGroupRecord(Base):
         default=0,
         server_default=text("0"),
     )
-    search_text: Mapped[str] = mapped_column(
-        String,
-        Computed("lower(id || ' ' || coalesce(display_label, ''))"),
-    )
-
-    memberships: Mapped[list[CollectionAccessGroupMembershipRecord]] = relationship(
-        back_populates="group",
+    memberships: Mapped[list[CollectionTagMembershipRecord]] = relationship(
+        back_populates="tag_record",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "created_by_app",
-            "creation_idempotency_key",
-            name="uq_collection_access_groups_application_idempotency_key",
+        CheckConstraint("collection_count >= 0", name="ck_collection_tags_collection_count"),
+        CheckConstraint(
+            f"octet_length(tag) > 0 AND octet_length(tag) <= {COLLECTION_TAG_UTF8_BYTES_MAX}",
+            name="ck_collection_tags_bytes",
         ),
         CheckConstraint(
-            "collection_count >= 0", name="ck_collection_access_groups_collection_count"
+            _fixed_lowercase_integer_check("tag_sha256", 64),
+            name="ck_collection_tags_sha256",
         ),
-        CheckConstraint(
-            "status IN ('active','disabled')", name="ck_collection_access_groups_status"
-        ),
-        CheckConstraint(
-            "authorization_revision >= 1",
-            name="ck_collection_access_groups_authorization_revision",
-        ),
-        CheckConstraint(
-            _fixed_lowercase_integer_check("id", 64),
-            name="ck_collection_access_groups_id_hex",
-        ),
-        Index("ix_collection_access_groups_created_at_id", "created_at", "id"),
-        Index("ix_collection_access_groups_updated_at_id", "updated_at", "id"),
-        Index("ix_collection_access_groups_status_id", "status", "id"),
-        Index("ix_collection_access_groups_collection_count_id", "collection_count", "id"),
-        Index("ix_collection_access_groups_display_label_id", "display_label_sort", "id"),
+        Index("ix_collection_tags_created_at", "created_at", "tag_sha256"),
+        Index("ix_collection_tags_updated_at", "updated_at", "tag_sha256"),
+        Index("ix_collection_tags_count", "collection_count", "tag_sha256"),
         Index(
-            "ix_collection_access_groups_search_trgm",
+            "ix_collection_tags_search_trgm",
             "search_text",
             postgresql_using="gin",
             postgresql_ops={"search_text": "gin_trgm_ops"},
@@ -172,6 +147,17 @@ class CollectionRecord(Base):
     description_next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     description_last_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     description_failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_revision: Mapped[int] = mapped_column(BigInteger, default=1, server_default=text("1"))
+    tag_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_set_identity: Mapped[str] = mapped_column(
+        String(64),
+        default=lambda: collection_tag_set_identity(None),
+        server_default=text(f"'{collection_tag_set_identity(None)}'"),
+    )
+    tag_head_identity: Mapped[str] = mapped_column(
+        String(64), default="0" * 64, server_default=text(f"'{'0' * 64}'")
+    )
+    tag_mutation_operation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
@@ -192,7 +178,7 @@ class CollectionRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    access_groups: Mapped[list[CollectionAccessGroupMembershipRecord]] = relationship(
+    tags: Mapped[list[CollectionTagMembershipRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -304,26 +290,152 @@ class CollectionRecord(Base):
             "description_attempt_count >= 0",
             name="ck_collections_description_attempt_count",
         ),
+        CheckConstraint(
+            f"tag_revision >= 1 AND tag_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collections_tag_revision",
+        ),
+        CheckConstraint(
+            "tag_root_sha256 IS NULL OR " + _fixed_lowercase_integer_check("tag_root_sha256", 64),
+            name="ck_collections_tag_root_sha256",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_set_identity", 64),
+            name="ck_collections_tag_set_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_head_identity", 64),
+            name="ck_collections_tag_head_identity",
+        ),
     )
 
 
-class CollectionAccessGroupMembershipRecord(Base):
-    __tablename__ = "collection_access_group_memberships"
+class CollectionTagMembershipRecord(Base):
+    __tablename__ = "collection_tag_memberships"
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    added_by_app: Mapped[str] = mapped_column(String)
-    added_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    tag_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     added_at: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
-        ForeignKeyConstraint(["group_id"], ["collection_access_groups.id"], ondelete="CASCADE"),
-        Index("ix_collection_access_group_memberships_group", "group_id", "collection_id"),
+        ForeignKeyConstraint(["tag_sha256"], ["collection_tags.tag_sha256"], ondelete="CASCADE"),
+        Index("ix_collection_tag_memberships_tag", "tag_sha256", "collection_id"),
     )
 
-    collection: Mapped[CollectionRecord] = relationship(back_populates="access_groups")
-    group: Mapped[CollectionAccessGroupRecord] = relationship(back_populates="memberships")
+    collection: Mapped[CollectionRecord] = relationship(back_populates="tags")
+    tag_record: Mapped[CollectionTagRecord] = relationship(back_populates="memberships")
+
+
+class CollectionTagNodeRecord(Base):
+    __tablename__ = "collection_tag_nodes"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    encoded: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        CheckConstraint(
+            _fixed_lowercase_integer_check("digest", 64),
+            name="ck_collection_tag_nodes_digest",
+        ),
+        CheckConstraint(
+            f"length(encoded) > 0 AND length(encoded) <= {COLLECTION_TAG_NODE_BYTES_MAX}",
+            name="ck_collection_tag_nodes_bytes",
+        ),
+    )
+
+
+class CollectionTagRevisionRecord(Base):
+    __tablename__ = "collection_tag_revisions"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_set_identity: Mapped[str] = mapped_column(String(64))
+    head_identity: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        CheckConstraint(
+            f"revision >= 1 AND revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_revisions_revision",
+        ),
+        CheckConstraint(
+            "root_sha256 IS NULL OR " + _fixed_lowercase_integer_check("root_sha256", 64),
+            name="ck_collection_tag_revisions_root",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_set_identity", 64),
+            name="ck_collection_tag_revisions_set_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("head_identity", 64),
+            name="ck_collection_tag_revisions_head_identity",
+        ),
+    )
+
+
+class CollectionTagMutationRecord(Base):
+    __tablename__ = "collection_tag_mutations"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    action: Mapped[str] = mapped_column(String)
+    tag: Mapped[str] = mapped_column(Text)
+    tag_sha256: Mapped[str] = mapped_column(String(64))
+    expected_revision: Mapped[int] = mapped_column(BigInteger)
+    expected_tag_set_identity: Mapped[str] = mapped_column(String(64))
+    result_revision: Mapped[int] = mapped_column(BigInteger)
+    result_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_tag_set_identity: Mapped[str] = mapped_column(String(64))
+    result_head_identity: Mapped[str] = mapped_column(String(64))
+    changed: Mapped[bool] = mapped_column(Boolean)
+    state: Mapped[str] = mapped_column(String)
+    initiated_by_app: Mapped[str] = mapped_column(String)
+    initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        CheckConstraint("action IN ('add','remove')", name="ck_collection_tag_mutations_action"),
+        CheckConstraint(
+            "state IN ('pending','retry_wait','succeeded')",
+            name="ck_collection_tag_mutations_state",
+        ),
+        CheckConstraint(
+            f"octet_length(tag) > 0 AND octet_length(tag) <= {COLLECTION_TAG_UTF8_BYTES_MAX}",
+            name="ck_collection_tag_mutations_tag_bytes",
+        ),
+        CheckConstraint(
+            f"expected_revision >= 1 AND expected_revision < {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_mutations_expected_revision",
+        ),
+        CheckConstraint(
+            "(changed AND result_revision = expected_revision + 1) OR "
+            "(NOT changed AND result_revision = expected_revision)",
+            name="ck_collection_tag_mutations_result_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_sha256", 64),
+            name="ck_collection_tag_mutations_tag_sha256",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("expected_tag_set_identity", 64),
+            name="ck_collection_tag_mutations_expected_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("result_tag_set_identity", 64),
+            name="ck_collection_tag_mutations_result_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("result_head_identity", 64),
+            name="ck_collection_tag_mutations_head_identity",
+        ),
+        Index("ix_collection_tag_mutations_work", "state", "updated_at", "collection_id"),
+    )
 
 
 class CollectionDeletionRecord(Base):
@@ -799,6 +911,11 @@ class CollectionArchiveCopyRecord(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    tag_publication: Mapped[CollectionTagPublicationRecord | None] = relationship(
+        back_populates="copy",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class CollectionDescriptionPublicationRecord(Base):
@@ -871,6 +988,184 @@ class CollectionDescriptionPublicationRecord(Base):
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(
         back_populates="description_publication"
+    )
+
+
+class CollectionTagPublicationRecord(Base):
+    __tablename__ = "collection_tag_publications"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    desired_revision: Mapped[int] = mapped_column(BigInteger)
+    desired_tag_set_identity: Mapped[str] = mapped_column(String(64))
+    desired_head_identity: Mapped[str] = mapped_column(String(64))
+    published_revision: Mapped[int] = mapped_column(BigInteger, default=0)
+    published_tag_set_identity: Mapped[str] = mapped_column(
+        String(64), default=lambda: collection_tag_set_identity(None)
+    )
+    published_head_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    state: Mapped[str] = mapped_column(String)
+    next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    head_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    head_provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    head_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    head_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            f"desired_revision >= 1 AND desired_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_publications_desired_revision",
+        ),
+        CheckConstraint(
+            f"published_revision >= 0 AND published_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_publications_published_revision",
+        ),
+        CheckConstraint(
+            "state IN ('pending','publishing_nodes','publishing_head','published','retry_wait')",
+            name="ck_collection_tag_publications_state",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("desired_tag_set_identity", 64),
+            name="ck_collection_tag_publications_desired_set_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("desired_head_identity", 64),
+            name="ck_collection_tag_publications_desired_head_identity",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("published_tag_set_identity", 64),
+            name="ck_collection_tag_publications_published_set_identity",
+        ),
+        Index(
+            "ix_collection_tag_publications_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+        ),
+    )
+
+    copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="tag_publication")
+
+
+class CollectionTagPublicationFrontierRecord(Base):
+    __tablename__ = "collection_tag_publication_frontier"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    head_identity: Mapped[str] = mapped_column(String(64), primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expanded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    published: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_tag_publications.collection_id", "collection_tag_publications.store"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("head_identity", 64),
+            name="ck_collection_tag_publication_frontier_head",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_tag_publication_frontier_node",
+        ),
+        Index(
+            "ix_collection_tag_publication_frontier_work",
+            "collection_id",
+            "store",
+            "head_identity",
+            "published",
+            "expanded",
+            "node_digest",
+        ),
+    )
+
+
+class CollectionTagPublishedNodeRecord(Base):
+    __tablename__ = "collection_tag_published_nodes"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    object_path: Mapped[str] = mapped_column(String)
+    provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    stored_bytes: Mapped[int] = mapped_column(BigInteger)
+    stored_sha256: Mapped[str] = mapped_column(String(64))
+    published_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_tag_published_nodes_digest",
+        ),
+        CheckConstraint("stored_bytes > 0", name="ck_collection_tag_published_nodes_bytes"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("stored_sha256", 64),
+            name="ck_collection_tag_published_nodes_stored_sha256",
+        ),
+    )
+
+
+class CollectionTagNodeGcRecord(Base):
+    """One fenced exact obsolete-node reclamation effect."""
+
+    __tablename__ = "collection_tag_node_gc"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expected_head_identity: Mapped[str] = mapped_column(String(64))
+    object_path: Mapped[str] = mapped_column(String)
+    provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="pending")
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store", "node_digest"],
+            [
+                "collection_tag_published_nodes.collection_id",
+                "collection_tag_published_nodes.store",
+                "collection_tag_published_nodes.node_digest",
+            ],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_tag_node_gc_digest",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("expected_head_identity", 64),
+            name="ck_collection_tag_node_gc_head",
+        ),
+        CheckConstraint(
+            "state IN ('pending','deleting','retry_wait')",
+            name="ck_collection_tag_node_gc_state",
+        ),
+        Index(
+            "ix_collection_tag_node_gc_due",
+            "state",
+            "next_attempt_at",
+            "collection_id",
+            "store",
+            "node_digest",
+        ),
     )
 
 
@@ -1118,6 +1413,8 @@ class CatalogEventRecord(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     description_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     description_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    tag_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     committed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     published: Mapped[bool] = mapped_column(
         Boolean,
@@ -1144,6 +1441,14 @@ class CatalogEventRecord(Base):
             f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
             name="ck_catalog_events_description_revision",
         ),
+        CheckConstraint(
+            f"tag_revision >= 1 AND tag_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_catalog_events_tag_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_set_identity", 64),
+            name="ck_catalog_events_tag_set_identity",
+        ),
     )
 
 
@@ -1165,22 +1470,24 @@ class CatalogSyncStateRecord(Base):
     )
 
 
-class CatalogEventAccessGroupRecord(Base):
-    __tablename__ = "catalog_event_access_groups"
+class CatalogEventTagRecord(Base):
+    __tablename__ = "catalog_event_tags"
 
     sequence: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     phase: Mapped[str] = mapped_column(String, primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tag_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     __table_args__ = (
         ForeignKeyConstraint(["sequence"], ["catalog_events.sequence"], ondelete="CASCADE"),
+        CheckConstraint("phase IN ('before', 'after')", name="ck_catalog_event_tags_phase"),
         CheckConstraint(
-            "phase IN ('before', 'after')", name="ck_catalog_event_access_groups_phase"
+            _fixed_lowercase_integer_check("tag_sha256", 64),
+            name="ck_catalog_event_tags_sha256",
         ),
         Index(
-            "ix_catalog_event_access_groups_visibility",
+            "ix_catalog_event_tags_visibility",
             "phase",
-            "group_id",
+            "tag_sha256",
             "sequence",
         ),
     )
@@ -1845,6 +2152,17 @@ class CollectionUploadRecord(Base):
     description_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     description_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     description_publication_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tag_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tag_staging_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_staging_set_identity: Mapped[str] = mapped_column(
+        String(64),
+        default=lambda: collection_tag_set_identity(None),
+        server_default=text(f"'{collection_tag_set_identity(None)}'"),
+    )
+    tag_root_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_set_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_head_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tag_publication_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -2005,7 +2323,7 @@ class CollectionUploadRecord(Base):
         ),
         CheckConstraint(
             "catalog_phase IN ("
-            "'content-identity','inventory-identity','collection','files','journals',"
+            "'content-identity','inventory-identity','collection','tags','files','journals',"
             "'provenance-relations','bindings','archive-objects','file-objects',"
             "'terminal','complete')",
             name="ck_collection_uploads_catalog_phase",
@@ -2060,8 +2378,89 @@ class CollectionUploadRecord(Base):
             f"{MAX_COLLECTION_DESCRIPTION_REVISION} AND description_identity IS NOT NULL",
             name="ck_collection_uploads_description_state",
         ),
+        CheckConstraint(
+            "tag_revision IS NULL AND tag_set_identity IS NULL AND tag_head_identity IS NULL OR "
+            f"tag_revision >= 1 AND tag_revision <= {MAX_COLLECTION_TAG_REVISION} "
+            "AND tag_set_identity IS NOT NULL AND tag_head_identity IS NOT NULL",
+            name="ck_collection_uploads_tag_state",
+        ),
+        CheckConstraint(
+            "tag_root_sha256 IS NULL OR " + _fixed_lowercase_integer_check("tag_root_sha256", 64),
+            name="ck_collection_uploads_tag_root",
+        ),
+        CheckConstraint(
+            "tag_staging_root_sha256 IS NULL OR "
+            + _fixed_lowercase_integer_check("tag_staging_root_sha256", 64),
+            name="ck_collection_uploads_tag_staging_root",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_staging_set_identity", 64),
+            name="ck_collection_uploads_tag_staging_identity",
+        ),
         CheckConstraint("archive_attempt_count >= 0", name="ck_collection_uploads_attempt_count"),
         {"sqlite_autoincrement": True},
+    )
+
+
+class CollectionUploadTagRecord(Base):
+    __tablename__ = "collection_upload_tags"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    tag_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tag: Mapped[str] = mapped_column(Text)
+    added_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"], ["collection_uploads.collection_id"], ondelete="CASCADE"
+        ),
+        CheckConstraint(
+            f"octet_length(tag) > 0 AND octet_length(tag) <= {COLLECTION_TAG_UTF8_BYTES_MAX}",
+            name="ck_collection_upload_tags_bytes",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("tag_sha256", 64),
+            name="ck_collection_upload_tags_sha256",
+        ),
+        UniqueConstraint("collection_id", "tag", name="uq_collection_upload_tags_value"),
+    )
+
+
+class CollectionUploadTagPublicationFrontierRecord(Base):
+    __tablename__ = "collection_upload_tag_publication_frontier"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expanded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    published: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"], ["collection_uploads.collection_id"], ondelete="CASCADE"
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_upload_tag_frontier_digest",
+        ),
+        CheckConstraint(
+            "published = false AND object_path IS NULL AND stored_bytes IS NULL "
+            "AND stored_sha256 IS NULL AND published_at IS NULL OR "
+            "published = true AND object_path IS NOT NULL AND stored_bytes > 0 "
+            "AND stored_sha256 IS NOT NULL AND published_at IS NOT NULL",
+            name="ck_collection_upload_tag_frontier_receipt",
+        ),
+        Index(
+            "ix_collection_upload_tag_frontier_work",
+            "collection_id",
+            "published",
+            "expanded",
+            "node_digest",
+        ),
     )
 
 

@@ -5,15 +5,17 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
-    Field,
     GetJsonSchemaHandler,
     RootModel,
+    StringConstraints,
     model_validator,
 )
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
+from riverhog_protocol import validate_collection_tag
 from riverhog_protocol.paths import normalize_collection_id
 
 ALL_PERMISSIONS: Literal["*"] = "*"
@@ -30,9 +32,7 @@ COLLECTION_TRANSFORMS_CONTROL: Literal["collection-transforms:control"] = (
 COLLECTION_TRANSFORMS_EXECUTE: Literal["collection-transforms:execute"] = (
     "collection-transforms:execute"
 )
-COLLECTION_ACCESS_GROUPS_MANAGE: Literal["collection-access-groups:manage"] = (
-    "collection-access-groups:manage"
-)
+COLLECTION_TAGS_MANAGE: Literal["collection-tags:manage"] = "collection-tags:manage"
 COLLECTIONS_DELETE: Literal["collections:delete"] = "collections:delete"
 ARCHIVES_READ: Literal["archives:read"] = "archives:read"
 ARCHIVES_MANAGE: Literal["archives:manage"] = "archives:manage"
@@ -44,7 +44,7 @@ PROVENANCE_READ: Literal["provenance:read"] = "provenance:read"
 PROVENANCE_EXPORT: Literal["provenance:export"] = "provenance:export"
 
 COLLECTION_PREFIX = "collection:"
-GROUP_PREFIX = "group:"
+TAG_PREFIX = "tag:"
 
 type ApplicationPermission = Literal[
     "*",
@@ -54,7 +54,7 @@ type ApplicationPermission = Literal[
     "collection-descriptions:manage",
     "collection-transforms:control",
     "collection-transforms:execute",
-    "collection-access-groups:manage",
+    "collection-tags:manage",
     "collections:delete",
     "archives:read",
     "archives:manage",
@@ -65,9 +65,26 @@ type ApplicationPermission = Literal[
     "provenance:read",
     "provenance:export",
 ]
+
+
+def validate_application_resource(value: str) -> str:
+    if type(value) is not str:
+        raise ValueError("application resource must be a string")
+    if value == ALL_RESOURCES:
+        return value
+    if value.startswith(COLLECTION_PREFIX):
+        collection_resource(value.removeprefix(COLLECTION_PREFIX))
+        return value
+    if value.startswith(TAG_PREFIX):
+        tag_resource(value.removeprefix(TAG_PREFIX))
+        return value
+    raise ValueError("application resource must be *, tag:<tag>, or collection:<id>")
+
+
 type ApplicationResource = Annotated[
     str,
-    Field(pattern=r"^(?:\*|group:[0-9a-f]{64}|collection:[1-9][0-9]*)$"),
+    StringConstraints(pattern=r"^(?:\*|tag:.+|collection:[1-9][0-9]*)$"),
+    AfterValidator(validate_application_resource),
 ]
 
 APPLICATION_PERMISSIONS = frozenset(
@@ -78,7 +95,7 @@ APPLICATION_PERMISSIONS = frozenset(
         COLLECTION_DESCRIPTIONS_MANAGE,
         COLLECTION_TRANSFORMS_CONTROL,
         COLLECTION_TRANSFORMS_EXECUTE,
-        COLLECTION_ACCESS_GROUPS_MANAGE,
+        COLLECTION_TAGS_MANAGE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
         ARCHIVES_MANAGE,
@@ -95,6 +112,7 @@ COLLECTION_SCOPED_PERMISSIONS = frozenset(
     {
         CATALOG_READ,
         COLLECTION_DESCRIPTIONS_MANAGE,
+        COLLECTION_TAGS_MANAGE,
         RETRIEVAL_MANAGE,
         COLLECTIONS_DELETE,
         ARCHIVES_READ,
@@ -226,18 +244,12 @@ def collection_resource(collection_id: int | str) -> str:
     return f"{COLLECTION_PREFIX}{normalized}"
 
 
-def group_resource(group_id: str) -> str:
-    if not isinstance(group_id, str) or len(group_id) != 64:
-        raise ApplicationAccessError("collection access group id must be lowercase SHA-256")
+def tag_resource(tag: str) -> str:
     try:
-        int(group_id, 16)
+        canonical = validate_collection_tag(tag)
     except ValueError as exc:
-        raise ApplicationAccessError(
-            "collection access group id must be lowercase SHA-256"
-        ) from exc
-    if group_id != group_id.casefold():
-        raise ApplicationAccessError("collection access group id must be lowercase SHA-256")
-    return f"{GROUP_PREFIX}{group_id}"
+        raise ApplicationAccessError(str(exc)) from exc
+    return f"{TAG_PREFIX}{canonical}"
 
 
 def permission_resources(access: Iterable[ApplicationAccess], permission: str) -> set[str]:
@@ -272,8 +284,10 @@ def _normalize_access_fields(
     if normalized_permission == ALL_PERMISSIONS and normalized_resource != ALL_RESOURCES:
         raise ApplicationAccessError("wildcard permission requires wildcard resource access")
     if normalized_permission == COLLECTIONS_CREATE:
-        if normalized_resource != ALL_RESOURCES:
-            raise ApplicationAccessError("collections:create does not accept a scoped resource")
+        if normalized_resource != ALL_RESOURCES and not normalized_resource.startswith(TAG_PREFIX):
+            raise ApplicationAccessError(
+                "collections:create accepts only wildcard or tag resources"
+            )
     elif (
         normalized_permission not in COLLECTION_SCOPED_PERMISSIONS
         and normalized_resource != ALL_RESOURCES
@@ -302,7 +316,7 @@ def _grant_relationship_schemas() -> list[dict[str, Any]]:
             "required": ["permission"],
             "properties": {
                 "permission": {"const": COLLECTIONS_CREATE},
-                "resource": {"const": ALL_RESOURCES},
+                "resource": {"type": "string", "pattern": r"^(?:\*|tag:.+)$"},
             },
         },
         {
@@ -311,10 +325,7 @@ def _grant_relationship_schemas() -> list[dict[str, Any]]:
                 "permission": {"enum": collection_scoped},
                 "resource": {
                     "type": "string",
-                    "pattern": (
-                        r"^(?:\*|group:[0-9a-f]{64}|"
-                        r"collection:[1-9][0-9]*)$"
-                    ),
+                    "pattern": (r"^(?:\*|tag:.+|collection:[1-9][0-9]*)$"),
                 },
             },
         },
@@ -329,17 +340,13 @@ def _grant_relationship_schemas() -> list[dict[str, Any]]:
 
 
 def _normalize_resource(value: str) -> str:
-    candidate = value.strip()
-    folded = candidate.casefold()
-    if folded == ALL_RESOURCES:
+    if value == ALL_RESOURCES:
         return ALL_RESOURCES
-    if folded.startswith(GROUP_PREFIX):
-        return group_resource(candidate[len(GROUP_PREFIX) :])
-    if folded.startswith(COLLECTION_PREFIX):
-        return collection_resource(candidate[len(COLLECTION_PREFIX) :])
-    raise ApplicationAccessError(
-        "application resources must be *, group:<group-id>, or collection:<id>"
-    )
+    if value.startswith(TAG_PREFIX):
+        return tag_resource(value[len(TAG_PREFIX) :])
+    if value.startswith(COLLECTION_PREFIX):
+        return collection_resource(value[len(COLLECTION_PREFIX) :])
+    raise ApplicationAccessError("application resource must be *, tag:<tag>, or collection:<id>")
 
 
 __all__ = [
@@ -360,7 +367,7 @@ __all__ = [
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",
-    "COLLECTION_ACCESS_GROUPS_MANAGE",
+    "COLLECTION_TAGS_MANAGE",
     "COLLECTION_TRANSFORMS_CONTROL",
     "COLLECTION_TRANSFORMS_EXECUTE",
     "EVENTS_READ",
@@ -370,12 +377,13 @@ __all__ = [
     "PROVENANCE_READ",
     "QUOTAS_MANAGE",
     "RETRIEVAL_MANAGE",
-    "GROUP_PREFIX",
+    "TAG_PREFIX",
     "access_covers",
     "collection_resource",
     "normalize_access",
     "permission_covers",
     "permission_resources",
     "resource_covers",
-    "group_resource",
+    "tag_resource",
+    "validate_application_resource",
 ]

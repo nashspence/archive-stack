@@ -10,7 +10,7 @@ from riverhog_cli.main import app
 from typer.testing import CliRunner
 
 runner = CliRunner()
-GROUP_RESOURCE = f"group:{'a' * 64}"
+TAG_RESOURCE = "tag:photos"
 
 
 def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
@@ -57,8 +57,8 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
         ) -> dict[str, object]:
             assert app_name == "local"
             assert access == [
-                {"permission": "catalog:read", "resource": GROUP_RESOURCE},
-                {"permission": "retrieval:manage", "resource": GROUP_RESOURCE},
+                {"permission": "catalog:read", "resource": TAG_RESOURCE},
+                {"permission": "retrieval:manage", "resource": TAG_RESOURCE},
             ]
             assert expires_in_seconds == 2_592_000
             return {
@@ -83,9 +83,9 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             "create",
             "local",
             "--allow",
-            f"catalog:read={GROUP_RESOURCE}",
+            f"catalog:read={TAG_RESOURCE}",
             "--allow",
-            f"retrieval:manage={GROUP_RESOURCE}",
+            f"retrieval:manage={TAG_RESOURCE}",
             "--expires-in",
             "30d",
             "--json",
@@ -102,9 +102,9 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
             "create",
             "local",
             "--allow",
-            f"catalog:read={GROUP_RESOURCE}",
+            f"catalog:read={TAG_RESOURCE}",
             "--allow",
-            f"retrieval:manage={GROUP_RESOURCE}",
+            f"retrieval:manage={TAG_RESOURCE}",
             "--expires-in",
             "30d",
         ],
@@ -157,7 +157,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "app": "local",
                 "key_id": "key-one",
                 "permission": None,
-                "resource": GROUP_RESOURCE,
+                "resource": TAG_RESOURCE,
                 "active": True,
             }
             return {
@@ -167,7 +167,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "key_id": "key-one",
                         "key_status": "active",
                         "permission": "catalog:read",
-                        "resource": GROUP_RESOURCE,
+                        "resource": TAG_RESOURCE,
                     },
                 ],
                 "page_size": 25,
@@ -214,7 +214,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "local",
                 "key-one",
                 "catalog:read",
-                GROUP_RESOURCE,
+                TAG_RESOURCE,
             )
             return {"app": app_name, "key_id": key_id, "access": []}
 
@@ -232,7 +232,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--key",
             "key-one",
             "--resource",
-            GROUP_RESOURCE,
+            TAG_RESOURCE,
             "--active",
             "--query",
             "photos",
@@ -261,7 +261,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     assert access.exit_code == 0
     assert "local/key-one" in access.stdout
     assert "permission=catalog:read" in access.stdout
-    assert f"resource={GROUP_RESOURCE}" in access.stdout
+    assert f"resource={TAG_RESOURCE}" in access.stdout
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
 
@@ -277,7 +277,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--key",
             "key-one",
             "--resource",
-            GROUP_RESOURCE,
+            TAG_RESOURCE,
             "--active",
             "--query",
             "photos",
@@ -337,7 +337,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "--key",
             "key-one",
             "--resource",
-            GROUP_RESOURCE,
+            TAG_RESOURCE,
             "--active",
             "--query",
             "photos",
@@ -351,12 +351,12 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "key",
             "access",
             "remove",
-            f"local::key-one::catalog:read={GROUP_RESOURCE}",
+            f"local::key-one::catalog:read={TAG_RESOURCE}",
             "--json",
         ],
     )
     assert selectors.exit_code == 0
-    assert selectors.stdout == f"local::key-one::catalog:read={GROUP_RESOURCE}\n"
+    assert selectors.stdout == f"local::key-one::catalog:read={TAG_RESOURCE}\n"
     assert removed.exit_code == 0
     assert json.loads(removed.stdout)["access"] == []
     removed_human = runner.invoke(
@@ -366,7 +366,7 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
             "key",
             "access",
             "remove",
-            f"local::key-one::catalog:read={GROUP_RESOURCE}",
+            f"local::key-one::catalog:read={TAG_RESOURCE}",
         ],
     )
     assert removed_human.exit_code == 0
@@ -422,7 +422,7 @@ def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monk
 
 
 def test_app_key_policy_mutations_have_human_json_parity(monkeypatch) -> None:
-    access = [{"permission": "catalog:read", "resource": GROUP_RESOURCE}]
+    access = [{"permission": "catalog:read", "resource": TAG_RESOURCE}]
     quota = {
         "app": "local",
         "key_id": "key-one",
@@ -485,7 +485,7 @@ def test_app_key_policy_mutations_have_human_json_parity(monkeypatch) -> None:
                 "local",
                 "key-one",
                 "--allow",
-                f"catalog:read={GROUP_RESOURCE}",
+                f"catalog:read={TAG_RESOURCE}",
             ],
             "key-one",
         ),
@@ -497,7 +497,7 @@ def test_app_key_policy_mutations_have_human_json_parity(monkeypatch) -> None:
                 "add",
                 "local",
                 "key-one",
-                f"catalog:read={GROUP_RESOURCE}",
+                f"catalog:read={TAG_RESOURCE}",
             ],
             "key-one",
         ),

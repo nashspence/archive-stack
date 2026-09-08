@@ -18,12 +18,19 @@ CREATE TABLE desired_collections (
 	inventory_identity TEXT NOT NULL,
 	inventory_cursor TEXT,
 	inventory_complete INTEGER DEFAULT 0 NOT NULL,
+	tag_revision INTEGER NOT NULL,
+	tag_set_identity TEXT NOT NULL,
+	tag_page_token TEXT,
+	tags_complete INTEGER DEFAULT 0 NOT NULL,
 	created_at TEXT NOT NULL,
 	remote_deleted INTEGER DEFAULT 0 NOT NULL,
 	PRIMARY KEY (collection_id),
 	CONSTRAINT ck_desired_collections_id CHECK (collection_id > 0),
 	CONSTRAINT ck_desired_collections_etag CHECK (length(inventory_identity) = 64 AND inventory_identity = lower(inventory_identity) AND inventory_identity NOT GLOB '*[^0-9a-f]*'),
 	CONSTRAINT ck_desired_collections_inventory_complete CHECK (inventory_complete IN (0, 1)),
+	CONSTRAINT ck_desired_collections_tag_revision CHECK (tag_revision >= 1),
+	CONSTRAINT ck_desired_collections_tag_set_identity CHECK (length(tag_set_identity) = 64 AND tag_set_identity = lower(tag_set_identity) AND tag_set_identity NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT ck_desired_collections_tags_complete CHECK (tags_complete IN (0, 1)),
 	CONSTRAINT ck_desired_collections_remote_deleted CHECK (remote_deleted IN (0, 1))
 )
     """.strip(),
@@ -34,6 +41,14 @@ CREATE TABLE retrieval_jobs (
 	updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested', 'ready', 'completed', 'expired', 'failed', 'canceled'))
+)
+    """.strip(),
+    """
+CREATE TABLE desired_collection_tags (
+	collection_id INTEGER NOT NULL,
+	tag TEXT NOT NULL,
+	PRIMARY KEY (collection_id, tag),
+	FOREIGN KEY(collection_id) REFERENCES desired_collections (collection_id) ON DELETE CASCADE
 )
     """.strip(),
     """

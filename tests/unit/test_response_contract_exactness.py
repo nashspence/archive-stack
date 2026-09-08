@@ -30,8 +30,10 @@ from riverhog_api.schemas.provenance import (
 )
 from riverhog_api.schemas.retrieval import RetrievalJobOut, RetrievalPlanFileOut
 from riverhog_api.schemas.search import SearchFileOut
+from riverhog_protocol import collection_tag_set_identity
 
 DESCRIPTION_IDENTITY = "d" * 64
+EMPTY_TAG_SET_IDENTITY = collection_tag_set_identity(None)
 
 
 def _collection_deletion(status: str, challenge: str | None, blockers: list[str]) -> dict[str, Any]:
@@ -237,6 +239,10 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         "description_revision": None,
         "description_identity": None,
         "description_publication": "pending",
+        "tag_revision": None,
+        "tag_set_identity": None,
+        "tag_publication": "pending",
+        "tag_count": 0,
         "provenance_mode": "omitted",
         "provenance_identity": None,
         "content_identity": None,
@@ -379,6 +385,9 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         {
             "content_identity": "a" * 64,
             "archive_root_sha256": "b" * 64,
+            "tag_revision": 1,
+            "tag_set_identity": EMPTY_TAG_SET_IDENTITY,
+            "tag_publication": "current",
             "collection": {
                 "id": 1,
                 "created_at": "2026-08-25T00:00:00.000000Z",
@@ -386,6 +395,9 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
                 "description_revision": 0,
                 "description_identity": DESCRIPTION_IDENTITY,
                 "description_publication": "not_required",
+                "tag_revision": 1,
+                "tag_set_identity": EMPTY_TAG_SET_IDENTITY,
+                "tag_publication": "current",
                 "content_identity": "a" * 64,
                 "archive_root_sha256": "b" * 64,
                 "encryption_format": "age-x25519/v1",
@@ -539,6 +551,10 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
         "description_revision": None,
         "description_identity": None,
         "description_publication": "pending",
+        "tag_revision": None,
+        "tag_set_identity": None,
+        "tag_publication": "pending",
+        "tag_count": 0,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
@@ -608,6 +624,10 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
         "description_revision": None,
         "description_identity": None,
         "description_publication": "pending",
+        "tag_revision": None,
+        "tag_set_identity": None,
+        "tag_publication": "pending",
+        "tag_count": 0,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
@@ -643,6 +663,10 @@ def test_upload_session_list_complete_states_require_complete_custody(
         "description_revision": None,
         "description_identity": None,
         "description_publication": "pending",
+        "tag_revision": None,
+        "tag_set_identity": None,
+        "tag_publication": "pending",
+        "tag_count": 0,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",

@@ -23,6 +23,7 @@ from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadUnitWorkDocument,
@@ -42,6 +43,8 @@ class _CustodyApi:
         self.completed: dict[str, object] | None = None
         self.heartbeats = 0
         self.session_calls = 0
+        self.initial_tags: tuple[str, ...] = ()
+        self.tag_batches: list[tuple[str, ...]] = []
 
     def spawn(self) -> _CustodyApi:
         return self
@@ -55,6 +58,7 @@ class _CustodyApi:
         **kwargs: object,
     ) -> dict[str, object]:
         assert kwargs["custody_mode"] == "custody-transfer"
+        self.initial_tags = tuple(str(tag) for tag in kwargs.get("tags", ()))
         self.session_calls += 1
         return {
             "collection_id": 42,
@@ -65,6 +69,15 @@ class _CustodyApi:
                 "raw_part_plaintext_bytes": 65536,
             },
         }
+
+    def add_collection_upload_session_tags(
+        self,
+        _collection_id: int,
+        tags: Sequence[str],
+    ) -> dict[str, object]:
+        batch = tuple(tags)
+        self.tag_batches.append(batch)
+        return {"collection_id": 42, "added": len(batch), "tag_count": len(batch)}
 
     def heartbeat_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
         self.heartbeats += 1
@@ -160,6 +173,29 @@ def _producer(api: _CustodyApi) -> IncrementalCollectionProducer:
         source_event_id="fixture-execution",
         idempotency_key="fixture-execution",
     )
+
+
+def test_incremental_producer_stages_unbounded_logical_tags_in_bounded_requests() -> None:
+    api = _CustodyApi()
+    tags = tuple(f"classification/{index:04d}" for index in range(205))
+
+    producer = IncrementalCollectionProducer(
+        api,  # type: ignore[arg-type]
+        producer_app="fixture-target",
+        adapter_id="fixture-target/v1",
+        adapter_version="1.0.0",
+        ingest_source="transform:fixture",
+        source_event_id="fixture-execution",
+        tags=tags,
+    )
+    producer.stop()
+
+    assert api.initial_tags == tags[:COLLECTION_TAG_REQUEST_MEMBERS_MAX]
+    assert api.tag_batches == [
+        tags[COLLECTION_TAG_REQUEST_MEMBERS_MAX : 2 * COLLECTION_TAG_REQUEST_MEMBERS_MAX],
+        tags[2 * COLLECTION_TAG_REQUEST_MEMBERS_MAX :],
+    ]
+    assert all(len(batch) <= COLLECTION_TAG_REQUEST_MEMBERS_MAX for batch in api.tag_batches)
 
 
 def test_incremental_producer_resumes_without_rereading_custodied_local_bytes(

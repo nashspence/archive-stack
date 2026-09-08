@@ -6,11 +6,14 @@ from http_api_contracts import BrowsePageToken, CanonicalVisibleText
 from lifecycle_events import EventContext
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
     MAX_COLLECTION_DESCRIPTION_REVISION,
+    MAX_COLLECTION_TAG_REVISION,
     ArchiveStoreName,
     CollectionDescription,
     CollectionId,
     CollectionSort,
+    CollectionTag,
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
@@ -127,6 +130,19 @@ _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
             }
         },
     },
+]
+
+CollectionTagSelectorBatch = Annotated[
+    list[CollectionTag],
+    Field(
+        max_length=COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-exact-tag-selector-batch",
+            }
+        },
+    ),
 ]
 CollectionUploadArchivePhase = Literal[
     "planning",
@@ -345,6 +361,17 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     idempotency_key: CanonicalVisibleText = Field(max_length=200)
     ingest_source: str | None = None
     description: CollectionDescription | None = None
+    tags: list[CollectionTag] = Field(
+        default_factory=list,
+        max_length=COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-upload-staging-step; collection-tag-set-is-unbounded",
+                "progression": "repeat-request",
+            }
+        },
+    )
     archive_store: ArchiveStoreName | None = None
     event_context: EventContext | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
@@ -353,6 +380,8 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
 
     @model_validator(mode="after")
     def validate_provenance_choice(self) -> CreateOrResumeCollectionUploadSessionRequest:
+        if len(set(self.tags)) != len(self.tags):
+            raise ValueError("initial collection tags must not contain duplicates")
         if self.provenance_mode == "captured":
             if self.provenance_omission_reason is not None:
                 raise ValueError("captured provenance cannot have an omission reason")
@@ -367,6 +396,32 @@ class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocum
     pass
 
 
+class AddCollectionUploadTagsRequest(RiverhogModel):
+    tags: list[CollectionTag] = Field(
+        min_length=1,
+        max_length=COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "segmented_no_total_max",
+                "reason": "bounded-upload-staging-step; collection-tag-set-is-unbounded",
+                "progression": "repeat-request",
+            }
+        },
+    )
+
+    @model_validator(mode="after")
+    def validate_unique(self) -> AddCollectionUploadTagsRequest:
+        if len(set(self.tags)) != len(self.tags):
+            raise ValueError("collection upload tags must not contain duplicates")
+        return self
+
+
+class CollectionUploadTagsOut(RiverhogModel):
+    collection_id: CollectionId
+    added: int = Field(ge=0, strict=True)
+    tag_count: int = Field(ge=0, strict=True)
+
+
 class CollectionSummaryOut(RiverhogModel):
     id: CollectionId
     created_at: str
@@ -374,6 +429,9 @@ class CollectionSummaryOut(RiverhogModel):
     description_revision: int = Field(ge=0, le=MAX_COLLECTION_DESCRIPTION_REVISION, strict=True)
     description_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     description_publication: Literal["not_required", "current", "reconciling"]
+    tag_revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tag_publication: Literal["current", "reconciling"]
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
@@ -396,6 +454,55 @@ class CollectionDescriptionOut(RiverhogModel):
     description_publication: Literal["not_required", "current", "reconciling"]
 
 
+class CollectionTagMutationRequest(RiverhogModel):
+    operation_id: CanonicalVisibleText = Field(max_length=256)
+    tag: CollectionTag
+    expected_revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    expected_tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CollectionTagMutationOut(RiverhogModel):
+    collection_id: CollectionId
+    operation_id: CanonicalVisibleText
+    action: Literal["add", "remove"]
+    tag: CollectionTag
+    changed: bool
+    revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    root_sha256: str | None = Field(pattern=r"^[0-9a-f]{64}$")
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    head_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    state: Literal["pending", "retry_wait", "succeeded"]
+
+
+class CollectionTagListOut(RiverhogModel):
+    collection_id: CollectionId
+    revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_size: int = Field(ge=1, le=100, strict=True)
+    next_page_token: BrowsePageToken | None
+    tags: list[CollectionTag]
+
+
+class CollectionTagMembershipOut(RiverhogModel):
+    collection_id: CollectionId
+    revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tag: CollectionTag
+    present: bool
+
+
+class TagSummaryOut(RiverhogModel):
+    tag: CollectionTag
+    collection_count: int = Field(ge=1, strict=True)
+
+
+class TagListOut(RiverhogModel):
+    page_size: int = Field(ge=1, le=100, strict=True)
+    next_page_token: BrowsePageToken | None
+    query: str | None
+    tags: list[TagSummaryOut]
+
+
 class ListCollectionsResponse(RiverhogModel):
     page_size: int = Field(ge=1, le=100)
     next_page_token: BrowsePageToken | None
@@ -404,6 +511,7 @@ class ListCollectionsResponse(RiverhogModel):
     query: str | None
     encryption_format: str | None
     passphrase_id: str | None
+    tags: CollectionTagSelectorBatch
     collections: list[CollectionSummaryOut]
 
 
@@ -560,6 +668,12 @@ class CollectionUploadListItemOut(RiverhogModel):
     )
     description_identity: str | None = Field(pattern=r"^[0-9a-f]{64}$")
     description_publication: Literal["pending", "not_required", "current"]
+    tag_revision: int | None = Field(
+        default=None, ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True
+    )
+    tag_set_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    tag_publication: Literal["pending", "current"]
+    tag_count: int = Field(ge=0, strict=True)
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
@@ -622,6 +736,9 @@ class CollectionUploadSessionOut(RiverhogModel):
                             "archive_root_sha256": {"type": "string"},
                             "registration_constraints": {"type": "null"},
                             "collection": {"type": "object"},
+                            "tag_revision": {"type": "integer"},
+                            "tag_set_identity": {"type": "string"},
+                            "tag_publication": {"const": "current"},
                         }
                     },
                     "else": {
@@ -630,6 +747,15 @@ class CollectionUploadSessionOut(RiverhogModel):
                             "archive_root_sha256": {"type": "null"},
                             "registration_constraints": {"type": "object"},
                             "collection": {"type": "null"},
+                        }
+                    },
+                },
+                {
+                    "if": {"properties": {"tag_publication": {"const": "current"}}},
+                    "then": {
+                        "properties": {
+                            "tag_revision": {"type": "integer"},
+                            "tag_set_identity": {"type": "string"},
                         }
                     },
                 },
@@ -651,6 +777,12 @@ class CollectionUploadSessionOut(RiverhogModel):
     )
     description_identity: str | None = Field(pattern=r"^[0-9a-f]{64}$")
     description_publication: Literal["pending", "not_required", "current"]
+    tag_revision: int | None = Field(
+        default=None, ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True
+    )
+    tag_set_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    tag_publication: Literal["pending", "current"]
+    tag_count: int = Field(ge=0, strict=True)
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -698,6 +830,9 @@ class CollectionUploadSessionOut(RiverhogModel):
             or self.archive_root_sha256 is None
             or self.registration_constraints is not None
             or self.collection is None
+            or self.tag_revision is None
+            or self.tag_set_identity is None
+            or self.tag_publication != "current"
         ):
             raise ValueError("finalized upload sessions require immutable collection evidence")
         if self.state != "finalized" and (
@@ -707,6 +842,11 @@ class CollectionUploadSessionOut(RiverhogModel):
             or self.collection is not None
         ):
             raise ValueError("nonfinal upload sessions require only registration constraints")
+        if self.tag_publication == "current":
+            if self.tag_revision is None or self.tag_set_identity is None:
+                raise ValueError("current collection tags require their exact authority")
+        elif (self.tag_revision is None) != (self.tag_set_identity is None):
+            raise ValueError("pending collection tag authority must be complete when exposed")
         if self.state == "finalized":
             if self.provenance_mode in {"captured", "mixed"}:
                 if self.provenance_identity is None:

@@ -13,6 +13,7 @@ from riverhog_recover.recovery import (
     read_recovery_descriptor,
     recover_archive,
     recover_collection_description,
+    recover_collection_tags,
 )
 
 
@@ -28,10 +29,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("archive", type=Path, help="downloaded opaque archive directory")
     parser.add_argument("output", type=Path, nargs="?", help="new directory for recovered files")
-    parser.add_argument(
+    metadata = parser.add_mutually_exclusive_group()
+    metadata.add_argument(
         "--description-only",
         action="store_true",
         help="validate and emit only description.json.age without reading collection payloads",
+    )
+    metadata.add_argument(
+        "--tags-only",
+        action="store_true",
+        help="validate and stream the exact tag authority without reading collection payloads",
     )
     parser.add_argument(
         "--passphrases-file",
@@ -82,8 +89,53 @@ def main() -> None:
                 flush=True,
             )
             return
+        if args.tags_only:
+            if args.output is not None:
+                raise RecoveryError("output must be omitted with --tags-only")
+            recovered = recover_collection_tags(
+                args.archive,
+                passphrases=passphrases,
+                age_command=args.age_command,
+            )
+            print(
+                json.dumps(
+                    {
+                        "format": "riverhog-recovered-collection-tags/v1",
+                        "record": "authority",
+                        "revision": recovered.head.revision,
+                        "tag_set_identity": recovered.head.tag_set_identity,
+                        "head_identity": recovered.head.head_identity,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            count = 0
+            for tag in recovered.iter_tags():
+                print(
+                    json.dumps(
+                        {"record": "tag", "tag": tag},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+                count += 1
+            print(
+                json.dumps(
+                    {"record": "complete", "tag_count": count},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            return
         if args.output is None:
-            raise RecoveryError("output is required unless --description-only is used")
+            raise RecoveryError(
+                "output is required unless --description-only or --tags-only is used"
+            )
         summary = recover_archive(
             args.archive,
             args.output,

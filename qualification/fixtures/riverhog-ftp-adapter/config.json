@@ -8,6 +8,8 @@
       "id": "ftp-intake",
       "root": "/intake/ftp",
       "ingest_source": "ftp:example-intake",
+      "description": "Reference FTP intake",
+      "tags": ["source:ftp"],
       "close_mode": "stable",
       "stable_seconds": 30,
       "max_files": 1000,

@@ -748,14 +748,14 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
 
 def test_client_manages_application_keys_with_explicit_access() -> None:
     client = RecordingClient()
-    group_resource = f"group:{'a' * 64}"
+    tag_resource = "tag:photos"
 
     client.list_apps(q="local", active=True)
     client.create_app_key(
         "local",
         access=[
-            {"permission": "catalog:read", "resource": group_resource},
-            {"permission": "retrieval:manage", "resource": group_resource},
+            {"permission": "catalog:read", "resource": tag_resource},
+            {"permission": "retrieval:manage", "resource": tag_resource},
         ],
         expires_in_seconds=3600,
     )
@@ -782,8 +782,8 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
             {
                 "json": {
                     "access": [
-                        {"permission": "catalog:read", "resource": group_resource},
-                        {"permission": "retrieval:manage", "resource": group_resource},
+                        {"permission": "catalog:read", "resource": tag_resource},
+                        {"permission": "retrieval:manage", "resource": tag_resource},
                     ],
                     "expires_in_seconds": 3600,
                 }
@@ -809,35 +809,66 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
     ]
 
 
-def test_client_manages_collection_access_groups() -> None:
+def test_client_manages_collection_tags() -> None:
     client = RecordingClient()
-    group_id = "a" * 64
-    client.create_collection_access_group(idempotency_key="photos", display_label="Photos")
-    client.get_collection_access_group(group_id)
-    client.list_collection_access_groups(q="photo")
-    client.add_collection_access_group_member(group_id, 42)
-    client.remove_collection_access_group_member(group_id, 42)
+    identity = "a" * 64
+    client.list_tags(q="photo")
+    client.list_collection_tags(42, revision=3, tag_set_identity=identity)
+    client.collection_contains_tag(42, tag="photos", revision=3, tag_set_identity=identity)
+    client.add_collection_tag(
+        42,
+        tag="photos",
+        operation_id="add-photos",
+        expected_revision=3,
+        expected_tag_set_identity=identity,
+    )
+    client.remove_collection_tag(
+        42,
+        tag="photos",
+        operation_id="remove-photos",
+        expected_revision=3,
+        expected_tag_set_identity=identity,
+    )
     assert client.calls == [
         (
-            "POST",
-            "/v1/collection-access-groups",
-            {"json": {"idempotency_key": "photos", "display_label": "Photos"}},
+            "GET",
+            "/v1/tags",
+            {"params": {"page_size": 25, "q": "photo"}},
         ),
-        ("GET", f"/v1/collection-access-groups/{group_id}", {}),
         (
             "GET",
-            "/v1/collection-access-groups",
+            "/v1/collections/42/tags",
+            {"params": {"page_size": 25, "revision": 3, "tag_set_identity": identity}},
+        ),
+        (
+            "GET",
+            "/v1/collections/42/tags:contains",
+            {"params": {"tag": "photos", "revision": 3, "tag_set_identity": identity}},
+        ),
+        (
+            "POST",
+            "/v1/collections/42/tags:add",
             {
-                "params": {
-                    "page_size": 25,
-                    "sort": "id",
-                    "order": "asc",
-                    "q": "photo",
+                "json": {
+                    "tag": "photos",
+                    "operation_id": "add-photos",
+                    "expected_revision": 3,
+                    "expected_tag_set_identity": identity,
                 }
             },
         ),
-        ("PUT", f"/v1/collection-access-groups/{group_id}/collections/42", {}),
-        ("DELETE", f"/v1/collection-access-groups/{group_id}/collections/42", {}),
+        (
+            "POST",
+            "/v1/collections/42/tags:remove",
+            {
+                "json": {
+                    "tag": "photos",
+                    "operation_id": "remove-photos",
+                    "expected_revision": 3,
+                    "expected_tag_set_identity": identity,
+                }
+            },
+        ),
     ]
 
 

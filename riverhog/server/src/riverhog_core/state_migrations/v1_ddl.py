@@ -75,30 +75,35 @@ CREATE TABLE catalog_events (
 	description TEXT,
 	description_revision BIGINT NOT NULL,
 	description_identity VARCHAR(64) NOT NULL,
+	tag_revision BIGINT NOT NULL,
+	tag_set_identity VARCHAR(64) NOT NULL,
 	committed_at VARCHAR,
 	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
 	CONSTRAINT ck_catalog_events_revision CHECK (revision IS NULL OR revision > 0),
 	CONSTRAINT ck_catalog_events_description_bytes CHECK (description IS NULL OR octet_length(description) <= 32768),
 	CONSTRAINT ck_catalog_events_description_revision CHECK (description_revision >= 0 AND description_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_tag_revision CHECK (tag_revision >= 1 AND tag_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_tag_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	UNIQUE (revision),
 	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_catalog_events_archive_root_sha256_hex CHECK (length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_catalog_events_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_catalog_events_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_catalog_events_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_catalog_events_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence)
     """.strip(),
     """
+CREATE INDEX ix_catalog_events_committed ON catalog_events (committed_at, revision)
+    """.strip(),
+    """
 CREATE INDEX ix_catalog_events_published ON catalog_events (published, sequence)
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_revision ON catalog_events (revision)
-    """.strip(),
-    """
-CREATE INDEX ix_catalog_events_committed ON catalog_events (committed_at, revision)
     """.strip(),
     """
 CREATE TABLE catalog_sync_state (
@@ -127,6 +132,45 @@ CREATE TABLE collection_deletions (
 )
     """.strip(),
     """
+CREATE TABLE collection_tag_nodes (
+	digest VARCHAR(64) NOT NULL,
+	encoded BLOB NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (digest),
+	CONSTRAINT ck_collection_tag_nodes_digest CHECK (length(digest) = 64 AND lower(digest) = digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_nodes_bytes CHECK (length(encoded) > 0 AND length(encoded) <= 131072),
+	CONSTRAINT ck_collection_tag_nodes_digest_hex CHECK (length(digest) = 64 AND lower(digest) = digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE TABLE collection_tags (
+	tag_sha256 VARCHAR(64) NOT NULL,
+	tag TEXT NOT NULL,
+	search_text TEXT NOT NULL,
+	created_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	collection_count BIGINT DEFAULT 0 NOT NULL,
+	PRIMARY KEY (tag_sha256),
+	CONSTRAINT ck_collection_tags_collection_count CHECK (collection_count >= 0),
+	CONSTRAINT ck_collection_tags_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	UNIQUE (tag),
+	CONSTRAINT ck_collection_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_count ON collection_tags (collection_count, tag_sha256)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_created_at ON collection_tags (created_at, tag_sha256)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_search_trgm ON collection_tags (search_text)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_updated_at ON collection_tags (updated_at, tag_sha256)
+    """.strip(),
+    """
 CREATE TABLE collection_uploads (
 	collection_id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 	idempotency_key VARCHAR NOT NULL,
@@ -137,6 +181,13 @@ CREATE TABLE collection_uploads (
 	description_revision BIGINT,
 	description_identity VARCHAR(64),
 	description_publication_receipt_json TEXT,
+	tag_revision BIGINT,
+	tag_staging_root_sha256 VARCHAR(64),
+	tag_staging_set_identity VARCHAR(64) DEFAULT 'd99a47346b904680a2b3182b3950c159b297a427edfd0c8a23124b7bfb296ed9' NOT NULL,
+	tag_root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64),
+	tag_head_identity VARCHAR(64),
+	tag_publication_receipt_json TEXT,
 	provenance_mode VARCHAR NOT NULL,
 	provenance_omission_reason TEXT,
 	provenance_identity VARCHAR(64),
@@ -197,7 +248,7 @@ CREATE TABLE collection_uploads (
 	CONSTRAINT ck_collection_uploads_tree_progress CHECK (archive_tree_next_file_order >= 0),
 	CONSTRAINT ck_collection_uploads_volume_progress CHECK (length(archive_volume_next_sequence) = 64 AND lower(archive_volume_next_sequence) = archive_volume_next_sequence AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_volume_next_sequence, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collection_uploads_provenance_progress CHECK (provenance_validation_next_file_order >= 0 AND provenance_archive_next_file_order >= 0 AND provenance_archive_current_journal_offset >= 0 AND length(provenance_archive_next_sequence) = 64 AND lower(provenance_archive_next_sequence) = provenance_archive_next_sequence AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(provenance_archive_next_sequence, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_collection_uploads_catalog_phase CHECK (catalog_phase IN ('content-identity','inventory-identity','collection','files','journals','provenance-relations','bindings','archive-objects','file-objects','terminal','complete')),
+	CONSTRAINT ck_collection_uploads_catalog_phase CHECK (catalog_phase IN ('content-identity','inventory-identity','collection','tags','files','journals','provenance-relations','bindings','archive-objects','file-objects','terminal','complete')),
 	CONSTRAINT ck_collection_uploads_file_bytes CHECK (file_bytes >= 0),
 	CONSTRAINT ck_collection_uploads_custodied_file_count CHECK (custodied_file_count >= 0 AND custodied_file_count <= file_count),
 	CONSTRAINT ck_collection_uploads_custodied_file_bytes CHECK (custodied_file_bytes >= 0 AND custodied_file_bytes <= file_bytes),
@@ -210,10 +261,19 @@ CREATE TABLE collection_uploads (
 	CONSTRAINT ck_collection_uploads_archive_phase CHECK (archive_phase IN ('planning','uploading','finalization_queued','finalizing','retry_wait','orphaned','discarding')),
 	CONSTRAINT ck_collection_uploads_description_bytes CHECK (description IS NULL OR octet_length(description) <= 32768),
 	CONSTRAINT ck_collection_uploads_description_state CHECK (description_revision IS NULL AND description_identity IS NULL OR description_revision >= 0 AND description_revision <= 9007199254740991 AND description_identity IS NOT NULL),
+	CONSTRAINT ck_collection_uploads_tag_state CHECK (tag_revision IS NULL AND tag_set_identity IS NULL AND tag_head_identity IS NULL OR tag_revision >= 1 AND tag_revision <= 9007199254740991 AND tag_set_identity IS NOT NULL AND tag_head_identity IS NOT NULL),
+	CONSTRAINT ck_collection_uploads_tag_root CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_uploads_tag_staging_root CHECK (tag_staging_root_sha256 IS NULL OR length(tag_staging_root_sha256) = 64 AND lower(tag_staging_root_sha256) = tag_staging_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_uploads_tag_staging_identity CHECK (length(tag_staging_set_identity) = 64 AND lower(tag_staging_set_identity) = tag_staging_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collection_uploads_attempt_count CHECK (archive_attempt_count >= 0),
 	CONSTRAINT ck_collection_uploads_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_generation_hex CHECK (length(archive_generation) = 64 AND lower(archive_generation) = archive_generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_description_identity_hex CHECK (description_identity IS NULL OR length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_staging_root_sha256_hex CHECK (tag_staging_root_sha256 IS NULL OR length(tag_staging_root_sha256) = 64 AND lower(tag_staging_root_sha256) = tag_staging_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_staging_set_identity_hex CHECK (length(tag_staging_set_identity) = 64 AND lower(tag_staging_set_identity) = tag_staging_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_root_sha256_hex CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_set_identity_hex CHECK (tag_set_identity IS NULL OR length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_head_identity_hex CHECK (tag_head_identity IS NULL OR length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_provenance_identity_hex CHECK (provenance_identity IS NULL OR length(provenance_identity) = 64 AND lower(provenance_identity) = provenance_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(provenance_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_tree_sha256_hex CHECK (archive_tree_sha256 IS NULL OR length(archive_tree_sha256) = 64 AND lower(archive_tree_sha256) = archive_tree_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_tree_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_ordered_volume_sha256_hex CHECK (archive_ordered_volume_sha256 IS NULL OR length(archive_ordered_volume_sha256) = 64 AND lower(archive_ordered_volume_sha256) = archive_ordered_volume_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_ordered_volume_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
@@ -269,6 +329,11 @@ CREATE TABLE collections (
 	description_next_attempt_at VARCHAR,
 	description_last_attempt_at VARCHAR,
 	description_failure TEXT,
+	tag_revision BIGINT DEFAULT 1 NOT NULL,
+	tag_root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64) DEFAULT 'd99a47346b904680a2b3182b3950c159b297a427edfd0c8a23124b7bfb296ed9' NOT NULL,
+	tag_head_identity VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' NOT NULL,
+	tag_mutation_operation_id VARCHAR,
 	created_by_app VARCHAR NOT NULL,
 	created_by_key_id VARCHAR,
 	created_at VARCHAR NOT NULL,
@@ -296,6 +361,10 @@ CREATE TABLE collections (
 	CONSTRAINT ck_collections_pending_description_bytes CHECK (pending_description IS NULL OR octet_length(pending_description) <= 32768),
 	CONSTRAINT ck_collections_pending_description_identity CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collections_description_attempt_count CHECK (description_attempt_count >= 0),
+	CONSTRAINT ck_collections_tag_revision CHECK (tag_revision >= 1 AND tag_revision <= 9007199254740991),
+	CONSTRAINT ck_collections_tag_root_sha256 CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collections_tag_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collections_tag_head_identity CHECK (length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collections_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_archive_generation_hex CHECK (length(archive_generation) = 64 AND lower(archive_generation) = archive_generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
@@ -303,11 +372,17 @@ CREATE TABLE collections (
 	CONSTRAINT ck_collections_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_archive_root_sha256_hex CHECK (archive_root_sha256 IS NULL OR length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collections_pending_description_identity_hex CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_collections_pending_description_identity_hex CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_root_sha256_hex CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_head_identity_hex CHECK (length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_collections_created_at_id ON collections (created_at, id)
+    """.strip(),
+    """
+CREATE INDEX ix_collections_description_search_trgm ON collections (description_search)
     """.strip(),
     """
 CREATE INDEX ix_collections_encryption_format ON collections (encryption_format, id)
@@ -382,22 +457,6 @@ CREATE TABLE retrieval_cache_store_accounting (
 )
     """.strip(),
     """
-CREATE TABLE retrieval_cache_accounting_reconciliations (
-	cache_store VARCHAR NOT NULL,
-	generation BIGINT NOT NULL,
-	after_source_store VARCHAR,
-	after_collection_id INTEGER,
-	after_object_id VARCHAR,
-	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
-	started_at VARCHAR NOT NULL,
-	updated_at VARCHAR NOT NULL,
-	PRIMARY KEY (cache_store),
-	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
-	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
-	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
-)
-    """.strip(),
-    """
 CREATE TABLE retrieval_plans (
 	id VARCHAR NOT NULL,
 	app VARCHAR NOT NULL,
@@ -434,38 +493,6 @@ CREATE TABLE retrieval_plans (
     """.strip(),
     """
 CREATE INDEX ix_retrieval_plans_owner ON retrieval_plans (app, initiated_by_key_id, id)
-    """.strip(),
-    """
-CREATE TABLE retrieval_jobs (
-	id VARCHAR NOT NULL,
-	plan_id VARCHAR NOT NULL,
-	app VARCHAR NOT NULL,
-	initiated_by_key_id VARCHAR,
-	event_context_json TEXT,
-	state VARCHAR NOT NULL,
-	plan_etag VARCHAR(64) NOT NULL,
-	lease_seconds BIGINT NOT NULL,
-	created_at VARCHAR NOT NULL,
-	requested_at VARCHAR,
-	restore_requested_at VARCHAR,
-	ready_at VARCHAR,
-	expires_at VARCHAR,
-	next_poll_at VARCHAR,
-	completed_at VARCHAR,
-	canceled_at VARCHAR,
-	failure TEXT,
-	PRIMARY KEY (id),
-	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id),
-	UNIQUE (id, plan_id),
-	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested','ready','completed','canceled','expired','failed')),
-	CONSTRAINT ck_retrieval_jobs_plan_etag CHECK (length(plan_etag) = 64),
-	CONSTRAINT ck_retrieval_jobs_lease CHECK (lease_seconds > 0),
-	UNIQUE (plan_id),
-	CONSTRAINT ck_retrieval_jobs_plan_etag_hex CHECK (length(plan_etag) = 64 AND lower(plan_etag) = plan_etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(plan_etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_jobs_due ON retrieval_jobs (state, next_poll_at, id)
     """.strip(),
     """
 CREATE TABLE app_key_access_grants (
@@ -505,6 +532,21 @@ CREATE TABLE archive_download_reservations (
     """.strip(),
     """
 CREATE INDEX ix_archive_download_reservations_expiry ON archive_download_reservations (store, expires_at)
+    """.strip(),
+    """
+CREATE TABLE catalog_event_tags (
+	sequence INTEGER NOT NULL,
+	phase VARCHAR NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	PRIMARY KEY (sequence, phase, tag_sha256),
+	FOREIGN KEY(sequence) REFERENCES catalog_events (sequence) ON DELETE CASCADE,
+	CONSTRAINT ck_catalog_event_tags_phase CHECK (phase IN ('before', 'after')),
+	CONSTRAINT ck_catalog_event_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_catalog_event_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_catalog_event_tags_visibility ON catalog_event_tags (phase, tag_sha256, sequence)
     """.strip(),
     """
 CREATE TABLE collection_archive_copies (
@@ -754,6 +796,80 @@ CREATE TABLE collection_provenance_verifications (
 CREATE INDEX ix_collection_provenance_verifications_due ON collection_provenance_verifications (state, next_attempt_at)
     """.strip(),
     """
+CREATE TABLE collection_tag_memberships (
+	collection_id INTEGER NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	added_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, tag_sha256),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	FOREIGN KEY(tag_sha256) REFERENCES collection_tags (tag_sha256) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_memberships_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_memberships_tag ON collection_tag_memberships (tag_sha256, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_mutations (
+	collection_id INTEGER NOT NULL,
+	operation_id VARCHAR NOT NULL,
+	action VARCHAR NOT NULL,
+	tag TEXT NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	expected_revision BIGINT NOT NULL,
+	expected_tag_set_identity VARCHAR(64) NOT NULL,
+	result_revision BIGINT NOT NULL,
+	result_root_sha256 VARCHAR(64),
+	result_tag_set_identity VARCHAR(64) NOT NULL,
+	result_head_identity VARCHAR(64) NOT NULL,
+	changed BOOLEAN NOT NULL,
+	state VARCHAR NOT NULL,
+	initiated_by_app VARCHAR NOT NULL,
+	initiated_by_key_id VARCHAR,
+	created_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (collection_id, operation_id),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_mutations_action CHECK (action IN ('add','remove')),
+	CONSTRAINT ck_collection_tag_mutations_state CHECK (state IN ('pending','retry_wait','succeeded')),
+	CONSTRAINT ck_collection_tag_mutations_tag_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_tag_mutations_expected_revision CHECK (expected_revision >= 1 AND expected_revision < 9007199254740991),
+	CONSTRAINT ck_collection_tag_mutations_result_revision CHECK ((changed AND result_revision = expected_revision + 1) OR (NOT changed AND result_revision = expected_revision)),
+	CONSTRAINT ck_collection_tag_mutations_tag_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_expected_identity CHECK (length(expected_tag_set_identity) = 64 AND lower(expected_tag_set_identity) = expected_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_result_identity CHECK (length(result_tag_set_identity) = 64 AND lower(result_tag_set_identity) = result_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_head_identity CHECK (length(result_head_identity) = 64 AND lower(result_head_identity) = result_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_expected_tag_set_identity_hex CHECK (length(expected_tag_set_identity) = 64 AND lower(expected_tag_set_identity) = expected_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_root_sha256_hex CHECK (result_root_sha256 IS NULL OR length(result_root_sha256) = 64 AND lower(result_root_sha256) = result_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_tag_set_identity_hex CHECK (length(result_tag_set_identity) = 64 AND lower(result_tag_set_identity) = result_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_head_identity_hex CHECK (length(result_head_identity) = 64 AND lower(result_head_identity) = result_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_mutations_work ON collection_tag_mutations (state, updated_at, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_revisions (
+	collection_id INTEGER NOT NULL,
+	revision BIGINT NOT NULL,
+	root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64) NOT NULL,
+	head_identity VARCHAR(64) NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, revision),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_revisions_revision CHECK (revision >= 1 AND revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_revisions_root CHECK (root_sha256 IS NULL OR length(root_sha256) = 64 AND lower(root_sha256) = root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_head_identity CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_root_sha256_hex CHECK (root_sha256 IS NULL OR length(root_sha256) = 64 AND lower(root_sha256) = root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_revisions_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_revisions_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE collection_upload_files (
 	collection_id INTEGER NOT NULL,
 	path VARCHAR NOT NULL,
@@ -854,6 +970,42 @@ CREATE TABLE collection_upload_provenance_journals (
 )
     """.strip(),
     """
+CREATE TABLE collection_upload_tag_publication_frontier (
+	collection_id INTEGER NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expanded BOOLEAN DEFAULT false NOT NULL,
+	published BOOLEAN DEFAULT false NOT NULL,
+	object_path VARCHAR,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT,
+	stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, node_digest),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_upload_tag_frontier_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_upload_tag_frontier_receipt CHECK (published = false AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL AND published_at IS NULL OR published = true AND object_path IS NOT NULL AND stored_bytes > 0 AND stored_sha256 IS NOT NULL AND published_at IS NOT NULL),
+	CONSTRAINT ck_sha256_a9a6767f54e4c1ef CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_6acac9b414fb5e15 CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_upload_tag_frontier_work ON collection_upload_tag_publication_frontier (collection_id, published, expanded, node_digest)
+    """.strip(),
+    """
+CREATE TABLE collection_upload_tags (
+	collection_id INTEGER NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	tag TEXT NOT NULL,
+	added_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, tag_sha256),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_upload_tags_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_upload_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT uq_collection_upload_tags_value UNIQUE (collection_id, tag),
+	CONSTRAINT ck_collection_upload_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE key_download_reservations (
 	id VARCHAR NOT NULL,
 	key_id VARCHAR NOT NULL,
@@ -890,6 +1042,22 @@ CREATE TABLE key_download_usage (
 )
     """.strip(),
     """
+CREATE TABLE retrieval_cache_accounting_reconciliations (
+	cache_store VARCHAR NOT NULL,
+	generation BIGINT NOT NULL,
+	after_source_store VARCHAR,
+	after_collection_id INTEGER,
+	after_object_id VARCHAR,
+	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
+	started_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
+	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
+	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
+)
+    """.strip(),
+    """
 CREATE TABLE retrieval_cache_population_claims (
 	owner VARCHAR NOT NULL,
 	source_store VARCHAR NOT NULL,
@@ -902,6 +1070,38 @@ CREATE TABLE retrieval_cache_population_claims (
     """.strip(),
     """
 CREATE INDEX ix_retrieval_cache_population_claims_object ON retrieval_cache_population_claims (source_store, collection_id, object_id, owner)
+    """.strip(),
+    """
+CREATE TABLE retrieval_jobs (
+	id VARCHAR NOT NULL,
+	plan_id VARCHAR NOT NULL,
+	app VARCHAR NOT NULL,
+	initiated_by_key_id VARCHAR,
+	event_context_json TEXT,
+	state VARCHAR NOT NULL,
+	plan_etag VARCHAR(64) NOT NULL,
+	lease_seconds BIGINT NOT NULL,
+	created_at VARCHAR NOT NULL,
+	requested_at VARCHAR,
+	restore_requested_at VARCHAR,
+	ready_at VARCHAR,
+	expires_at VARCHAR,
+	next_poll_at VARCHAR,
+	completed_at VARCHAR,
+	canceled_at VARCHAR,
+	failure TEXT,
+	PRIMARY KEY (id),
+	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id),
+	UNIQUE (id, plan_id),
+	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested','ready','completed','canceled','expired','failed')),
+	CONSTRAINT ck_retrieval_jobs_plan_etag CHECK (length(plan_etag) = 64),
+	CONSTRAINT ck_retrieval_jobs_lease CHECK (lease_seconds > 0),
+	UNIQUE (plan_id),
+	CONSTRAINT ck_retrieval_jobs_plan_etag_hex CHECK (length(plan_etag) = 64 AND lower(plan_etag) = plan_etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(plan_etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_jobs_due ON retrieval_jobs (state, next_poll_at, id)
     """.strip(),
     """
 CREATE TABLE archive_copy_jobs (
@@ -1015,6 +1215,42 @@ CREATE TABLE collection_derivations (
     """.strip(),
     """
 CREATE INDEX ix_collection_derivations_claim ON collection_derivations (claim_id, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_description_publications (
+	collection_id INTEGER NOT NULL,
+	store VARCHAR NOT NULL,
+	desired_revision BIGINT NOT NULL,
+	desired_identity VARCHAR(64) NOT NULL,
+	published_revision BIGINT NOT NULL,
+	published_identity VARCHAR(64) NOT NULL,
+	state VARCHAR NOT NULL,
+	attempt_count INTEGER DEFAULT 0 NOT NULL,
+	next_attempt_at VARCHAR,
+	last_attempt_at VARCHAR,
+	failure TEXT,
+	object_path VARCHAR,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT,
+	stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, store),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_description_publications_desired_revision CHECK (desired_revision >= 0 AND desired_revision <= 9007199254740991),
+	CONSTRAINT ck_description_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
+	CONSTRAINT ck_description_publications_desired_identity CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_description_publications_published_identity CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_description_publications_attempt_count CHECK (attempt_count >= 0),
+	CONSTRAINT ck_description_publications_state CHECK (state IN ('pending','publishing','published','retry_wait')),
+	CONSTRAINT ck_description_publications_next_attempt CHECK (state = 'published' AND next_attempt_at IS NULL OR state != 'published' AND next_attempt_at IS NOT NULL),
+	CONSTRAINT ck_description_publications_receipt CHECK (published_revision = 0 AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL OR published_revision > 0 AND object_path IS NOT NULL AND stored_bytes IS NOT NULL AND stored_sha256 IS NOT NULL),
+	CONSTRAINT ck_collection_description_publications_desired_identity_hex CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_5f9e0ec935743970 CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_description_publications_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_description_publications_due ON collection_description_publications (state, next_attempt_at, collection_id, store)
     """.strip(),
     """
 CREATE TABLE collection_file_provenance (
@@ -1249,6 +1485,61 @@ CREATE TABLE collection_provenance_verification_reachability (
 CREATE INDEX ix_provenance_verification_reachability_work ON collection_provenance_verification_reachability (collection_id, expanded, journal_id)
     """.strip(),
     """
+CREATE TABLE collection_tag_publications (
+	collection_id INTEGER NOT NULL,
+	store VARCHAR NOT NULL,
+	desired_revision BIGINT NOT NULL,
+	desired_tag_set_identity VARCHAR(64) NOT NULL,
+	desired_head_identity VARCHAR(64) NOT NULL,
+	published_revision BIGINT NOT NULL,
+	published_tag_set_identity VARCHAR(64) NOT NULL,
+	published_head_identity VARCHAR(64),
+	state VARCHAR NOT NULL,
+	next_attempt_at VARCHAR,
+	failure TEXT,
+	head_object_path VARCHAR,
+	head_provider_revision VARCHAR,
+	head_stored_bytes BIGINT,
+	head_stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, store),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_publications_desired_revision CHECK (desired_revision >= 1 AND desired_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_publications_state CHECK (state IN ('pending','publishing_nodes','publishing_head','published','retry_wait')),
+	CONSTRAINT ck_collection_tag_publications_desired_set_identity CHECK (length(desired_tag_set_identity) = 64 AND lower(desired_tag_set_identity) = desired_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_desired_head_identity CHECK (length(desired_head_identity) = 64 AND lower(desired_head_identity) = desired_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_published_set_identity CHECK (length(published_tag_set_identity) = 64 AND lower(published_tag_set_identity) = published_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_desired_tag_set_identity_hex CHECK (length(desired_tag_set_identity) = 64 AND lower(desired_tag_set_identity) = desired_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_desired_head_identity_hex CHECK (length(desired_head_identity) = 64 AND lower(desired_head_identity) = desired_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_9da01d6c5fd7290f CHECK (length(published_tag_set_identity) = 64 AND lower(published_tag_set_identity) = published_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_published_head_identity_hex CHECK (published_head_identity IS NULL OR length(published_head_identity) = 64 AND lower(published_head_identity) = published_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_head_stored_sha256_hex CHECK (head_stored_sha256 IS NULL OR length(head_stored_sha256) = 64 AND lower(head_stored_sha256) = head_stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_publications_due ON collection_tag_publications (state, next_attempt_at, collection_id, store)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_published_nodes (
+	collection_id INTEGER NOT NULL,
+	store VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	object_path VARCHAR NOT NULL,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT NOT NULL,
+	stored_sha256 VARCHAR(64) NOT NULL,
+	published_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, store, node_digest),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_published_nodes_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_published_nodes_bytes CHECK (stored_bytes > 0),
+	CONSTRAINT ck_collection_tag_published_nodes_stored_sha256 CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_published_nodes_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_published_nodes_stored_sha256_hex CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE collection_transform_capabilities (
 	id VARCHAR(32) NOT NULL,
 	claim_id VARCHAR(64) NOT NULL,
@@ -1445,6 +1736,48 @@ CREATE INDEX ix_collection_processing_claim_artifacts_collection ON collection_p
 CREATE UNIQUE INDEX ix_collection_processing_claim_artifacts_order ON collection_processing_claim_artifacts (claim_id, artifact_order)
     """.strip(),
     """
+CREATE TABLE collection_tag_node_gc (
+	collection_id INTEGER NOT NULL,
+	store VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expected_head_identity VARCHAR(64) NOT NULL,
+	object_path VARCHAR NOT NULL,
+	provider_revision VARCHAR,
+	state VARCHAR NOT NULL,
+	next_attempt_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (collection_id, store, node_digest),
+	FOREIGN KEY(collection_id, store, node_digest) REFERENCES collection_tag_published_nodes (collection_id, store, node_digest) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_node_gc_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_gc_head CHECK (length(expected_head_identity) = 64 AND lower(expected_head_identity) = expected_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_gc_state CHECK (state IN ('pending','deleting','retry_wait')),
+	CONSTRAINT ck_collection_tag_node_gc_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_node_gc_expected_head_identity_hex CHECK (length(expected_head_identity) = 64 AND lower(expected_head_identity) = expected_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_node_gc_due ON collection_tag_node_gc (state, next_attempt_at, collection_id, store, node_digest)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_publication_frontier (
+	collection_id INTEGER NOT NULL,
+	store VARCHAR NOT NULL,
+	head_identity VARCHAR(64) NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expanded BOOLEAN DEFAULT false NOT NULL,
+	published BOOLEAN DEFAULT false NOT NULL,
+	PRIMARY KEY (collection_id, store, head_identity, node_digest),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_tag_publications (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_publication_frontier_head CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publication_frontier_node CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publication_frontier_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publication_frontier_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_publication_frontier_work ON collection_tag_publication_frontier (collection_id, store, head_identity, published, expanded, node_digest)
+    """.strip(),
+    """
 CREATE TABLE collection_transform_capability_artifacts (
 	capability_id VARCHAR(32) NOT NULL,
 	collection_id INTEGER NOT NULL,
@@ -1541,45 +1874,6 @@ CREATE TABLE retrieval_plan_objects (
 CREATE INDEX ix_retrieval_plan_objects_copy ON retrieval_plan_objects (collection_id, source_store, plan_id)
     """.strip(),
     """
-CREATE TABLE retrieval_plan_placements (
-	plan_id VARCHAR NOT NULL,
-	file_order INTEGER NOT NULL,
-	sequence VARCHAR(64) NOT NULL,
-	object_order VARCHAR(64) NOT NULL,
-	file_offset BIGINT NOT NULL,
-	object_offset BIGINT NOT NULL,
-	bytes BIGINT NOT NULL,
-	member VARCHAR,
-	PRIMARY KEY (plan_id, file_order, sequence),
-	FOREIGN KEY(plan_id, file_order) REFERENCES retrieval_plan_files (plan_id, file_order) ON DELETE CASCADE,
-	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
-	CONSTRAINT ck_retrieval_plan_placements_file_offset CHECK (file_offset >= 0),
-	CONSTRAINT ck_retrieval_plan_placements_object_offset CHECK (object_offset >= 0),
-	CONSTRAINT ck_retrieval_plan_placements_bytes CHECK (bytes >= 0)
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_plan_placements_object ON retrieval_plan_placements (plan_id, object_order)
-    """.strip(),
-    """
-CREATE TABLE retrieval_job_object_progress (
-	job_id VARCHAR NOT NULL,
-	object_order VARCHAR(64) NOT NULL,
-	plan_id VARCHAR NOT NULL,
-	state VARCHAR NOT NULL,
-	prepare_requested_at VARCHAR,
-	next_poll_at VARCHAR NOT NULL,
-	cache_store VARCHAR,
-	PRIMARY KEY (job_id, object_order),
-	FOREIGN KEY(job_id, plan_id) REFERENCES retrieval_jobs (id, plan_id) ON DELETE CASCADE,
-	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
-	CONSTRAINT ck_retrieval_job_object_progress_state CHECK (state IN ('preparing','requested','ready'))
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_job_object_progress_due ON retrieval_job_object_progress (state, next_poll_at, job_id)
-    """.strip(),
-    """
 CREATE TABLE collection_processing_dispositions (
 	claim_id VARCHAR(64) NOT NULL,
 	collection_id INTEGER NOT NULL,
@@ -1616,6 +1910,45 @@ CREATE INDEX ix_retrieval_cache_leases_expiry ON retrieval_cache_leases (expires
 CREATE INDEX ix_retrieval_cache_leases_object_expiry ON retrieval_cache_leases (source_store, collection_id, object_id, expires_at, owner)
     """.strip(),
     """
+CREATE TABLE retrieval_job_object_progress (
+	job_id VARCHAR NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	plan_id VARCHAR NOT NULL,
+	state VARCHAR NOT NULL,
+	prepare_requested_at VARCHAR,
+	next_poll_at VARCHAR NOT NULL,
+	cache_store VARCHAR,
+	PRIMARY KEY (job_id, object_order),
+	FOREIGN KEY(job_id, plan_id) REFERENCES retrieval_jobs (id, plan_id) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_job_object_progress_state CHECK (state IN ('preparing','requested','ready'))
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_job_object_progress_due ON retrieval_job_object_progress (state, next_poll_at, job_id)
+    """.strip(),
+    """
+CREATE TABLE retrieval_plan_placements (
+	plan_id VARCHAR NOT NULL,
+	file_order INTEGER NOT NULL,
+	sequence VARCHAR(64) NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	file_offset BIGINT NOT NULL,
+	object_offset BIGINT NOT NULL,
+	bytes BIGINT NOT NULL,
+	member VARCHAR,
+	PRIMARY KEY (plan_id, file_order, sequence),
+	FOREIGN KEY(plan_id, file_order) REFERENCES retrieval_plan_files (plan_id, file_order) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_plan_placements_file_offset CHECK (file_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_object_offset CHECK (object_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_bytes CHECK (bytes >= 0)
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_plan_placements_object ON retrieval_plan_placements (plan_id, object_order)
+    """.strip(),
+    """
 CREATE TABLE collection_processing_disposition_outputs (
 	claim_id VARCHAR(64) NOT NULL,
 	output_path VARCHAR NOT NULL,
@@ -1633,115 +1966,6 @@ CREATE UNIQUE INDEX ix_processing_disposition_outputs_order ON collection_proces
     """.strip(),
     """
 CREATE INDEX ix_processing_disposition_outputs_source ON collection_processing_disposition_outputs (claim_id, input_collection_id, input_path, output_path)
-    """.strip(),
-    """
-CREATE TABLE collection_access_groups (
-	id VARCHAR(64) NOT NULL,
-	creation_idempotency_key VARCHAR NOT NULL,
-	created_by_app VARCHAR NOT NULL,
-	created_by_key_id VARCHAR,
-	display_label VARCHAR,
-	display_label_sort VARCHAR NOT NULL GENERATED ALWAYS AS (lower(coalesce(display_label, ''))),
-	status VARCHAR DEFAULT 'active' NOT NULL,
-	authorization_revision BIGINT DEFAULT 1 NOT NULL,
-	created_at VARCHAR NOT NULL,
-	updated_at VARCHAR NOT NULL,
-	collection_count BIGINT DEFAULT 0 NOT NULL,
-	search_text VARCHAR NOT NULL GENERATED ALWAYS AS (lower(id || ' ' || coalesce(display_label, ''))),
-	PRIMARY KEY (id),
-	CONSTRAINT uq_collection_access_groups_application_idempotency_key UNIQUE (created_by_app, creation_idempotency_key),
-	CONSTRAINT ck_collection_access_groups_collection_count CHECK (collection_count >= 0),
-	CONSTRAINT ck_collection_access_groups_status CHECK (status IN ('active','disabled')),
-	CONSTRAINT ck_collection_access_groups_authorization_revision CHECK (authorization_revision >= 1),
-	CONSTRAINT ck_collection_access_groups_id_hex CHECK (length(id) = 64 AND lower(id) = id AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0)
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_collection_count_id ON collection_access_groups (collection_count, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_created_at_id ON collection_access_groups (created_at, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_display_label_id ON collection_access_groups (display_label_sort, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_search_trgm ON collection_access_groups (search_text)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_status_id ON collection_access_groups (status, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_updated_at_id ON collection_access_groups (updated_at, id)
-    """.strip(),
-    """
-CREATE TABLE catalog_event_access_groups (
-	sequence INTEGER NOT NULL,
-	phase VARCHAR NOT NULL,
-	group_id VARCHAR(64) NOT NULL,
-	PRIMARY KEY (sequence, phase, group_id),
-	FOREIGN KEY(sequence) REFERENCES catalog_events (sequence) ON DELETE CASCADE,
-	CONSTRAINT ck_catalog_event_access_groups_phase CHECK (phase IN ('before', 'after')),
-	CONSTRAINT ck_catalog_event_access_groups_group_id_hex CHECK (length(group_id) = 64 AND lower(group_id) = group_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(group_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_catalog_event_access_groups_visibility ON catalog_event_access_groups (phase, group_id, sequence)
-    """.strip(),
-    """
-CREATE TABLE collection_access_group_memberships (
-	collection_id INTEGER NOT NULL,
-	group_id VARCHAR(64) NOT NULL,
-	added_by_app VARCHAR NOT NULL,
-	added_by_key_id VARCHAR,
-	added_at VARCHAR NOT NULL,
-	PRIMARY KEY (collection_id, group_id),
-	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
-	FOREIGN KEY(group_id) REFERENCES collection_access_groups (id) ON DELETE CASCADE,
-	CONSTRAINT ck_collection_access_group_memberships_group_id_hex CHECK (length(group_id) = 64 AND lower(group_id) = group_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(group_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_group_memberships_group ON collection_access_group_memberships (group_id, collection_id)
-    """.strip(),
-    """
-CREATE INDEX ix_collections_description_search_trgm ON collections (description_search)
-    """.strip(),
-    """
-CREATE TABLE collection_description_publications (
-	collection_id INTEGER NOT NULL,
-	store VARCHAR NOT NULL,
-	desired_revision BIGINT NOT NULL,
-	desired_identity VARCHAR(64) NOT NULL,
-	published_revision BIGINT NOT NULL,
-	published_identity VARCHAR(64) NOT NULL,
-	state VARCHAR NOT NULL,
-	attempt_count INTEGER DEFAULT 0 NOT NULL,
-	next_attempt_at VARCHAR,
-	last_attempt_at VARCHAR,
-	failure TEXT,
-	object_path VARCHAR,
-	provider_revision VARCHAR,
-	stored_bytes BIGINT,
-	stored_sha256 VARCHAR(64),
-	published_at VARCHAR,
-	PRIMARY KEY (collection_id, store),
-	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
-	CONSTRAINT ck_description_publications_desired_revision CHECK (desired_revision >= 0 AND desired_revision <= 9007199254740991),
-	CONSTRAINT ck_description_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
-	CONSTRAINT ck_description_publications_desired_identity CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_description_publications_published_identity CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_description_publications_attempt_count CHECK (attempt_count >= 0),
-	CONSTRAINT ck_description_publications_state CHECK (state IN ('pending','publishing','published','retry_wait')),
-	CONSTRAINT ck_description_publications_next_attempt CHECK (state = 'published' AND next_attempt_at IS NULL OR state != 'published' AND next_attempt_at IS NOT NULL),
-	CONSTRAINT ck_description_publications_receipt CHECK (published_revision = 0 AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL OR published_revision > 0 AND object_path IS NOT NULL AND stored_bytes IS NOT NULL AND stored_sha256 IS NOT NULL),
-	CONSTRAINT ck_collection_description_publications_desired_identity_hex CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_sha256_5f9e0ec935743970 CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collection_description_publications_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_description_publications_due ON collection_description_publications (state, next_attempt_at, collection_id, store)
     """.strip(),
 )
 
@@ -1817,30 +2041,35 @@ CREATE TABLE catalog_events (
 	description TEXT,
 	description_revision BIGINT NOT NULL,
 	description_identity VARCHAR(64) NOT NULL,
+	tag_revision BIGINT NOT NULL,
+	tag_set_identity VARCHAR(64) NOT NULL,
 	committed_at VARCHAR,
 	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
 	CONSTRAINT ck_catalog_events_revision CHECK (revision IS NULL OR revision > 0),
 	CONSTRAINT ck_catalog_events_description_bytes CHECK (description IS NULL OR octet_length(description) <= 32768),
 	CONSTRAINT ck_catalog_events_description_revision CHECK (description_revision >= 0 AND description_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_tag_revision CHECK (tag_revision >= 1 AND tag_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_tag_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	UNIQUE (revision),
 	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_catalog_events_archive_root_sha256_hex CHECK (length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_catalog_events_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_catalog_events_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_catalog_events_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_catalog_events_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_collection ON catalog_events (collection_id, sequence)
     """.strip(),
     """
+CREATE INDEX ix_catalog_events_committed ON catalog_events (committed_at, revision)
+    """.strip(),
+    """
 CREATE INDEX ix_catalog_events_published ON catalog_events (published, sequence)
     """.strip(),
     """
 CREATE INDEX ix_catalog_events_revision ON catalog_events (revision)
-    """.strip(),
-    """
-CREATE INDEX ix_catalog_events_committed ON catalog_events (committed_at, revision)
     """.strip(),
     """
 CREATE TABLE catalog_sync_state (
@@ -1869,6 +2098,45 @@ CREATE TABLE collection_deletions (
 )
     """.strip(),
     """
+CREATE TABLE collection_tag_nodes (
+	digest VARCHAR(64) NOT NULL,
+	encoded BYTEA NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (digest),
+	CONSTRAINT ck_collection_tag_nodes_digest CHECK (length(digest) = 64 AND lower(digest) = digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_nodes_bytes CHECK (length(encoded) > 0 AND length(encoded) <= 131072),
+	CONSTRAINT ck_collection_tag_nodes_digest_hex CHECK (length(digest) = 64 AND lower(digest) = digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE TABLE collection_tags (
+	tag_sha256 VARCHAR(64) NOT NULL,
+	tag TEXT NOT NULL,
+	search_text TEXT NOT NULL,
+	created_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	collection_count BIGINT DEFAULT 0 NOT NULL,
+	PRIMARY KEY (tag_sha256),
+	CONSTRAINT ck_collection_tags_collection_count CHECK (collection_count >= 0),
+	CONSTRAINT ck_collection_tags_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	UNIQUE (tag),
+	CONSTRAINT ck_collection_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_count ON collection_tags (collection_count, tag_sha256)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_created_at ON collection_tags (created_at, tag_sha256)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_search_trgm ON collection_tags USING gin (search_text gin_trgm_ops)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tags_updated_at ON collection_tags (updated_at, tag_sha256)
+    """.strip(),
+    """
 CREATE TABLE collection_uploads (
 	collection_id BIGINT GENERATED BY DEFAULT AS IDENTITY,
 	idempotency_key VARCHAR NOT NULL,
@@ -1879,6 +2147,13 @@ CREATE TABLE collection_uploads (
 	description_revision BIGINT,
 	description_identity VARCHAR(64),
 	description_publication_receipt_json TEXT,
+	tag_revision BIGINT,
+	tag_staging_root_sha256 VARCHAR(64),
+	tag_staging_set_identity VARCHAR(64) DEFAULT 'd99a47346b904680a2b3182b3950c159b297a427edfd0c8a23124b7bfb296ed9' NOT NULL,
+	tag_root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64),
+	tag_head_identity VARCHAR(64),
+	tag_publication_receipt_json TEXT,
 	provenance_mode VARCHAR NOT NULL,
 	provenance_omission_reason TEXT,
 	provenance_identity VARCHAR(64),
@@ -1940,7 +2215,7 @@ CREATE TABLE collection_uploads (
 	CONSTRAINT ck_collection_uploads_tree_progress CHECK (archive_tree_next_file_order >= 0),
 	CONSTRAINT ck_collection_uploads_volume_progress CHECK (length(archive_volume_next_sequence) = 64 AND lower(archive_volume_next_sequence) = archive_volume_next_sequence AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_volume_next_sequence, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collection_uploads_provenance_progress CHECK (provenance_validation_next_file_order >= 0 AND provenance_archive_next_file_order >= 0 AND provenance_archive_current_journal_offset >= 0 AND length(provenance_archive_next_sequence) = 64 AND lower(provenance_archive_next_sequence) = provenance_archive_next_sequence AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(provenance_archive_next_sequence, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_collection_uploads_catalog_phase CHECK (catalog_phase IN ('content-identity','inventory-identity','collection','files','journals','provenance-relations','bindings','archive-objects','file-objects','terminal','complete')),
+	CONSTRAINT ck_collection_uploads_catalog_phase CHECK (catalog_phase IN ('content-identity','inventory-identity','collection','tags','files','journals','provenance-relations','bindings','archive-objects','file-objects','terminal','complete')),
 	CONSTRAINT ck_collection_uploads_file_bytes CHECK (file_bytes >= 0),
 	CONSTRAINT ck_collection_uploads_custodied_file_count CHECK (custodied_file_count >= 0 AND custodied_file_count <= file_count),
 	CONSTRAINT ck_collection_uploads_custodied_file_bytes CHECK (custodied_file_bytes >= 0 AND custodied_file_bytes <= file_bytes),
@@ -1953,10 +2228,19 @@ CREATE TABLE collection_uploads (
 	CONSTRAINT ck_collection_uploads_archive_phase CHECK (archive_phase IN ('planning','uploading','finalization_queued','finalizing','retry_wait','orphaned','discarding')),
 	CONSTRAINT ck_collection_uploads_description_bytes CHECK (description IS NULL OR octet_length(description) <= 32768),
 	CONSTRAINT ck_collection_uploads_description_state CHECK (description_revision IS NULL AND description_identity IS NULL OR description_revision >= 0 AND description_revision <= 9007199254740991 AND description_identity IS NOT NULL),
+	CONSTRAINT ck_collection_uploads_tag_state CHECK (tag_revision IS NULL AND tag_set_identity IS NULL AND tag_head_identity IS NULL OR tag_revision >= 1 AND tag_revision <= 9007199254740991 AND tag_set_identity IS NOT NULL AND tag_head_identity IS NOT NULL),
+	CONSTRAINT ck_collection_uploads_tag_root CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_uploads_tag_staging_root CHECK (tag_staging_root_sha256 IS NULL OR length(tag_staging_root_sha256) = 64 AND lower(tag_staging_root_sha256) = tag_staging_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_uploads_tag_staging_identity CHECK (length(tag_staging_set_identity) = 64 AND lower(tag_staging_set_identity) = tag_staging_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collection_uploads_attempt_count CHECK (archive_attempt_count >= 0),
 	CONSTRAINT ck_collection_uploads_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_generation_hex CHECK (length(archive_generation) = 64 AND lower(archive_generation) = archive_generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_description_identity_hex CHECK (description_identity IS NULL OR length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_staging_root_sha256_hex CHECK (tag_staging_root_sha256 IS NULL OR length(tag_staging_root_sha256) = 64 AND lower(tag_staging_root_sha256) = tag_staging_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_staging_set_identity_hex CHECK (length(tag_staging_set_identity) = 64 AND lower(tag_staging_set_identity) = tag_staging_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_staging_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_root_sha256_hex CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_set_identity_hex CHECK (tag_set_identity IS NULL OR length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_uploads_tag_head_identity_hex CHECK (tag_head_identity IS NULL OR length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_provenance_identity_hex CHECK (provenance_identity IS NULL OR length(provenance_identity) = 64 AND lower(provenance_identity) = provenance_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(provenance_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_tree_sha256_hex CHECK (archive_tree_sha256 IS NULL OR length(archive_tree_sha256) = 64 AND lower(archive_tree_sha256) = archive_tree_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_tree_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_uploads_archive_ordered_volume_sha256_hex CHECK (archive_ordered_volume_sha256 IS NULL OR length(archive_ordered_volume_sha256) = 64 AND lower(archive_ordered_volume_sha256) = archive_ordered_volume_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_ordered_volume_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
@@ -2012,6 +2296,11 @@ CREATE TABLE collections (
 	description_next_attempt_at VARCHAR,
 	description_last_attempt_at VARCHAR,
 	description_failure TEXT,
+	tag_revision BIGINT DEFAULT 1 NOT NULL,
+	tag_root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64) DEFAULT 'd99a47346b904680a2b3182b3950c159b297a427edfd0c8a23124b7bfb296ed9' NOT NULL,
+	tag_head_identity VARCHAR(64) DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' NOT NULL,
+	tag_mutation_operation_id VARCHAR,
 	created_by_app VARCHAR NOT NULL,
 	created_by_key_id VARCHAR,
 	created_at VARCHAR NOT NULL,
@@ -2039,6 +2328,10 @@ CREATE TABLE collections (
 	CONSTRAINT ck_collections_pending_description_bytes CHECK (pending_description IS NULL OR octet_length(pending_description) <= 32768),
 	CONSTRAINT ck_collections_pending_description_identity CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collections_description_attempt_count CHECK (description_attempt_count >= 0),
+	CONSTRAINT ck_collections_tag_revision CHECK (tag_revision >= 1 AND tag_revision <= 9007199254740991),
+	CONSTRAINT ck_collections_tag_root_sha256 CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collections_tag_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collections_tag_head_identity CHECK (length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	CONSTRAINT ck_collections_creation_identity_sha256_hex CHECK (length(creation_identity_sha256) = 64 AND lower(creation_identity_sha256) = creation_identity_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(creation_identity_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_archive_generation_hex CHECK (length(archive_generation) = 64 AND lower(archive_generation) = archive_generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_content_identity_hex CHECK (length(content_identity) = 64 AND lower(content_identity) = content_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(content_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
@@ -2046,11 +2339,17 @@ CREATE TABLE collections (
 	CONSTRAINT ck_collections_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_archive_root_sha256_hex CHECK (archive_root_sha256 IS NULL OR length(archive_root_sha256) = 64 AND lower(archive_root_sha256) = archive_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(archive_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collections_description_identity_hex CHECK (length(description_identity) = 64 AND lower(description_identity) = description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collections_pending_description_identity_hex CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_collections_pending_description_identity_hex CHECK (pending_description_identity IS NULL OR length(pending_description_identity) = 64 AND lower(pending_description_identity) = pending_description_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(pending_description_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_root_sha256_hex CHECK (tag_root_sha256 IS NULL OR length(tag_root_sha256) = 64 AND lower(tag_root_sha256) = tag_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collections_tag_head_identity_hex CHECK (length(tag_head_identity) = 64 AND lower(tag_head_identity) = tag_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
 CREATE INDEX ix_collections_created_at_id ON collections (created_at, id)
+    """.strip(),
+    """
+CREATE INDEX ix_collections_description_search_trgm ON collections USING gin (description_search gin_trgm_ops)
     """.strip(),
     """
 CREATE INDEX ix_collections_encryption_format ON collections (encryption_format, id)
@@ -2125,22 +2424,6 @@ CREATE TABLE retrieval_cache_store_accounting (
 )
     """.strip(),
     """
-CREATE TABLE retrieval_cache_accounting_reconciliations (
-	cache_store VARCHAR NOT NULL,
-	generation BIGINT NOT NULL,
-	after_source_store VARCHAR,
-	after_collection_id BIGINT,
-	after_object_id VARCHAR,
-	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
-	started_at VARCHAR NOT NULL,
-	updated_at VARCHAR NOT NULL,
-	PRIMARY KEY (cache_store),
-	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
-	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
-	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
-)
-    """.strip(),
-    """
 CREATE TABLE retrieval_plans (
 	id VARCHAR NOT NULL,
 	app VARCHAR NOT NULL,
@@ -2177,38 +2460,6 @@ CREATE TABLE retrieval_plans (
     """.strip(),
     """
 CREATE INDEX ix_retrieval_plans_owner ON retrieval_plans (app, initiated_by_key_id, id)
-    """.strip(),
-    """
-CREATE TABLE retrieval_jobs (
-	id VARCHAR NOT NULL,
-	plan_id VARCHAR NOT NULL,
-	app VARCHAR NOT NULL,
-	initiated_by_key_id VARCHAR,
-	event_context_json TEXT,
-	state VARCHAR NOT NULL,
-	plan_etag VARCHAR(64) NOT NULL,
-	lease_seconds BIGINT NOT NULL,
-	created_at VARCHAR NOT NULL,
-	requested_at VARCHAR,
-	restore_requested_at VARCHAR,
-	ready_at VARCHAR,
-	expires_at VARCHAR,
-	next_poll_at VARCHAR,
-	completed_at VARCHAR,
-	canceled_at VARCHAR,
-	failure TEXT,
-	PRIMARY KEY (id),
-	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id),
-	UNIQUE (id, plan_id),
-	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested','ready','completed','canceled','expired','failed')),
-	CONSTRAINT ck_retrieval_jobs_plan_etag CHECK (length(plan_etag) = 64),
-	CONSTRAINT ck_retrieval_jobs_lease CHECK (lease_seconds > 0),
-	UNIQUE (plan_id),
-	CONSTRAINT ck_retrieval_jobs_plan_etag_hex CHECK (length(plan_etag) = 64 AND lower(plan_etag) = plan_etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(plan_etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_jobs_due ON retrieval_jobs (state, next_poll_at, id)
     """.strip(),
     """
 CREATE TABLE app_key_access_grants (
@@ -2248,6 +2499,21 @@ CREATE TABLE archive_download_reservations (
     """.strip(),
     """
 CREATE INDEX ix_archive_download_reservations_expiry ON archive_download_reservations (store, expires_at)
+    """.strip(),
+    """
+CREATE TABLE catalog_event_tags (
+	sequence BIGINT NOT NULL,
+	phase VARCHAR NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	PRIMARY KEY (sequence, phase, tag_sha256),
+	FOREIGN KEY(sequence) REFERENCES catalog_events (sequence) ON DELETE CASCADE,
+	CONSTRAINT ck_catalog_event_tags_phase CHECK (phase IN ('before', 'after')),
+	CONSTRAINT ck_catalog_event_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_catalog_event_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_catalog_event_tags_visibility ON catalog_event_tags (phase, tag_sha256, sequence)
     """.strip(),
     """
 CREATE TABLE collection_archive_copies (
@@ -2497,6 +2763,80 @@ CREATE TABLE collection_provenance_verifications (
 CREATE INDEX ix_collection_provenance_verifications_due ON collection_provenance_verifications (state, next_attempt_at)
     """.strip(),
     """
+CREATE TABLE collection_tag_memberships (
+	collection_id BIGINT NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	added_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, tag_sha256),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	FOREIGN KEY(tag_sha256) REFERENCES collection_tags (tag_sha256) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_memberships_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_memberships_tag ON collection_tag_memberships (tag_sha256, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_mutations (
+	collection_id BIGINT NOT NULL,
+	operation_id VARCHAR NOT NULL,
+	action VARCHAR NOT NULL,
+	tag TEXT NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	expected_revision BIGINT NOT NULL,
+	expected_tag_set_identity VARCHAR(64) NOT NULL,
+	result_revision BIGINT NOT NULL,
+	result_root_sha256 VARCHAR(64),
+	result_tag_set_identity VARCHAR(64) NOT NULL,
+	result_head_identity VARCHAR(64) NOT NULL,
+	changed BOOLEAN NOT NULL,
+	state VARCHAR NOT NULL,
+	initiated_by_app VARCHAR NOT NULL,
+	initiated_by_key_id VARCHAR,
+	created_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (collection_id, operation_id),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_mutations_action CHECK (action IN ('add','remove')),
+	CONSTRAINT ck_collection_tag_mutations_state CHECK (state IN ('pending','retry_wait','succeeded')),
+	CONSTRAINT ck_collection_tag_mutations_tag_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_tag_mutations_expected_revision CHECK (expected_revision >= 1 AND expected_revision < 9007199254740991),
+	CONSTRAINT ck_collection_tag_mutations_result_revision CHECK ((changed AND result_revision = expected_revision + 1) OR (NOT changed AND result_revision = expected_revision)),
+	CONSTRAINT ck_collection_tag_mutations_tag_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_expected_identity CHECK (length(expected_tag_set_identity) = 64 AND lower(expected_tag_set_identity) = expected_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_result_identity CHECK (length(result_tag_set_identity) = 64 AND lower(result_tag_set_identity) = result_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_head_identity CHECK (length(result_head_identity) = 64 AND lower(result_head_identity) = result_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutations_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_expected_tag_set_identity_hex CHECK (length(expected_tag_set_identity) = 64 AND lower(expected_tag_set_identity) = expected_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_root_sha256_hex CHECK (result_root_sha256 IS NULL OR length(result_root_sha256) = 64 AND lower(result_root_sha256) = result_root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_tag_set_identity_hex CHECK (length(result_tag_set_identity) = 64 AND lower(result_tag_set_identity) = result_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_mutations_result_head_identity_hex CHECK (length(result_head_identity) = 64 AND lower(result_head_identity) = result_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(result_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_mutations_work ON collection_tag_mutations (state, updated_at, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_revisions (
+	collection_id BIGINT NOT NULL,
+	revision BIGINT NOT NULL,
+	root_sha256 VARCHAR(64),
+	tag_set_identity VARCHAR(64) NOT NULL,
+	head_identity VARCHAR(64) NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, revision),
+	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_revisions_revision CHECK (revision >= 1 AND revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_revisions_root CHECK (root_sha256 IS NULL OR length(root_sha256) = 64 AND lower(root_sha256) = root_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_head_identity CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_revisions_root_sha256_hex CHECK (root_sha256 IS NULL OR length(root_sha256) = 64 AND lower(root_sha256) = root_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(root_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_revisions_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_revisions_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE collection_upload_files (
 	collection_id BIGINT NOT NULL,
 	path VARCHAR NOT NULL,
@@ -2597,6 +2937,42 @@ CREATE TABLE collection_upload_provenance_journals (
 )
     """.strip(),
     """
+CREATE TABLE collection_upload_tag_publication_frontier (
+	collection_id BIGINT NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expanded BOOLEAN DEFAULT false NOT NULL,
+	published BOOLEAN DEFAULT false NOT NULL,
+	object_path VARCHAR,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT,
+	stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, node_digest),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_upload_tag_frontier_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_upload_tag_frontier_receipt CHECK (published = false AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL AND published_at IS NULL OR published = true AND object_path IS NOT NULL AND stored_bytes > 0 AND stored_sha256 IS NOT NULL AND published_at IS NOT NULL),
+	CONSTRAINT ck_sha256_a9a6767f54e4c1ef CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_6acac9b414fb5e15 CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_upload_tag_frontier_work ON collection_upload_tag_publication_frontier (collection_id, published, expanded, node_digest)
+    """.strip(),
+    """
+CREATE TABLE collection_upload_tags (
+	collection_id BIGINT NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	tag TEXT NOT NULL,
+	added_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, tag_sha256),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_upload_tags_bytes CHECK (octet_length(tag) > 0 AND octet_length(tag) <= 65536),
+	CONSTRAINT ck_collection_upload_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT uq_collection_upload_tags_value UNIQUE (collection_id, tag),
+	CONSTRAINT ck_collection_upload_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE key_download_reservations (
 	id VARCHAR NOT NULL,
 	key_id VARCHAR NOT NULL,
@@ -2633,6 +3009,22 @@ CREATE TABLE key_download_usage (
 )
     """.strip(),
     """
+CREATE TABLE retrieval_cache_accounting_reconciliations (
+	cache_store VARCHAR NOT NULL,
+	generation BIGINT NOT NULL,
+	after_source_store VARCHAR,
+	after_collection_id BIGINT,
+	after_object_id VARCHAR,
+	accumulated_bytes BIGINT DEFAULT 0 NOT NULL,
+	started_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	FOREIGN KEY(cache_store) REFERENCES retrieval_cache_store_accounting (cache_store) ON DELETE CASCADE,
+	CONSTRAINT ck_cache_accounting_reconciliations_generation CHECK (generation >= 0),
+	CONSTRAINT ck_cache_accounting_reconciliations_bytes CHECK (accumulated_bytes >= 0)
+)
+    """.strip(),
+    """
 CREATE TABLE retrieval_cache_population_claims (
 	owner VARCHAR NOT NULL,
 	source_store VARCHAR NOT NULL,
@@ -2645,6 +3037,38 @@ CREATE TABLE retrieval_cache_population_claims (
     """.strip(),
     """
 CREATE INDEX ix_retrieval_cache_population_claims_object ON retrieval_cache_population_claims (source_store, collection_id, object_id, owner)
+    """.strip(),
+    """
+CREATE TABLE retrieval_jobs (
+	id VARCHAR NOT NULL,
+	plan_id VARCHAR NOT NULL,
+	app VARCHAR NOT NULL,
+	initiated_by_key_id VARCHAR,
+	event_context_json TEXT,
+	state VARCHAR NOT NULL,
+	plan_etag VARCHAR(64) NOT NULL,
+	lease_seconds BIGINT NOT NULL,
+	created_at VARCHAR NOT NULL,
+	requested_at VARCHAR,
+	restore_requested_at VARCHAR,
+	ready_at VARCHAR,
+	expires_at VARCHAR,
+	next_poll_at VARCHAR,
+	completed_at VARCHAR,
+	canceled_at VARCHAR,
+	failure TEXT,
+	PRIMARY KEY (id),
+	FOREIGN KEY(plan_id) REFERENCES retrieval_plans (id),
+	UNIQUE (id, plan_id),
+	CONSTRAINT ck_retrieval_jobs_state CHECK (state IN ('requested','ready','completed','canceled','expired','failed')),
+	CONSTRAINT ck_retrieval_jobs_plan_etag CHECK (length(plan_etag) = 64),
+	CONSTRAINT ck_retrieval_jobs_lease CHECK (lease_seconds > 0),
+	UNIQUE (plan_id),
+	CONSTRAINT ck_retrieval_jobs_plan_etag_hex CHECK (length(plan_etag) = 64 AND lower(plan_etag) = plan_etag AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(plan_etag, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_jobs_due ON retrieval_jobs (state, next_poll_at, id)
     """.strip(),
     """
 CREATE TABLE archive_copy_jobs (
@@ -2758,6 +3182,42 @@ CREATE TABLE collection_derivations (
     """.strip(),
     """
 CREATE INDEX ix_collection_derivations_claim ON collection_derivations (claim_id, collection_id)
+    """.strip(),
+    """
+CREATE TABLE collection_description_publications (
+	collection_id BIGINT NOT NULL,
+	store VARCHAR NOT NULL,
+	desired_revision BIGINT NOT NULL,
+	desired_identity VARCHAR(64) NOT NULL,
+	published_revision BIGINT NOT NULL,
+	published_identity VARCHAR(64) NOT NULL,
+	state VARCHAR NOT NULL,
+	attempt_count INTEGER DEFAULT 0 NOT NULL,
+	next_attempt_at VARCHAR,
+	last_attempt_at VARCHAR,
+	failure TEXT,
+	object_path VARCHAR,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT,
+	stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, store),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_description_publications_desired_revision CHECK (desired_revision >= 0 AND desired_revision <= 9007199254740991),
+	CONSTRAINT ck_description_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
+	CONSTRAINT ck_description_publications_desired_identity CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_description_publications_published_identity CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_description_publications_attempt_count CHECK (attempt_count >= 0),
+	CONSTRAINT ck_description_publications_state CHECK (state IN ('pending','publishing','published','retry_wait')),
+	CONSTRAINT ck_description_publications_next_attempt CHECK (state = 'published' AND next_attempt_at IS NULL OR state != 'published' AND next_attempt_at IS NOT NULL),
+	CONSTRAINT ck_description_publications_receipt CHECK (published_revision = 0 AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL OR published_revision > 0 AND object_path IS NOT NULL AND stored_bytes IS NOT NULL AND stored_sha256 IS NOT NULL),
+	CONSTRAINT ck_collection_description_publications_desired_identity_hex CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_5f9e0ec935743970 CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_description_publications_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_description_publications_due ON collection_description_publications (state, next_attempt_at, collection_id, store)
     """.strip(),
     """
 CREATE TABLE collection_file_provenance (
@@ -2992,6 +3452,61 @@ CREATE TABLE collection_provenance_verification_reachability (
 CREATE INDEX ix_provenance_verification_reachability_work ON collection_provenance_verification_reachability (collection_id, expanded, journal_id)
     """.strip(),
     """
+CREATE TABLE collection_tag_publications (
+	collection_id BIGINT NOT NULL,
+	store VARCHAR NOT NULL,
+	desired_revision BIGINT NOT NULL,
+	desired_tag_set_identity VARCHAR(64) NOT NULL,
+	desired_head_identity VARCHAR(64) NOT NULL,
+	published_revision BIGINT NOT NULL,
+	published_tag_set_identity VARCHAR(64) NOT NULL,
+	published_head_identity VARCHAR(64),
+	state VARCHAR NOT NULL,
+	next_attempt_at VARCHAR,
+	failure TEXT,
+	head_object_path VARCHAR,
+	head_provider_revision VARCHAR,
+	head_stored_bytes BIGINT,
+	head_stored_sha256 VARCHAR(64),
+	published_at VARCHAR,
+	PRIMARY KEY (collection_id, store),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_publications_desired_revision CHECK (desired_revision >= 1 AND desired_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_publications_state CHECK (state IN ('pending','publishing_nodes','publishing_head','published','retry_wait')),
+	CONSTRAINT ck_collection_tag_publications_desired_set_identity CHECK (length(desired_tag_set_identity) = 64 AND lower(desired_tag_set_identity) = desired_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_desired_head_identity CHECK (length(desired_head_identity) = 64 AND lower(desired_head_identity) = desired_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_published_set_identity CHECK (length(published_tag_set_identity) = 64 AND lower(published_tag_set_identity) = published_tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publications_desired_tag_set_identity_hex CHECK (length(desired_tag_set_identity) = 64 AND lower(desired_tag_set_identity) = desired_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_desired_head_identity_hex CHECK (length(desired_head_identity) = 64 AND lower(desired_head_identity) = desired_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_sha256_9da01d6c5fd7290f CHECK (length(published_tag_set_identity) = 64 AND lower(published_tag_set_identity) = published_tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_published_head_identity_hex CHECK (published_head_identity IS NULL OR length(published_head_identity) = 64 AND lower(published_head_identity) = published_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publications_head_stored_sha256_hex CHECK (head_stored_sha256 IS NULL OR length(head_stored_sha256) = 64 AND lower(head_stored_sha256) = head_stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_publications_due ON collection_tag_publications (state, next_attempt_at, collection_id, store)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_published_nodes (
+	collection_id BIGINT NOT NULL,
+	store VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	object_path VARCHAR NOT NULL,
+	provider_revision VARCHAR,
+	stored_bytes BIGINT NOT NULL,
+	stored_sha256 VARCHAR(64) NOT NULL,
+	published_at VARCHAR NOT NULL,
+	PRIMARY KEY (collection_id, store, node_digest),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_published_nodes_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_published_nodes_bytes CHECK (stored_bytes > 0),
+	CONSTRAINT ck_collection_tag_published_nodes_stored_sha256 CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_published_nodes_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_published_nodes_stored_sha256_hex CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
 CREATE TABLE collection_transform_capabilities (
 	id VARCHAR(32) NOT NULL,
 	claim_id VARCHAR(64) NOT NULL,
@@ -3188,6 +3703,48 @@ CREATE INDEX ix_collection_processing_claim_artifacts_collection ON collection_p
 CREATE UNIQUE INDEX ix_collection_processing_claim_artifacts_order ON collection_processing_claim_artifacts (claim_id, artifact_order)
     """.strip(),
     """
+CREATE TABLE collection_tag_node_gc (
+	collection_id BIGINT NOT NULL,
+	store VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expected_head_identity VARCHAR(64) NOT NULL,
+	object_path VARCHAR NOT NULL,
+	provider_revision VARCHAR,
+	state VARCHAR NOT NULL,
+	next_attempt_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (collection_id, store, node_digest),
+	FOREIGN KEY(collection_id, store, node_digest) REFERENCES collection_tag_published_nodes (collection_id, store, node_digest) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_node_gc_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_gc_head CHECK (length(expected_head_identity) = 64 AND lower(expected_head_identity) = expected_head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_gc_state CHECK (state IN ('pending','deleting','retry_wait')),
+	CONSTRAINT ck_collection_tag_node_gc_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_node_gc_expected_head_identity_hex CHECK (length(expected_head_identity) = 64 AND lower(expected_head_identity) = expected_head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(expected_head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_node_gc_due ON collection_tag_node_gc (state, next_attempt_at, collection_id, store, node_digest)
+    """.strip(),
+    """
+CREATE TABLE collection_tag_publication_frontier (
+	collection_id BIGINT NOT NULL,
+	store VARCHAR NOT NULL,
+	head_identity VARCHAR(64) NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	expanded BOOLEAN DEFAULT false NOT NULL,
+	published BOOLEAN DEFAULT false NOT NULL,
+	PRIMARY KEY (collection_id, store, head_identity, node_digest),
+	FOREIGN KEY(collection_id, store) REFERENCES collection_tag_publications (collection_id, store) ON DELETE CASCADE,
+	CONSTRAINT ck_collection_tag_publication_frontier_head CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publication_frontier_node CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_publication_frontier_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_publication_frontier_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_publication_frontier_work ON collection_tag_publication_frontier (collection_id, store, head_identity, published, expanded, node_digest)
+    """.strip(),
+    """
 CREATE TABLE collection_transform_capability_artifacts (
 	capability_id VARCHAR(32) NOT NULL,
 	collection_id BIGINT NOT NULL,
@@ -3284,45 +3841,6 @@ CREATE TABLE retrieval_plan_objects (
 CREATE INDEX ix_retrieval_plan_objects_copy ON retrieval_plan_objects (collection_id, source_store, plan_id)
     """.strip(),
     """
-CREATE TABLE retrieval_plan_placements (
-	plan_id VARCHAR NOT NULL,
-	file_order INTEGER NOT NULL,
-	sequence VARCHAR(64) NOT NULL,
-	object_order VARCHAR(64) NOT NULL,
-	file_offset BIGINT NOT NULL,
-	object_offset BIGINT NOT NULL,
-	bytes BIGINT NOT NULL,
-	member VARCHAR,
-	PRIMARY KEY (plan_id, file_order, sequence),
-	FOREIGN KEY(plan_id, file_order) REFERENCES retrieval_plan_files (plan_id, file_order) ON DELETE CASCADE,
-	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
-	CONSTRAINT ck_retrieval_plan_placements_file_offset CHECK (file_offset >= 0),
-	CONSTRAINT ck_retrieval_plan_placements_object_offset CHECK (object_offset >= 0),
-	CONSTRAINT ck_retrieval_plan_placements_bytes CHECK (bytes >= 0)
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_plan_placements_object ON retrieval_plan_placements (plan_id, object_order)
-    """.strip(),
-    """
-CREATE TABLE retrieval_job_object_progress (
-	job_id VARCHAR NOT NULL,
-	object_order VARCHAR(64) NOT NULL,
-	plan_id VARCHAR NOT NULL,
-	state VARCHAR NOT NULL,
-	prepare_requested_at VARCHAR,
-	next_poll_at VARCHAR NOT NULL,
-	cache_store VARCHAR,
-	PRIMARY KEY (job_id, object_order),
-	FOREIGN KEY(job_id, plan_id) REFERENCES retrieval_jobs (id, plan_id) ON DELETE CASCADE,
-	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
-	CONSTRAINT ck_retrieval_job_object_progress_state CHECK (state IN ('preparing','requested','ready'))
-)
-    """.strip(),
-    """
-CREATE INDEX ix_retrieval_job_object_progress_due ON retrieval_job_object_progress (state, next_poll_at, job_id)
-    """.strip(),
-    """
 CREATE TABLE collection_processing_dispositions (
 	claim_id VARCHAR(64) NOT NULL,
 	collection_id BIGINT NOT NULL,
@@ -3359,6 +3877,45 @@ CREATE INDEX ix_retrieval_cache_leases_expiry ON retrieval_cache_leases (expires
 CREATE INDEX ix_retrieval_cache_leases_object_expiry ON retrieval_cache_leases (source_store, collection_id, object_id, expires_at, owner)
     """.strip(),
     """
+CREATE TABLE retrieval_job_object_progress (
+	job_id VARCHAR NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	plan_id VARCHAR NOT NULL,
+	state VARCHAR NOT NULL,
+	prepare_requested_at VARCHAR,
+	next_poll_at VARCHAR NOT NULL,
+	cache_store VARCHAR,
+	PRIMARY KEY (job_id, object_order),
+	FOREIGN KEY(job_id, plan_id) REFERENCES retrieval_jobs (id, plan_id) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_job_object_progress_state CHECK (state IN ('preparing','requested','ready'))
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_job_object_progress_due ON retrieval_job_object_progress (state, next_poll_at, job_id)
+    """.strip(),
+    """
+CREATE TABLE retrieval_plan_placements (
+	plan_id VARCHAR NOT NULL,
+	file_order INTEGER NOT NULL,
+	sequence VARCHAR(64) NOT NULL,
+	object_order VARCHAR(64) NOT NULL,
+	file_offset BIGINT NOT NULL,
+	object_offset BIGINT NOT NULL,
+	bytes BIGINT NOT NULL,
+	member VARCHAR,
+	PRIMARY KEY (plan_id, file_order, sequence),
+	FOREIGN KEY(plan_id, file_order) REFERENCES retrieval_plan_files (plan_id, file_order) ON DELETE CASCADE,
+	FOREIGN KEY(plan_id, object_order) REFERENCES retrieval_plan_objects (plan_id, object_order),
+	CONSTRAINT ck_retrieval_plan_placements_file_offset CHECK (file_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_object_offset CHECK (object_offset >= 0),
+	CONSTRAINT ck_retrieval_plan_placements_bytes CHECK (bytes >= 0)
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_plan_placements_object ON retrieval_plan_placements (plan_id, object_order)
+    """.strip(),
+    """
 CREATE TABLE collection_processing_disposition_outputs (
 	claim_id VARCHAR(64) NOT NULL,
 	output_path VARCHAR NOT NULL,
@@ -3376,114 +3933,5 @@ CREATE UNIQUE INDEX ix_processing_disposition_outputs_order ON collection_proces
     """.strip(),
     """
 CREATE INDEX ix_processing_disposition_outputs_source ON collection_processing_disposition_outputs (claim_id, input_collection_id, input_path, output_path)
-    """.strip(),
-    """
-CREATE TABLE collection_access_groups (
-	id VARCHAR(64) NOT NULL,
-	creation_idempotency_key VARCHAR NOT NULL,
-	created_by_app VARCHAR NOT NULL,
-	created_by_key_id VARCHAR,
-	display_label VARCHAR,
-	display_label_sort VARCHAR GENERATED ALWAYS AS (lower(coalesce(display_label, ''))) STORED NOT NULL,
-	status VARCHAR DEFAULT 'active' NOT NULL,
-	authorization_revision BIGINT DEFAULT 1 NOT NULL,
-	created_at VARCHAR NOT NULL,
-	updated_at VARCHAR NOT NULL,
-	collection_count BIGINT DEFAULT 0 NOT NULL,
-	search_text VARCHAR GENERATED ALWAYS AS (lower(id || ' ' || coalesce(display_label, ''))) STORED NOT NULL,
-	PRIMARY KEY (id),
-	CONSTRAINT uq_collection_access_groups_application_idempotency_key UNIQUE (created_by_app, creation_idempotency_key),
-	CONSTRAINT ck_collection_access_groups_collection_count CHECK (collection_count >= 0),
-	CONSTRAINT ck_collection_access_groups_status CHECK (status IN ('active','disabled')),
-	CONSTRAINT ck_collection_access_groups_authorization_revision CHECK (authorization_revision >= 1),
-	CONSTRAINT ck_collection_access_groups_id_hex CHECK (length(id) = 64 AND lower(id) = id AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0)
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_collection_count_id ON collection_access_groups (collection_count, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_created_at_id ON collection_access_groups (created_at, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_display_label_id ON collection_access_groups (display_label_sort, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_search_trgm ON collection_access_groups USING gin (search_text gin_trgm_ops)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_status_id ON collection_access_groups (status, id)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_groups_updated_at_id ON collection_access_groups (updated_at, id)
-    """.strip(),
-    """
-CREATE TABLE catalog_event_access_groups (
-	sequence BIGINT NOT NULL,
-	phase VARCHAR NOT NULL,
-	group_id VARCHAR(64) NOT NULL,
-	PRIMARY KEY (sequence, phase, group_id),
-	FOREIGN KEY(sequence) REFERENCES catalog_events (sequence) ON DELETE CASCADE,
-	CONSTRAINT ck_catalog_event_access_groups_phase CHECK (phase IN ('before', 'after')),
-	CONSTRAINT ck_catalog_event_access_groups_group_id_hex CHECK (length(group_id) = 64 AND lower(group_id) = group_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(group_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_catalog_event_access_groups_visibility ON catalog_event_access_groups (phase, group_id, sequence)
-    """.strip(),
-    """
-CREATE TABLE collection_access_group_memberships (
-	collection_id BIGINT NOT NULL,
-	group_id VARCHAR(64) NOT NULL,
-	added_by_app VARCHAR NOT NULL,
-	added_by_key_id VARCHAR,
-	added_at VARCHAR NOT NULL,
-	PRIMARY KEY (collection_id, group_id),
-	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
-	FOREIGN KEY(group_id) REFERENCES collection_access_groups (id) ON DELETE CASCADE,
-	CONSTRAINT ck_collection_access_group_memberships_group_id_hex CHECK (length(group_id) = 64 AND lower(group_id) = group_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(group_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_access_group_memberships_group ON collection_access_group_memberships (group_id, collection_id)
-    """.strip(),
-    """
-CREATE INDEX ix_collections_description_search_trgm ON collections USING gin (description_search gin_trgm_ops)
-    """.strip(),
-    """
-CREATE TABLE collection_description_publications (
-	collection_id BIGINT NOT NULL,
-	store VARCHAR NOT NULL,
-	desired_revision BIGINT NOT NULL,
-	desired_identity VARCHAR(64) NOT NULL,
-	published_revision BIGINT NOT NULL,
-	published_identity VARCHAR(64) NOT NULL,
-	state VARCHAR NOT NULL,
-	attempt_count INTEGER DEFAULT 0 NOT NULL,
-	next_attempt_at VARCHAR,
-	last_attempt_at VARCHAR,
-	failure TEXT,
-	object_path VARCHAR,
-	provider_revision VARCHAR,
-	stored_bytes BIGINT,
-	stored_sha256 VARCHAR(64),
-	published_at VARCHAR,
-	PRIMARY KEY (collection_id, store),
-	FOREIGN KEY(collection_id, store) REFERENCES collection_archive_copies (collection_id, store) ON DELETE CASCADE,
-	CONSTRAINT ck_description_publications_desired_revision CHECK (desired_revision >= 0 AND desired_revision <= 9007199254740991),
-	CONSTRAINT ck_description_publications_published_revision CHECK (published_revision >= 0 AND published_revision <= 9007199254740991),
-	CONSTRAINT ck_description_publications_desired_identity CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_description_publications_published_identity CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_description_publications_attempt_count CHECK (attempt_count >= 0),
-	CONSTRAINT ck_description_publications_state CHECK (state IN ('pending','publishing','published','retry_wait')),
-	CONSTRAINT ck_description_publications_next_attempt CHECK (state = 'published' AND next_attempt_at IS NULL OR state != 'published' AND next_attempt_at IS NOT NULL),
-	CONSTRAINT ck_description_publications_receipt CHECK (published_revision = 0 AND object_path IS NULL AND stored_bytes IS NULL AND stored_sha256 IS NULL OR published_revision > 0 AND object_path IS NOT NULL AND stored_bytes IS NOT NULL AND stored_sha256 IS NOT NULL),
-	CONSTRAINT ck_collection_description_publications_desired_identity_hex CHECK (length(desired_identity) = 64 AND lower(desired_identity) = desired_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(desired_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_sha256_5f9e0ec935743970 CHECK (length(published_identity) = 64 AND lower(published_identity) = published_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(published_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
-	CONSTRAINT ck_collection_description_publications_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-)
-    """.strip(),
-    """
-CREATE INDEX ix_collection_description_publications_due ON collection_description_publications (state, next_attempt_at, collection_id, store)
     """.strip(),
 )

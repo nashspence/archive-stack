@@ -44,7 +44,6 @@ PAGED_LIST_COMMANDS = (
     ("riverhog", "collection", "upload", "list", "--help"),
     ("riverhog", "collection", "provenance", "list", "--help"),
     ("riverhog", "find", "--help"),
-    ("riverhog", "access-group", "list", "--help"),
     ("riverhog", "archive", "copy", "list", "--help"),
     ("riverhog", "archive", "store", "list", "--help"),
     ("riverhog", "retrieval", "cache", "list", "--help"),
@@ -58,10 +57,12 @@ PAGED_LIST_COMMANDS = (
 )
 
 BOUNDED_LIST_COMMANDS = (
-    ("riverhog", "collection", "access-group", "list", "--help"),
+    ("riverhog", "collection", "tag", "list", "--help"),
     ("riverhog", "local", "provenance-observer", "list", "--help"),
     ("stove0", "recipe", "list", "--help"),
 )
+
+QUERY_PAGED_LIST_COMMANDS = (("riverhog", "tag", "list", "--help"),)
 
 
 def _run_help(command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -140,6 +141,15 @@ def test_bounded_list_cli_help_uses_the_shared_output_contract(command: tuple[st
             assert option in completed.stdout
 
 
+@pytest.mark.parametrize("command", QUERY_PAGED_LIST_COMMANDS)
+def test_query_paged_list_cli_help_uses_its_exact_contract(command: tuple[str, ...]) -> None:
+    completed = _run_help(command)
+
+    assert completed.returncode == 0, completed.stderr
+    for option in ("--page-size", "--page-token", "--query", "--ids", "--json"):
+        assert option in completed.stdout
+
+
 def test_stove0_declares_its_shared_json_projection_once_at_the_root() -> None:
     completed = _run_help(("stove0", "--help"))
 
@@ -197,6 +207,7 @@ def test_every_official_list_command_has_one_declared_convention() -> None:
             *LIFECYCLE_EVENT_LIST_COMMANDS,
             *PAGED_LIST_COMMANDS,
             *BOUNDED_LIST_COMMANDS,
+            *QUERY_PAGED_LIST_COMMANDS,
         )
         if command[-2] == "list"
     }

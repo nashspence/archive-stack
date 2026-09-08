@@ -9,6 +9,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
+    CollectionTagPublicationRecord,
+    CollectionTagPublishedNodeRecord,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
@@ -64,7 +66,19 @@ def archive_copy_aggregates(
         literal(1).label("object_count"),
         func.coalesce(CollectionDescriptionPublicationRecord.stored_bytes, 0).label("stored_bytes"),
     ).where(CollectionDescriptionPublicationRecord.object_path.is_not(None))
-    combined = union_all(object_rows, description_rows).subquery()
+    tag_head_rows = select(
+        CollectionTagPublicationRecord.collection_id.label("collection_id"),
+        CollectionTagPublicationRecord.store.label("store"),
+        literal(1).label("object_count"),
+        func.coalesce(CollectionTagPublicationRecord.head_stored_bytes, 0).label("stored_bytes"),
+    ).where(CollectionTagPublicationRecord.head_object_path.is_not(None))
+    tag_node_rows = select(
+        CollectionTagPublishedNodeRecord.collection_id.label("collection_id"),
+        CollectionTagPublishedNodeRecord.store.label("store"),
+        literal(1).label("object_count"),
+        CollectionTagPublishedNodeRecord.stored_bytes.label("stored_bytes"),
+    )
+    combined = union_all(object_rows, description_rows, tag_head_rows, tag_node_rows).subquery()
     stmt = (
         select(
             combined.c.collection_id,

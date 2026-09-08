@@ -88,6 +88,9 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "description_revision": summary.description_revision,
         "description_identity": summary.description_identity,
         "description_publication": summary.description_publication,
+        "tag_revision": summary.tag_revision,
+        "tag_set_identity": summary.tag_set_identity,
+        "tag_publication": summary.tag_publication,
         "content_identity": summary.content_identity,
         "archive_root_sha256": summary.archive_root_sha256,
         "encryption_format": summary.encryption_format,
@@ -108,5 +111,6 @@ def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
         "query": summary.query,
         "encryption_format": summary.encryption_format,
         "passphrase_id": summary.passphrase_id,
+        "tags": list(summary.tags),
         "collections": [map_collection(collection) for collection in summary.collections],
     }

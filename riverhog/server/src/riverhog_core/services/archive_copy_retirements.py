@@ -26,6 +26,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionDescriptionPublicationRecord,
     CollectionRecord,
+    CollectionTagPublicationRecord,
     RetrievalJobObjectProgressRecord,
     RetrievalJobRecord,
     RetrievalPlanFileRecord,
@@ -197,10 +198,21 @@ class SqlAlchemyArchiveCopyRetirementService:
                 (normalized_id, normalized_store),
             )
             description_prefix = target.archive_storage_prefix
+            tag_publication = session.get(
+                CollectionTagPublicationRecord,
+                (normalized_id, normalized_store),
+            )
         if description is not None:
             if description_prefix is None:
                 raise Conflict("archive copy description has no owned storage prefix")
             target_store.delete_collection_description(
+                collection_id=normalized_id,
+                archive_storage_prefix=description_prefix,
+            )
+        if tag_publication is not None:
+            if description_prefix is None:
+                raise Conflict("archive copy tags have no owned storage prefix")
+            target_store.delete_collection_tags(
                 collection_id=normalized_id,
                 archive_storage_prefix=description_prefix,
             )
@@ -602,6 +614,8 @@ def _build_plan(
         blockers.append(f"collection deletion is active: {collection_id}")
     if collection.description_mutation_state != "idle":
         blockers.append("collection description replacement is active")
+    if collection.tag_mutation_operation_id is not None:
+        blockers.append("collection tag mutation is active")
     blockers.extend(
         f"retrieval is active: {job_id}" for job_id in active_retrievals[:_BLOCKER_SAMPLE_LIMIT]
     )
@@ -646,6 +660,25 @@ def _build_plan(
         blockers.append(
             "retirement would remove the last current durable collection description replica"
         )
+    target_tags = db.get(CollectionTagPublicationRecord, (collection_id, store))
+    if target_tags is not None and target_tags.state in {"publishing_nodes", "publishing_head"}:
+        blockers.append("collection tag publication is active on the selected copy")
+    if not any(
+        (
+            (
+                tag_publication := db.get(
+                    CollectionTagPublicationRecord,
+                    (collection_id, copy.store),
+                )
+            )
+            is not None
+            and tag_publication.state == "published"
+            and tag_publication.published_revision == collection.tag_revision
+            and tag_publication.published_tag_set_identity == collection.tag_set_identity
+        )
+        for copy in retained
+    ):
+        blockers.append("retirement would remove the last current durable collection tag replica")
 
     aggregates = archive_copy_aggregates(session, collection_ids=[collection_id])
     target_object_count, target_stored_bytes = aggregates.get(

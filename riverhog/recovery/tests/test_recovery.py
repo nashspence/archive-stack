@@ -4,7 +4,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -33,7 +33,12 @@ from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_vo
 from riverhog_core.raw_verification import raw_file_ordered_volume_commitment
 from riverhog_protocol import (
     COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_TAG_HEAD_RELATIVE_PATH,
     CollectionDescriptionDocument,
+    CollectionTagHeadDocument,
+    CollectionTagSet,
+    MemoryCollectionTagNodeStore,
+    collection_tag_node_path,
 )
 from riverhog_provenance import (
     PROVENANCE_JOURNAL_SEGMENT_BYTES_MAX,
@@ -50,7 +55,12 @@ from riverhog_provenance import (
     update_ordered_volume_commitment,
     validate_journal,
 )
-from riverhog_recover import RecoveryError, recover_archive, recover_collection_description
+from riverhog_recover import (
+    RecoveryError,
+    recover_archive,
+    recover_collection_description,
+    recover_collection_tags,
+)
 
 from tests.fixtures.archive import age_state_json
 from tests.provenance_observer import native_provenance_observer
@@ -96,6 +106,7 @@ def _write_archive(
     provenance_journal: bytes | None = None,
     provenance_journals: Mapping[str, bytes] | None = None,
     description: str | None = None,
+    tags: Sequence[str] = (),
 ) -> tuple[dict[str, bytes], bytes | None]:
     expected = {
         "notes/alpha.txt": b"alpha\n",
@@ -355,6 +366,22 @@ def _write_archive(
             passphrase,
             log_n=1,
         )
+    tag_store = MemoryCollectionTagNodeStore()
+    tag_set = CollectionTagSet(tag_store)
+    for tag in tags:
+        tag_set = tag_set.insert(tag)
+    tag_head = CollectionTagHeadDocument.seal(
+        archive_root_sha256=_sha256(manifest),
+        revision=1,
+        root_sha256=tag_set.root.root_sha256,
+    )
+    ciphertext[COLLECTION_TAG_HEAD_RELATIVE_PATH] = encrypt_age_scrypt(
+        tag_head.to_json_bytes(), passphrase, log_n=1
+    )
+    for digest, encoded in tag_store.nodes.items():
+        ciphertext[collection_tag_node_path(digest)] = encrypt_age_scrypt(
+            encoded, passphrase, log_n=1
+        )
     for document in volume_documents:
         relative_path = (
             f"metadata/volume-{format_archive_sequence(document.volume.sequence)}.json.age"
@@ -434,6 +461,66 @@ def test_missing_description_is_an_explicitly_absent_optional_sidecar(tmp_path: 
         )
         is None
     )
+
+
+def test_recovers_exact_tags_without_reading_collection_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "archive"
+    expected = ("camera:七", "source:ftp", "z" * 65_536)
+    _write_archive(archive, tags=expected)
+    decrypted: list[str] = []
+    original_decrypt = recovery_module._age_decrypt
+
+    def decrypt(source: Path, *args: object, **kwargs: object) -> None:
+        decrypted.append(source.relative_to(archive).as_posix())
+        original_decrypt(source, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(recovery_module, "_age_decrypt", decrypt)
+    recovered = recover_collection_tags(
+        archive,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
+    )
+
+    assert set(recovered.iter_tags()) == set(expected)
+    assert recovered.head.revision == 1
+    assert decrypted[0:2] == ["manifest.json.age", COLLECTION_TAG_HEAD_RELATIVE_PATH]
+    assert all(path.startswith("tags/nodes/") for path in decrypted[2:])
+    assert not any(path.startswith("volumes/") for path in decrypted)
+
+
+def test_tag_recovery_rejects_a_head_for_another_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _write_archive(archive, tags=("source:ftp",))
+    wrong = CollectionTagHeadDocument.seal(
+        archive_root_sha256="f" * 64,
+        revision=1,
+        root_sha256=None,
+    )
+    (archive / COLLECTION_TAG_HEAD_RELATIVE_PATH).write_bytes(
+        encrypt_age_scrypt(wrong.to_json_bytes(), PASSPHRASE, log_n=1)
+    )
+
+    with pytest.raises(RecoveryError, match="another archive root"):
+        recover_collection_tags(
+            archive,
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
+        )
+
+
+def test_tag_recovery_rejects_a_missing_authenticated_node(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _write_archive(archive, tags=("source:ftp",))
+    node = next((archive / "tags/nodes").glob("*/*.age"))
+    node.unlink()
+    recovered = recover_collection_tags(
+        archive,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
+    )
+
+    with pytest.raises(RecoveryError, match="archive file is missing"):
+        tuple(recovered.iter_tags())
 
 
 def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_path: Path) -> None:

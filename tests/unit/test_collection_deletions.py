@@ -9,14 +9,14 @@ from riverhog_core.app_permissions import ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CatalogEventAccessGroupRecord,
     CatalogEventRecord,
+    CatalogEventTagRecord,
     CatalogSyncStateRecord,
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
@@ -29,6 +29,7 @@ from riverhog_core.services.collection_deletions import (
     _bounded_blocker_sample,
 )
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_protocol import collection_tag_sha256
 from riverhog_protocol.transport import (
     COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX,
     COLLECTION_DELETION_BLOCKERS_MAX,
@@ -113,11 +114,11 @@ def test_deletion_plan_uses_catalog_object_and_file_aggregates(tmp_path: Path) -
     assert plan["status"] == "ready"
     assert plan["file_count"] == 2
     assert plan["bytes"] == sum(map(len, FILES.values()))
-    assert plan["archive_object_count"] == 5
+    assert plan["archive_object_count"] == 6
     assert plan["archive_copies"] == [
         {
             "store": "deep",
-            "objects": 5,
+            "objects": 6,
             "stored_bytes": plan["remote_storage_bytes"],
         }
     ]
@@ -137,7 +138,7 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
     with session_scope(make_session_factory(config.database_url)) as session:
         collection = session.get(CollectionRecord, COLLECTION_ID)
         assert collection is not None and collection.is_published is False
-    assert _drain(service) == 9
+    assert _drain(service) == 11
     assert archive_store.deleted == [
         ("pack-" + "0" * 64,),
         ("volume-metadata-" + "0" * 64,),
@@ -149,7 +150,7 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "deleted" and event.collection_id == COLLECTION_ID
-        assert session.query(CatalogEventAccessGroupRecord).count() == 0
+        assert session.query(CatalogEventTagRecord).count() == 0
 
 
 def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
@@ -182,6 +183,7 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
         event_context={"workflow": "direct-delete"},
     )
     assert started["status"] == "deleting"
+    assert service.process_due(limit=1) == 1
     with pytest.raises(RuntimeError, match="provider unavailable"):
         service.process_due(limit=1)
 
@@ -201,7 +203,7 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
     )
 
     assert result["status"] == "deleting"
-    assert _drain(service) == 9
+    assert _drain(service) == 10
     events = SqlAlchemyLifecycleEventService(config)
     page = events.page(owner_app="riverhog-client", after=None, limit=100)
     assert len(page.events) == 1
@@ -226,25 +228,22 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         for index in range(205):
-            group_id = f"{index:064x}"
+            tag = f"bulk-{index:03d}"
+            tag_sha256 = collection_tag_sha256(tag)
             session.add(
-                CollectionAccessGroupRecord(
-                    id=group_id,
-                    creation_idempotency_key=f"bulk-{index:03d}",
-                    created_by_app="fixture",
-                    display_label=f"bulk-{index:03d}",
-                    status="active",
-                    authorization_revision=1,
+                CollectionTagRecord(
+                    tag_sha256=tag_sha256,
+                    tag=tag,
+                    search_text=tag,
                     created_at=UPLOADED_AT,
                     updated_at=UPLOADED_AT,
                     collection_count=1,
                 )
             )
             session.add(
-                CollectionAccessGroupMembershipRecord(
+                CollectionTagMembershipRecord(
                     collection_id=COLLECTION_ID,
-                    group_id=group_id,
-                    added_by_app="fixture",
+                    tag_sha256=tag_sha256,
                     added_at=UPLOADED_AT,
                 )
             )
@@ -272,17 +271,17 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
         principal=READER,
     )
     assert initial.changes == [] and initial.caught_up is True
-    previous_groups = 205
+    previous_tags = 205
     previous_files = 207
     steps = 0
     while service.process_due(limit=1):
         steps += 1
         with session_scope(factory) as session:
-            group_count = session.query(CollectionAccessGroupMembershipRecord).count()
+            tag_count = session.query(CollectionTagMembershipRecord).count()
             file_count = session.query(CollectionFileRecord).count()
-            assert 0 <= previous_groups - group_count <= 100
+            assert 0 <= previous_tags - tag_count <= 100
             assert 0 <= previous_files - file_count <= 100
-            previous_groups = group_count
+            previous_tags = tag_count
             previous_files = file_count
             collection = session.get(CollectionRecord, COLLECTION_ID)
             event = session.query(CatalogEventRecord).one_or_none()
@@ -295,13 +294,13 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
                 assert state is not None and state.committed_revision == 0
 
     assert steps > 9
-    assert previous_groups == 0
+    assert previous_tags == 0
     assert previous_files == 0
     with session_scope(factory) as session:
         event = session.query(CatalogEventRecord).one()
         assert event.published is True
         event_revision = event.revision
-        assert session.query(CatalogEventAccessGroupRecord).count() == 205
+        assert session.query(CatalogEventTagRecord).count() == 205
     changes = catalog_sync.changes(cursor=initial.next_cursor, limit=100, principal=READER)
     assert changes.caught_up is True
     assert changes.through_revision == str(event_revision)

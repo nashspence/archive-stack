@@ -14,7 +14,6 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import CollectionUploadRecord
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.access_groups import SqlAlchemyCollectionAccessGroupService
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.archive_copy_retirements import (
@@ -26,6 +25,7 @@ from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDele
 from riverhog_core.services.collection_descriptions import (
     SqlAlchemyCollectionDescriptionService,
 )
+from riverhog_core.services.collection_tags import SqlAlchemyCollectionTagService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.collection_workflows import (
     SqlAlchemyCollectionWorkflowService,
@@ -100,8 +100,8 @@ def _container(tmp_path: Path) -> ServiceContainer:
         collection_access=SqlAlchemyCollectionAccessService(
             config, session_factory=session_factory
         ),
-        access_groups=SqlAlchemyCollectionAccessGroupService(
-            config, session_factory=session_factory
+        collection_tags=SqlAlchemyCollectionTagService(
+            config, stores, session_factory=session_factory
         ),
         collections=SqlAlchemyCollectionService(config, session_factory=session_factory),
         collection_descriptions=SqlAlchemyCollectionDescriptionService(
@@ -309,30 +309,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     rotated = operator.rotate_app_key("qualification-reader", delegated_id)
     operator.revoke_app_key("qualification-reader", str(rotated["id"]))
 
-    docs_group = operator.create_collection_access_group(
-        idempotency_key="docs",
-        display_label="Documents",
-    )
-    temporary_group = operator.create_collection_access_group(
-        idempotency_key="temporary",
-        display_label="Temporary",
-    )
-    docs_group_id = str(docs_group["id"])
-    assert operator.get_collection_access_group(docs_group_id)["id"] == docs_group_id
-    assert (
-        len(
-            operator.list_collection_access_groups(q="document", page_size=100, page_token=None)[
-                "groups"
-            ]
-        )
-        == 1
-    )
-    operator.update_collection_access_group(
-        str(temporary_group["id"]),
-        display_label="Temporary",
-        status="disabled",
-    )
-
     source_root = tmp_path / "source"
     source_root.mkdir()
     source = source_root / "document.txt"
@@ -359,10 +335,17 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         "qualification-upload",
         ingest_source="disposable-test",
         description="Qualification source collection",
+        tags=["docs"],
         archive_store="primary",
     )
     assert opened["resumed"] is False
     collection_id = int(opened["collection_id"])
+    staged_tags = operator.add_collection_upload_session_tags(
+        collection_id,
+        ["qualified"],
+    )
+    assert staged_tags["added"] == 1
+    assert staged_tags["tag_count"] == 2
     assert (
         len(operator.list_collection_upload_sessions(page_size=100, page_token=None)["uploads"])
         == 1
@@ -439,23 +422,25 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operator.get_collection(collection_id)["description_identity"]
         == updated_description["description_identity"]
     )
-    operator.add_collection_access_group_member(docs_group_id, collection_id)
-    assert (
-        len(
-            operator.list_collection_access_group_members(
-                docs_group_id, page_size=100, page_token=None
-            )["members"]
-        )
-        == 1
+    tag_authority = operator.get_collection(collection_id)
+    listed_tags = operator.list_collection_tags(
+        collection_id,
+        revision=int(tag_authority["tag_revision"]),
+        tag_set_identity=str(tag_authority["tag_set_identity"]),
+        page_size=100,
+        page_token=None,
     )
+    assert set(listed_tags["tags"]) == {"docs", "qualified"}
     assert (
-        len(
-            operator.list_collection_access_groups_for_collection(
-                collection_id, page_size=100, page_token=None
-            )["groups"]
-        )
-        == 1
+        operator.collection_contains_tag(
+            collection_id,
+            tag="docs",
+            revision=int(tag_authority["tag_revision"]),
+            tag_set_identity=str(tag_authority["tag_set_identity"]),
+        )["present"]
+        is True
     )
+    assert [item["tag"] for item in operator.list_tags(q="doc")["tags"]] == ["docs"]
     assert (
         len(
             operator.list_collection_archive_copies(collection_id, page_size=100, page_token=None)[
@@ -473,14 +458,22 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
         == 1
     )
-    operator.remove_collection_access_group_member(docs_group_id, collection_id)
-    assert (
-        operator.list_collection_access_group_members(
-            docs_group_id, page_size=100, page_token=None
-        )["members"]
-        == []
+    removed = operator.remove_collection_tag(
+        collection_id,
+        tag="docs",
+        operation_id="qualification-remove-docs",
+        expected_revision=int(tag_authority["tag_revision"]),
+        expected_tag_set_identity=str(tag_authority["tag_set_identity"]),
     )
-    operator.add_collection_access_group_member(docs_group_id, collection_id)
+    assert removed["changed"] is True
+    restored = operator.add_collection_tag(
+        collection_id,
+        tag="docs",
+        operation_id="qualification-restore-docs",
+        expected_revision=int(removed["revision"]),
+        expected_tag_set_identity=str(removed["tag_set_identity"]),
+    )
+    assert restored["changed"] is True
 
     assert (
         len(

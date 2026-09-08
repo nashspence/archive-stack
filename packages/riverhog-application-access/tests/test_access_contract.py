@@ -16,27 +16,27 @@ from riverhog_application_access import (
     ApplicationKeyId,
     ApplicationName,
     collection_resource,
-    group_resource,
     normalize_access,
     permission_resources,
+    tag_resource,
 )
 
-GROUP_ID = "a" * 64
+TAG = "場所/Camera"
 
 
 def test_public_access_contract_normalizes_and_covers_grants() -> None:
     access = normalize_access(
         (
             ApplicationAccess(EVENTS_READ_ALL),
-            ApplicationAccess(PROVENANCE_EXPORT, f"group:{GROUP_ID}"),
+            ApplicationAccess(PROVENANCE_EXPORT, f"tag:{TAG}"),
             ApplicationAccess(CATALOG_READ, "collection:42"),
         )
     )
 
     assert permission_resources(access, EVENTS_READ) == {"*"}
-    assert permission_resources(access, PROVENANCE_READ) == {f"group:{GROUP_ID}"}
+    assert permission_resources(access, PROVENANCE_READ) == {f"tag:{TAG}"}
     assert collection_resource(42) == "collection:42"
-    assert group_resource(GROUP_ID) == f"group:{GROUP_ID}"
+    assert tag_resource(TAG) == f"tag:{TAG}"
 
 
 def test_public_access_models_enforce_grant_and_set_relationships() -> None:
@@ -44,10 +44,14 @@ def test_public_access_models_enforce_grant_and_set_relationships() -> None:
         permission="collections:create",
         resource="*",
     ).as_access() == ApplicationAccess("collections:create", "*")
+    assert ApplicationAccessGrant(
+        permission="collections:create",
+        resource=f"tag:{TAG}",
+    ).as_access() == ApplicationAccess("collections:create", f"tag:{TAG}")
 
     with pytest.raises(ApplicationAccessError, match="does not accept a scoped resource"):
-        ApplicationAccess("keys:manage", f"group:{GROUP_ID}")
-    with pytest.raises(ValueError, match="does not accept a scoped resource"):
+        ApplicationAccess("keys:manage", f"tag:{TAG}")
+    with pytest.raises(ValueError, match="accepts only wildcard or tag resources"):
         ApplicationAccessGrant(
             permission="collections:create",
             resource="collection:1",

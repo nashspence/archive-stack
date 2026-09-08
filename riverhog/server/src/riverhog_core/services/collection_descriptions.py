@@ -27,7 +27,7 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_events import (
     begin_catalog_event,
     publish_catalog_event,
-    snapshot_catalog_event_collection_access_groups,
+    snapshot_catalog_event_collection_tags,
 )
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
@@ -310,13 +310,13 @@ class SqlAlchemyCollectionDescriptionService:
                 occurred_at=now,
                 inventory_identity=collection.inventory_identity,
             )
-            snapshot_catalog_event_collection_access_groups(
+            snapshot_catalog_event_collection_tags(
                 session,
                 event=event,
                 phase="before",
                 collection_id=collection_id,
             )
-            snapshot_catalog_event_collection_access_groups(
+            snapshot_catalog_event_collection_tags(
                 session,
                 event=event,
                 phase="after",
