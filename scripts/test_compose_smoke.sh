@@ -430,19 +430,42 @@ compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --env "EXPECTED_DESCRIPTION=Classified FTP compose qualification" \
   --entrypoint python test -c "${classification_code}"
 
-scheduler_step_code="import json, urllib.request
-request = urllib.request.Request(
-    'http://127.0.0.1:8080/v1/admin/scheduler/run',
-    data=json.dumps({'role': 'controller', 'work_limit': 1}).encode(),
-    headers={
-        'Authorization': 'Bearer stove0-compose-smoke-token',
-        'Content-Type': 'application/json',
-    },
-    method='POST',
-)
-result = json.load(urllib.request.urlopen(request, timeout=30))
-assert result['admission'] is not None, result
-assert result['admission']['failures'] == [], result"
+scheduler_step_code="import json, os, urllib.request
+collection_id = int(os.environ['INPUT_COLLECTION_ID'])
+expected = os.environ['RIVERHOG_SMOKE_SCHEDULER_STEP']
+state_order = {'intent': 0, 'previewed': 1, 'work_bound': 2}
+for _ in range(4):
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/admin/scheduler/run',
+        data=json.dumps({'role': 'controller', 'work_limit': 1}).encode(),
+        headers={
+            'Authorization': 'Bearer stove0-compose-smoke-token',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    result = json.load(urllib.request.urlopen(request, timeout=30))
+    assert result['admission'] is not None, result
+    assert result['admission']['failures'] == [], result
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/admissions?page_size=100&sort=admission_id&order=asc',
+        headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
+    )
+    payload = json.load(urllib.request.urlopen(request, timeout=5))
+    matches = [
+        row for row in payload['admissions']
+        if row['intent']['collection']['collection_id'] == collection_id
+    ]
+    if not matches:
+        assert expected == 'intent'
+        continue
+    assert len(matches) == 1, matches
+    current = matches[0]['state']
+    if current == expected:
+        break
+    assert state_order[current] < state_order[expected], matches[0]
+else:
+    raise AssertionError({'expected': expected, 'matches': matches})"
 admission_state_code="import json, os, urllib.request
 collection_id = int(os.environ['INPUT_COLLECTION_ID'])
 request = urllib.request.Request(
@@ -462,6 +485,7 @@ assert matches[0]['state'] == os.environ['EXPECTED_ADMISSION_STATE'], matches[0]
 # offline, so no stage can race ahead of the proof.
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=intent \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \
@@ -471,6 +495,7 @@ stove0_compose restart api
 stove0_compose up --detach --wait api
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=previewed \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \
@@ -480,6 +505,7 @@ stove0_compose restart api
 stove0_compose up --detach --wait api
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=work_bound \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \
