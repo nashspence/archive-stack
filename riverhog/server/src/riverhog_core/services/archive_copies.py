@@ -64,6 +64,7 @@ from riverhog_core.services.collection_descriptions import (
     ensure_description_publication_for_copy,
 )
 from riverhog_core.services.collection_mutations import require_collection_archive_idle
+from riverhog_core.services.collection_tags import ensure_tag_publication_for_copy
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
@@ -1534,6 +1535,11 @@ class SqlAlchemyArchiveCopyService:
                 collection=collection,
                 copy=destination,
                 now=format_utc_timestamp(utc_now()),
+            )
+            ensure_tag_publication_for_copy(
+                session,
+                collection=collection,
+                store_name=destination.store,
             )
             job.state = "completed"
             job.completed_at = format_utc_timestamp(utc_now())

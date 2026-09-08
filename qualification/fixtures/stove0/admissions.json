@@ -1,0 +1,18 @@
+{
+  "format": "stove0-admissions/v1",
+  "policies": [
+    {
+      "format": "stove0-admission-policy/v1",
+      "id": "conformance-media",
+      "revision": 1,
+      "required_tags": [
+        "stove0/conformance"
+      ],
+      "recipe_id": "stove0.conformance-media/v1",
+      "recipe_revision": 1,
+      "recipe_sha256": "355d2543a95f17a68583684037b33a8c8ee277350a7ee48c93d5504a88988134",
+      "effective_intent": {},
+      "automatic_preview": "accept-ready"
+    }
+  ]
+}

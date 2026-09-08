@@ -10,6 +10,10 @@ CREATE TABLE desired_collections (
     inventory_identity TEXT NOT NULL,
     inventory_cursor TEXT,
     inventory_complete INTEGER NOT NULL DEFAULT 0,
+    tag_revision INTEGER NOT NULL,
+    tag_set_identity TEXT NOT NULL,
+    tag_page_token TEXT,
+    tags_complete INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     remote_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT ck_desired_collections_id CHECK (collection_id > 0),
@@ -20,6 +24,12 @@ CREATE TABLE desired_collections (
     CONSTRAINT ck_desired_collections_inventory_complete CHECK (
         inventory_complete IN (0, 1)
     ),
+    CONSTRAINT ck_desired_collections_tag_revision CHECK (tag_revision >= 1),
+    CONSTRAINT ck_desired_collections_tag_set_identity CHECK (
+        length(tag_set_identity) = 64 AND tag_set_identity = lower(tag_set_identity)
+        AND tag_set_identity NOT GLOB '*[^0-9a-f]*'
+    ),
+    CONSTRAINT ck_desired_collections_tags_complete CHECK (tags_complete IN (0, 1)),
     CONSTRAINT ck_desired_collections_remote_deleted CHECK (remote_deleted IN (0, 1))
 );
 INSERT INTO desired_collections VALUES(
@@ -27,9 +37,21 @@ INSERT INTO desired_collections VALUES(
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     NULL,
     1,
+    1,
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    NULL,
+    1,
     '2026-01-01T00:00:00.000000Z',
     0
 );
+CREATE TABLE desired_collection_tags (
+    collection_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (collection_id, tag),
+    FOREIGN KEY (collection_id) REFERENCES desired_collections(collection_id)
+        ON DELETE CASCADE
+);
+INSERT INTO desired_collection_tags VALUES(1, 'fixture');
 CREATE TABLE desired_files (
     collection_id INTEGER NOT NULL,
     path TEXT NOT NULL,

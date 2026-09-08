@@ -73,15 +73,14 @@ from riverhog_cli.output import (
     format_archive_copy_selectors,
     format_archive_store,
     format_archive_stores,
-    format_collection_access_group_members,
-    format_collection_access_group_membership,
-    format_collection_access_groups,
-    format_collection_access_groups_for_collection,
     format_collection_archive_copies,
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_description,
     format_collection_summary,
+    format_collection_tag_membership,
+    format_collection_tag_mutation,
+    format_collection_tags,
     format_collection_upload,
     format_collection_upload_discard_plan,
     format_collection_upload_discard_result,
@@ -102,12 +101,13 @@ from riverhog_cli.output import (
     format_retrieval_cache_objects,
     format_retrieval_cache_selectors,
     format_retrieval_cache_status,
+    format_tags,
 )
 from riverhog_cli.upload_progress import make_collection_upload_progress
 
 app = typer.Typer(help="Riverhog archive platform CLI.")
 collection_app = typer.Typer(help="Collection catalog and upload operations.")
-collection_access_group_app = typer.Typer(help="Collection access-group memberships.")
+collection_tag_app = typer.Typer(help="Exact collection tag authority.")
 collection_upload_app = typer.Typer(help="Collection upload sessions.")
 collection_provenance_app = typer.Typer(help="Collection file provenance.")
 archive_app = typer.Typer(help="Archive-store operations.")
@@ -117,7 +117,7 @@ application_app = typer.Typer(help="Application access.")
 app_key_app = typer.Typer(help="Application key management.")
 app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
-access_group_app = typer.Typer(help="Collection authorization groups.")
+tag_app = typer.Typer(help="Searchable collection tags.")
 event_app = typer.Typer(help="Lifecycle event inspection.")
 catalog_sync_app = typer.Typer(help="Bounded native catalog synchronization steps.")
 retrieval_app = typer.Typer(help="Retrieval operations.")
@@ -126,14 +126,14 @@ app_key_app.add_typer(app_key_access_app, name="access")
 app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
 app.add_typer(collection_app, name="collection")
-collection_app.add_typer(collection_access_group_app, name="access-group")
+collection_app.add_typer(collection_tag_app, name="tag")
 collection_app.add_typer(collection_upload_app, name="upload")
 collection_app.add_typer(collection_provenance_app, name="provenance")
 app.add_typer(archive_app, name="archive")
 archive_app.add_typer(archive_store_app, name="store")
 archive_app.add_typer(archive_copy_app, name="copy")
 app.add_typer(application_app, name="app")
-app.add_typer(access_group_app, name="access-group")
+app.add_typer(tag_app, name="tag")
 app.add_typer(event_app, name="event")
 app.add_typer(catalog_sync_app, name="catalog-sync")
 app.add_typer(retrieval_app, name="retrieval")
@@ -295,14 +295,6 @@ def catalog_sync_changes_cmd(
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _APP_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 _APP_KEY_ACCESS_SORT_FIELDS = {"app", "key_id", "permission", "resource", "created_at"}
-_ACCESS_GROUP_SORT_FIELDS = {
-    "id",
-    "display_label",
-    "created_at",
-    "updated_at",
-    "status",
-    "collections",
-}
 _APP_KEY_QUOTA_SORT_FIELDS = {
     "app",
     "key_id",
@@ -439,164 +431,162 @@ def app_list_cmd(
     emit(payload if json_mode else format_apps(payload), json_mode=json_mode)
 
 
-@access_group_app.command("create")
-def access_group_create_cmd(
-    idempotency_key: Annotated[str, typer.Argument(help="Stable creation retry key")],
-    display_label: Annotated[str | None, typer.Option("--label")] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Create an active collection access group."""
-
-    payload = client().create_collection_access_group(
-        idempotency_key=idempotency_key,
-        display_label=display_label,
-    )
-    emit(
-        payload if json_mode else format_collection_access_groups({"groups": [payload]}),
-        json_mode=json_mode,
-    )
-
-
-@access_group_app.command("show")
-def access_group_show_cmd(
-    group_id: Annotated[str, typer.Argument(help="Access-group id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Show one collection access group."""
-
-    payload = client().get_collection_access_group(group_id)
-    emit(
-        payload if json_mode else format_collection_access_groups({"groups": [payload]}),
-        json_mode=json_mode,
-    )
-
-
-@access_group_app.command("list")
-def access_group_list_cmd(
+@tag_app.command("list")
+def tag_list_cmd(
     page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
     page_token: Annotated[str | None, typer.Option("--page-token")] = None,
-    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
-    order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[str | None, typer.Option("--query", "-q")] = None,
-    status: Annotated[str | None, typer.Option("--status")] = None,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one group id per line")] = False,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one tag per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List collection access groups."""
+    """List visible searchable tags and collection counts."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    normalized_order = _list_order(sort, order, fields=_ACCESS_GROUP_SORT_FIELDS)
-    payload = client().list_collection_access_groups(
+    payload = client().list_tags(
         page_size=page_size,
         page_token=page_token,
         q=query,
-        status=cast(Any, status),
-        sort=cast(Any, sort),
-        order=cast(Any, normalized_order),
     )
     if ids:
-        emit(format_list_ids(payload, "groups"), json_mode=False)
+        emit(format_list_ids(payload, "tags", id_key="tag"), json_mode=False)
         return
-    emit(payload if json_mode else format_collection_access_groups(payload), json_mode=json_mode)
+    emit(payload if json_mode else format_tags(payload), json_mode=json_mode)
 
 
-@access_group_app.command("update")
-def access_group_update_cmd(
-    group_id: Annotated[str, typer.Argument(help="Access-group id")],
-    status: Annotated[str, typer.Option("--status", help="active or disabled")],
-    display_label: Annotated[str | None, typer.Option("--label", help="Desired label")] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Set the complete mutable state of one access group."""
-
-    payload = client().update_collection_access_group(
-        group_id,
-        display_label=display_label,
-        status=cast(Any, status),
-    )
-    emit(
-        payload if json_mode else format_collection_access_groups({"groups": [payload]}),
-        json_mode=json_mode,
-    )
-
-
-@access_group_app.command("members")
-def access_group_members_cmd(
-    group_id: Annotated[str, typer.Argument(help="Access-group id")],
-    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
-    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one collection id per line")] = False,
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """List collections in one access group."""
-
-    if ids and json_mode:
-        raise typer.BadParameter("--ids and --json cannot be used together")
-    payload = client().list_collection_access_group_members(
-        group_id, page_size=page_size, page_token=page_token
-    )
-    if ids:
-        emit(format_list_ids(payload, "members", id_key="collection_id"), json_mode=False)
-        return
-    emit(
-        payload if json_mode else format_collection_access_group_members(payload),
-        json_mode=json_mode,
-    )
-
-
-@access_group_app.command("add")
-def access_group_add_cmd(
-    group_id: Annotated[str, typer.Argument(help="Access-group id")],
-    collection_id: Annotated[int, typer.Argument(help="Collection id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Add one collection to an access group idempotently."""
-
-    payload = client().add_collection_access_group_member(group_id, collection_id)
-    emit(
-        payload if json_mode else format_collection_access_group_membership(payload),
-        json_mode=json_mode,
-    )
-
-
-@access_group_app.command("remove")
-def access_group_remove_cmd(
-    group_id: Annotated[str, typer.Argument(help="Access-group id")],
-    collection_id: Annotated[int, typer.Argument(help="Collection id")],
-    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
-) -> None:
-    """Remove one collection from an access group idempotently."""
-
-    payload = client().remove_collection_access_group_member(group_id, collection_id)
-    emit(
-        payload if json_mode else format_collection_access_group_membership(payload),
-        json_mode=json_mode,
-    )
-
-
-@collection_access_group_app.command("list")
-def collection_access_group_list_cmd(
+@collection_tag_app.command("list")
+def collection_tag_list_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
     page_token: Annotated[str | None, typer.Option("--page-token")] = None,
-    ids: Annotated[bool, typer.Option("--ids", help="Emit one group id per line")] = False,
+    revision: Annotated[int | None, typer.Option("--revision", min=1)] = None,
+    tag_set_identity: Annotated[str | None, typer.Option("--tag-set-identity")] = None,
+    ids: Annotated[bool, typer.Option("--ids", help="Emit one tag per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """List access groups containing one collection."""
+    """List one exact immutable revision of a collection's tag set."""
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    payload = client().list_collection_access_groups_for_collection(
-        collection_id, page_size=page_size, page_token=page_token
+    revision, tag_set_identity = _collection_tag_authority(
+        collection_id,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+    )
+    payload = client().list_collection_tags(
+        collection_id,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+        page_size=page_size,
+        page_token=page_token,
     )
     if ids:
-        emit(format_list_ids(payload, "groups"), json_mode=False)
+        emit("\n".join(str(tag) for tag in payload.get("tags", [])), json_mode=False)
         return
+    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
+
+
+@collection_tag_app.command("contains")
+def collection_tag_contains_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tag: Annotated[str, typer.Argument(help="Exact case-sensitive tag")],
+    revision: Annotated[int | None, typer.Option("--revision", min=1)] = None,
+    tag_set_identity: Annotated[str | None, typer.Option("--tag-set-identity")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Test exact membership in one immutable tag-set revision."""
+
+    revision, tag_set_identity = _collection_tag_authority(
+        collection_id,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+    )
+    payload = client().collection_contains_tag(
+        collection_id,
+        tag=tag,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+    )
     emit(
-        payload if json_mode else format_collection_access_groups_for_collection(payload),
+        payload if json_mode else format_collection_tag_membership(payload),
         json_mode=json_mode,
     )
+
+
+@collection_tag_app.command("add")
+def collection_tag_add_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tag: Annotated[str, typer.Argument(help="Exact case-sensitive tag")],
+    revision: Annotated[int | None, typer.Option("--revision", min=1)] = None,
+    tag_set_identity: Annotated[str | None, typer.Option("--tag-set-identity")] = None,
+    operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Conditionally add one tag using a stable operation identity."""
+
+    revision, tag_set_identity = _collection_tag_authority(
+        collection_id,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+    )
+    payload = client().add_collection_tag(
+        collection_id,
+        tag=tag,
+        operation_id=operation_id or str(uuid.uuid4()),
+        expected_revision=revision,
+        expected_tag_set_identity=tag_set_identity,
+    )
+    emit(
+        payload if json_mode else format_collection_tag_mutation(payload),
+        json_mode=json_mode,
+    )
+
+
+@collection_tag_app.command("remove")
+def collection_tag_remove_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    tag: Annotated[str, typer.Argument(help="Exact case-sensitive tag")],
+    revision: Annotated[int | None, typer.Option("--revision", min=1)] = None,
+    tag_set_identity: Annotated[str | None, typer.Option("--tag-set-identity")] = None,
+    operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Conditionally remove one tag using a stable operation identity."""
+
+    revision, tag_set_identity = _collection_tag_authority(
+        collection_id,
+        revision=revision,
+        tag_set_identity=tag_set_identity,
+    )
+    payload = client().remove_collection_tag(
+        collection_id,
+        tag=tag,
+        operation_id=operation_id or str(uuid.uuid4()),
+        expected_revision=revision,
+        expected_tag_set_identity=tag_set_identity,
+    )
+    emit(
+        payload if json_mode else format_collection_tag_mutation(payload),
+        json_mode=json_mode,
+    )
+
+
+def _collection_tag_authority(
+    collection_id: int,
+    *,
+    revision: int | None,
+    tag_set_identity: str | None,
+) -> tuple[int, str]:
+    if (revision is None) != (tag_set_identity is None):
+        raise typer.BadParameter("--revision and --tag-set-identity must be supplied together")
+    if revision is not None and tag_set_identity is not None:
+        return revision, tag_set_identity
+    collection = client().get_collection(collection_id)
+    current_revision = collection.get("tag_revision")
+    current_identity = collection.get("tag_set_identity")
+    if not isinstance(current_revision, int) or not isinstance(current_identity, str):
+        raise RuntimeError("collection response omitted tag authority")
+    return current_revision, current_identity
 
 
 @app_key_app.command("create")
@@ -1047,6 +1037,7 @@ def _create_or_resume_collection_upload_session(
     *,
     ingest_source: str | None,
     description: str | None = None,
+    tags: list[str] | None = None,
     archive_store: str | None = None,
     provenance_mode: ProvenanceMode,
     provenance_omission_reason: str | None,
@@ -1057,6 +1048,7 @@ def _create_or_resume_collection_upload_session(
             idempotency_key,
             ingest_source=ingest_source,
             description=description,
+            tags=tags or (),
             archive_store=archive_store,
             provenance_mode=provenance_mode,
             provenance_omission_reason=provenance_omission_reason,
@@ -1160,6 +1152,7 @@ def _collection_upload_dry_run_plan(
     bytes_total: int,
     files_preview: list[CollectionManifestEntry],
     description: str | None = None,
+    tags: list[str] | None = None,
     archive_store: str | None = None,
     provenance_observer: ResolvedProvenanceObserver | None = None,
 ) -> dict[str, object]:
@@ -1171,6 +1164,7 @@ def _collection_upload_dry_run_plan(
         "root": str(root),
         "ingest_source": str(root),
         "description": description,
+        "tags": tags or [],
         "files_total": files_total,
         "bytes_total": bytes_total,
         "archive_store": archive_store,
@@ -1398,6 +1392,7 @@ def _upload_collection_via_session(
     *,
     ingest_source: str | None,
     description: str | None = None,
+    tags: list[str] | None = None,
     archive_store: str | None = None,
     json_mode: bool = False,
     file_concurrency: int,
@@ -1412,6 +1407,7 @@ def _upload_collection_via_session(
         idempotency_key,
         ingest_source=ingest_source,
         description=description,
+        tags=tags,
         archive_store=archive_store,
         provenance_mode="omitted" if omit_provenance is not None else "captured",
         provenance_omission_reason=omit_provenance,
@@ -1558,7 +1554,7 @@ def collection_list_cmd(
         typer.Option(
             "--query",
             "-q",
-            help="Substring match over collection ids and descriptions",
+            help="Substring match over collection ids, descriptions, paths, and tags",
         ),
     ] = None,
     encryption_format: Annotated[
@@ -1568,6 +1564,10 @@ def collection_list_cmd(
     passphrase_id: Annotated[
         str | None,
         typer.Option("--passphrase-id", help="Restrict results to one opaque key ID"),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Require an exact tag; repeat for all-of selection"),
     ] = None,
     ids: Annotated[
         bool,
@@ -1585,6 +1585,7 @@ def collection_list_cmd(
         page_size=page_size,
         page_token=page_token,
         q=query,
+        tags=tag or (),
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
         sort=cast(Any, sort),
@@ -1634,6 +1635,10 @@ def upload_cmd(
     description: Annotated[
         str | None,
         typer.Option("--description", help="Mutable human description for catalog discovery"),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Initial collection tag; repeat as needed"),
     ] = None,
     provenance: Annotated[
         Path | None,
@@ -1730,6 +1735,7 @@ def upload_cmd(
             bytes_total=manifest_bytes,
             files_preview=files_preview,
             description=description,
+            tags=tag,
             archive_store=archive_store,
             provenance_observer=resolved_observer,
         )
@@ -1744,6 +1750,7 @@ def upload_cmd(
         resolved_root,
         ingest_source=str(resolved_root),
         description=description,
+        tags=tag,
         archive_store=archive_store,
         json_mode=json_mode,
         file_concurrency=file_concurrency,

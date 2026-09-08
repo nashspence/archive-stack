@@ -22,6 +22,7 @@ dependencies = [
   "http-api-contracts>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
   "pydantic>=2.7,<3.0",
+  "riverhog-protocol>=0.1,<0.2",
   "stove0-observer-protocol>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
   "stove0-recipe-config>=0.1,<0.2",
@@ -31,6 +32,7 @@ dependencies = [
 [tool.uv.sources]
 http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
+riverhog-protocol = { workspace = true }
 stove0-observer-protocol = { workspace = true }
 stove0-protocol = { workspace = true }
 stove0-recipe-config = { workspace = true }

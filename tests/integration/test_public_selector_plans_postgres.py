@@ -19,7 +19,6 @@ from riverhog_core.browse import keyset_statement
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from riverhog_core.catalog_models import CollectionRecord
 from riverhog_core.collection_access import collection_access_filter
-from riverhog_core.services.access_groups import _group_list_statement
 from riverhog_core.services.app_keys import (
     _access_list_statement,
     _app_list_statement,
@@ -30,6 +29,7 @@ from riverhog_core.services.catalog_sync import (
     _catalog_change_revision_statement,
     _catalog_collection_page_statement,
 )
+from riverhog_core.services.collection_tags import _tag_list_statement
 from riverhog_core.services.collection_uploads import _upload_list_statement
 from riverhog_core.services.collection_workflows import _claim_list_statement
 from riverhog_core.services.collections import _collection_list_statement
@@ -42,7 +42,6 @@ from riverhog_protocol import (
     ApplicationKeySort,
     ApplicationSort,
     ArchiveCopySort,
-    CollectionAccessGroupSort,
     CollectionSort,
     CollectionUploadSort,
     DownloadQuotaSort,
@@ -54,12 +53,13 @@ from riverhog_protocol import (
 from sqlalchemy import text
 from sqlalchemy.engine import Engine, make_url
 from stove0_core.persistence import (
+    _admission_list_statement,
     _evaluation_list_statement,
     _work_list_statement,
     stove0_state_schema,
 )
 from stove0_core.persistence import _keyset_statement as _stove0_keyset_statement
-from stove0_operator_contracts import EvaluationSort, WorkSort
+from stove0_operator_contracts import AdmissionSort, EvaluationSort, WorkSort
 from time_formats import parse_utc_timestamp
 
 from scripts.operation_qualification import (
@@ -124,8 +124,9 @@ _DATABASE_PLAN_OPERATIONS = {
     ("riverhog", "list_processing_claims"): "processing-claims",
     ("riverhog", "list_retrieval_cache_objects"): "retrieval-cache",
     ("riverhog", "search"): "search",
-    ("riverhog", "list_collection_access_groups"): "collection-access-groups",
+    ("riverhog", "list_tags"): "tags",
     ("stove0", "list_evaluations"): "stove0-evaluations",
+    ("stove0", "list_admissions"): "stove0-admissions",
     ("stove0", "list_work"): "stove0-work",
 }
 _DATABASE_FILTER_SELECTORS = {
@@ -133,8 +134,7 @@ _DATABASE_FILTER_SELECTORS = {
     "application-keys": {"active", "q"},
     "applications": {"active", "q"},
     "archive-copies": {"q", "state"},
-    "collection-access-groups": {"q", "status"},
-    "collections": {"encryption_format", "passphrase_id", "q"},
+    "collections": {"encryption_format", "passphrase_id", "q", "tags"},
     "download-quotas": {"active", "app", "q"},
     "processing-claims": {"state"},
     "provenance": {"q", "status"},
@@ -149,7 +149,9 @@ _DATABASE_FILTER_SELECTORS = {
         "state",
     },
     "search": {"collection", "q"},
+    "tags": {"q"},
     "stove0-evaluations": {"phase", "q"},
+    "stove0-admissions": {"policy_id", "q", "state"},
     "stove0-work": {"phase", "q"},
     "uploads": {"q", "state"},
 }
@@ -186,11 +188,13 @@ _NON_PLAN_QUERY_OPERATIONS = {
     },
     ("riverhog", "list_collection_upload_session_files"): {"page_size", "page_token"},
     ("riverhog", "list_collection_archive_copies"): {"page_size", "page_token"},
-    ("riverhog", "list_collection_access_group_members"): {"page_size", "page_token"},
-    ("riverhog", "list_collection_access_groups_for_collection"): {
+    ("riverhog", "list_collection_tags"): {
         "page_size",
         "page_token",
+        "revision",
+        "tag_set_identity",
     },
+    ("riverhog", "collection_contains_tag"): {"revision", "tag", "tag_set_identity"},
     ("riverhog", "list_collection_provenance_journal_agents"): {
         "page_size",
         "page_token",
@@ -270,14 +274,11 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
     with engine.begin() as connection:
         for statement in (
             f"""
-            INSERT INTO collection_access_groups (
-                id, creation_idempotency_key, created_by_app, display_label, status,
-                authorization_revision, created_at, updated_at, collection_count
+            INSERT INTO collection_tags (
+                tag_sha256, tag, search_text, created_at, updated_at, collection_count
             )
-            SELECT {sha}, 'group-' || g, 'qualification',
-                   'Group ' || lpad(g::text, 6, '0'),
-                   CASE WHEN g = {rows} THEN 'disabled' ELSE 'active' END,
-                   1, {timestamp}, {timestamp}, 1
+            SELECT {sha}, 'tag-' || lpad(g::text, 6, '0'),
+                   'tag-' || lpad(g::text, 6, '0'), {timestamp}, {timestamp}, 1
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -306,10 +307,10 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             INSERT INTO catalog_events (
                 revision, change, collection_id, occurred_at, inventory_identity,
                 archive_root_sha256, content_identity, description, description_revision,
-                description_identity, committed_at, published
+                description_identity, tag_revision, tag_set_identity, committed_at, published
             )
             SELECT g, 'created', g, {timestamp}, {sha}, {sha}, {sha},
-                   'Reference description ' || lpad(g::text, 6, '0'), 1, {sha},
+                   'Reference description ' || lpad(g::text, 6, '0'), 1, {sha}, 1, {sha},
                    {timestamp}, true
             FROM generate_series(1, {rows}) AS g
             """,
@@ -357,10 +358,10 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             WHERE provenance_status = 'omitted'
             """,
             f"""
-            INSERT INTO collection_access_group_memberships (
-                collection_id, group_id, added_by_app, added_at
+            INSERT INTO collection_tag_memberships (
+                collection_id, tag_sha256, added_at
             )
-            SELECT g, {sha}, 'qualification', {timestamp}
+            SELECT g, {sha}, {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -412,7 +413,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             )
             SELECT substring(md5(g::text), 1, 16),
                    CASE WHEN g = {rows} THEN 'provenance:read' ELSE 'catalog:read' END,
-                   CASE WHEN g = {rows} THEN 'group:' || repeat(md5('1'), 2) ELSE '*' END,
+                   CASE WHEN g = {rows} THEN 'tag:tag-000001' ELSE '*' END,
                    {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
@@ -547,6 +548,28 @@ def _seed_stove0_selector_relations(engine: Engine, *, rows: int) -> None:
             """
             )
         )
+        connection.execute(
+            text(
+                f"""
+            INSERT INTO stove0_admission_candidates (
+                admission_id, policy_id, state, preview_sha256, work_id,
+                document_bytes, document_json, preview_bytes, preview_json,
+                created_at, updated_at
+            )
+            SELECT repeat(md5('stove-admission-' || g), 2),
+                   'policy-' || lpad((g % 32)::text, 2, '0'),
+                   CASE WHEN g % 3 = 0 THEN 'intent'
+                        WHEN g % 3 = 1 THEN 'previewed'
+                        ELSE 'work_bound' END,
+                   CASE WHEN g % 3 IN (1, 2) THEN repeat(md5('preview-' || g), 2)
+                        ELSE NULL END,
+                   CASE WHEN g % 3 = 2 THEN repeat(md5('work-' || g), 2)
+                        ELSE NULL END,
+                   2, '{{}}', NULL, NULL, {timestamp}, {timestamp}
+            FROM generate_series(1, {rows}) AS g
+            """
+            )
+        )
         connection.exec_driver_sql("ANALYZE")
 
 
@@ -565,6 +588,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     q=None,
                     encryption_format=None,
                     passphrase_id=None,
+                    tags=(),
                     sort=sort,
                     order=order,
                     principal=None,
@@ -602,6 +626,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     str(kwargs["encryption_format"]) if "encryption_format" in kwargs else None
                 ),
                 passphrase_id=(str(kwargs["passphrase_id"]) if "passphrase_id" in kwargs else None),
+                tags=(),
                 sort="id",
                 order="asc",
                 principal=None,
@@ -609,6 +634,25 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             order="asc",
         )
         cases.append(_PlanCase(f"collections.filter.{name}", statement, frozenset({index})))
+
+    cases.append(
+        _PlanCase(
+            "collections.filter.tags",
+            _riverhog_plan_statement(
+                _collection_list_statement(
+                    q=None,
+                    encryption_format=None,
+                    passphrase_id=None,
+                    tags=("tag-016384",),
+                    sort="id",
+                    order="asc",
+                    principal=None,
+                ),
+                order="asc",
+            ),
+            frozenset({"ix_collection_tag_memberships_tag"}),
+        )
+    )
 
     search_indexes = {
         "file_ref": "ix_collection_files_collection_path",
@@ -668,50 +712,14 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         )
     )
 
-    group_indexes = {
-        "id": "collection_access_groups_pkey",
-        "display_label": "ix_collection_access_groups_display_label_id",
-        "created_at": "ix_collection_access_groups_created_at_id",
-        "updated_at": "ix_collection_access_groups_updated_at_id",
-        "status": "ix_collection_access_groups_status_id",
-        "collections": "ix_collection_access_groups_collection_count_id",
-    }
-    for sort in sorted(closed_literal_values(CollectionAccessGroupSort)):
-        for order in ("asc", "desc"):
-            statement = _riverhog_plan_statement(
-                _group_list_statement(
-                    q=None,
-                    status=None,
-                    sort=sort,
-                    order=order,
-                ),
-                order=order,
-            )
-            cases.append(
-                _PlanCase(
-                    f"collection-access-groups.sort.{sort}.{order}",
-                    statement,
-                    frozenset({group_indexes[sort]}),
-                )
-            )
     cases.append(
         _PlanCase(
-            "collection-access-groups.filter.q",
+            "tags.filter.q",
             _riverhog_plan_statement(
-                _group_list_statement(q="065536", status=None, sort="id", order="asc"),
+                _tag_list_statement(query="tag-016384", principal=None),
                 order="asc",
             ),
-            frozenset({"ix_collection_access_groups_search_trgm"}),
-        )
-    )
-    cases.append(
-        _PlanCase(
-            "collection-access-groups.filter.status",
-            _riverhog_plan_statement(
-                _group_list_statement(q=None, status="disabled", sort="id", order="asc"),
-                order="asc",
-            ),
-            frozenset({"ix_collection_access_groups_status_id"}),
+            frozenset({"ix_collection_tags_search_trgm"}),
         )
     )
 
@@ -1166,7 +1174,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         ),
         (
             "resource",
-            {"resource": "group:" + "c4ca4238a0b923820dcc509a6f75849b" * 2},
+            {"resource": "tag:tag-000001"},
             frozenset({"ix_app_key_access_grants_resource"}),
         ),
         ("active", {"active": True}, frozenset({"ix_app_keys_active"})),
@@ -1367,6 +1375,88 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     order="asc",
                 ),
                 frozenset({"ix_stove0_work_records_phase_work_id"}),
+                database="stove0",
+            ),
+        )
+    )
+
+    admission_indexes = {
+        "admission_id": "stove0_admission_candidates_pkey",
+        "created_at": "ix_stove0_admission_candidates_created",
+        "updated_at": "ix_stove0_admission_candidates_updated",
+        "state": "ix_stove0_admission_candidates_state",
+    }
+    for sort in sorted(closed_literal_values(AdmissionSort)):
+        for order in ("asc", "desc"):
+            statement = _stove0_plan_statement(
+                _admission_list_statement(
+                    policy_id=None,
+                    state=None,
+                    query=None,
+                    sort=sort,
+                    order=order,
+                ),
+                order=order,
+            )
+            cases.append(
+                _PlanCase(
+                    f"stove0-admissions.sort.{sort}.{order}",
+                    statement,
+                    frozenset({admission_indexes[sort]}),
+                    database="stove0",
+                )
+            )
+    cases.extend(
+        (
+            _PlanCase(
+                "stove0-admissions.filter.q",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id=None,
+                        state=None,
+                        query="19c611b455303958a1ca8f4c6c382fd4",
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset(
+                    {
+                        "ix_stove0_admission_candidates_id_trgm",
+                        "ix_stove0_admission_candidates_policy_trgm",
+                        "ix_stove0_admission_candidates_work_trgm",
+                    }
+                ),
+                database="stove0",
+            ),
+            _PlanCase(
+                "stove0-admissions.filter.policy_id",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id="policy-00",
+                        state=None,
+                        query=None,
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset({"ix_stove0_admission_candidates_policy"}),
+                database="stove0",
+            ),
+            _PlanCase(
+                "stove0-admissions.filter.state",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id=None,
+                        state="intent",
+                        query=None,
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset({"ix_stove0_admission_candidates_state"}),
                 database="stove0",
             ),
         )
@@ -1603,7 +1693,9 @@ def test_every_repo_query_selector_is_classified_and_every_database_selector_is_
     filter_names = {"key": "key_id", "collection": "collection"}
     for key, prefix in _DATABASE_PLAN_OPERATIONS.items():
         selectors = observed[key]
-        expected_selectors = _DATABASE_FILTER_SELECTORS[prefix] | {"order", "sort"}
+        expected_selectors = set(_DATABASE_FILTER_SELECTORS[prefix])
+        if "sort" in selectors or "order" in selectors:
+            expected_selectors |= {"order", "sort"}
         if "page_size" in selectors or "page_token" in selectors:
             expected_selectors |= {"page_size", "page_token"}
         assert selectors == expected_selectors, key
@@ -1615,9 +1707,10 @@ def test_every_repo_query_selector_is_classified_and_every_database_selector_is_
         application, operation_id = key
         schema = schemas[application]
         operation = operations[(application, operation_id)]
-        for sort in _query_enum(schema, operation, "sort"):
-            for order in _query_enum(schema, operation, "order"):
-                expected_case_ids.add(f"{prefix}.sort.{sort}.{order}")
+        if "sort" in _query_selectors(operation):
+            for sort in _query_enum(schema, operation, "sort"):
+                for order in _query_enum(schema, operation, "order"):
+                    expected_case_ids.add(f"{prefix}.sort.{sort}.{order}")
 
     assert case_ids == expected_case_ids
 
@@ -1676,6 +1769,7 @@ def test_collection_query_has_indexed_identity_and_description_projections(
                 q="16384",
                 encryption_format=None,
                 passphrase_id=None,
+                tags=(),
                 sort="id",
                 order="asc",
                 principal=None,

@@ -21,6 +21,7 @@ from riverhog_api_client.downloads import (
     download_retrieval_files,
 )
 from riverhog_cli_support.output import emit, format_list_ids
+from riverhog_protocol import validate_collection_tag
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
@@ -198,7 +199,7 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
         SELECT c.collection_id, c.created_at,
                CASE
                    WHEN c.remote_deleted = 1 THEN 'remote-deleted'
-                   WHEN c.inventory_complete = 0 THEN 'synchronizing'
+                   WHEN c.inventory_complete = 0 OR c.tags_complete = 0 THEN 'synchronizing'
                    ELSE 'desired'
                END AS status,
                COUNT(f.path) AS files,
@@ -206,7 +207,8 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
         FROM desired_collections AS c
         LEFT JOIN desired_files AS f USING (collection_id)
         WHERE c.collection_id = ?
-        GROUP BY c.collection_id, c.created_at, c.remote_deleted, c.inventory_complete
+        GROUP BY c.collection_id, c.created_at, c.remote_deleted,
+                 c.inventory_complete, c.tags_complete
         """,
         (collection_id,),
     ).fetchone()
@@ -215,6 +217,12 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
+        "tag_count": int(
+            db.execute(
+                "SELECT COUNT(*) FROM desired_collection_tags WHERE collection_id = ?",
+                (collection_id,),
+            ).fetchone()[0]
+        ),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),
@@ -226,6 +234,8 @@ def _begin_inventory_refresh(
     *,
     collection_id: int,
     inventory_identity: str,
+    tag_revision: int,
+    tag_set_identity: str,
     created_at: str,
 ) -> None:
     parse_utc_timestamp(created_at)
@@ -236,20 +246,29 @@ def _begin_inventory_refresh(
             inventory_identity,
             inventory_cursor,
             inventory_complete,
+            tag_revision,
+            tag_set_identity,
+            tag_page_token,
+            tags_complete,
             created_at,
             remote_deleted
         )
-        VALUES (?, ?, NULL, 0, ?, 0)
+        VALUES (?, ?, NULL, 0, ?, ?, NULL, 0, ?, 0)
         ON CONFLICT (collection_id) DO UPDATE SET
             inventory_identity = excluded.inventory_identity,
             inventory_cursor = NULL,
             inventory_complete = 0,
+            tag_revision = excluded.tag_revision,
+            tag_set_identity = excluded.tag_set_identity,
+            tag_page_token = NULL,
+            tags_complete = 0,
             created_at = excluded.created_at,
             remote_deleted = 0
         """,
-        (collection_id, inventory_identity, created_at),
+        (collection_id, inventory_identity, tag_revision, tag_set_identity, created_at),
     )
     db.execute("DELETE FROM desired_files WHERE collection_id = ?", (collection_id,))
+    db.execute("DELETE FROM desired_collection_tags WHERE collection_id = ?", (collection_id,))
     db.commit()
 
 
@@ -291,9 +310,20 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
     if normalize_collection_id(summary["id"]) != collection_id:
         raise InvalidState("Riverhog returned the wrong collection summary")
     inventory_identity = str(summary.get("inventory_identity") or "")
+    raw_tag_revision = summary.get("tag_revision")
+    tag_set_identity = str(summary.get("tag_set_identity") or "")
+    if (
+        isinstance(raw_tag_revision, bool)
+        or not isinstance(raw_tag_revision, int)
+        or raw_tag_revision < 1
+        or len(tag_set_identity) != 64
+    ):
+        raise InvalidState("Riverhog returned an invalid collection tag authority")
+    tag_revision = raw_tag_revision
     state = db.execute(
         """
-        SELECT inventory_identity, inventory_cursor, inventory_complete
+        SELECT inventory_identity, inventory_cursor, inventory_complete,
+               tag_revision, tag_set_identity, tag_page_token, tags_complete
         FROM desired_collections
         WHERE collection_id = ?
         """,
@@ -304,6 +334,8 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
             db,
             collection_id=collection_id,
             inventory_identity=inventory_identity,
+            tag_revision=tag_revision,
+            tag_set_identity=tag_set_identity,
             created_at=str(summary["created_at"]),
         )
         cursor: str | None = None
@@ -311,6 +343,24 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
     else:
         cursor = None if state["inventory_cursor"] is None else str(state["inventory_cursor"])
         complete = bool(state["inventory_complete"])
+        if (
+            int(state["tag_revision"]) != tag_revision
+            or str(state["tag_set_identity"]) != tag_set_identity
+        ):
+            db.execute(
+                """
+                UPDATE desired_collections
+                SET tag_revision = ?, tag_set_identity = ?, tag_page_token = NULL,
+                    tags_complete = 0, remote_deleted = 0
+                WHERE collection_id = ?
+                """,
+                (tag_revision, tag_set_identity, collection_id),
+            )
+            db.execute(
+                "DELETE FROM desired_collection_tags WHERE collection_id = ?",
+                (collection_id,),
+            )
+            db.commit()
     while not complete:
         inventory = api.get_portable_collection_inventory(
             collection_id,
@@ -339,6 +389,65 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
         int(summary["bytes"]),
     ):
         raise InvalidState("local collection inventory is incomplete")
+    tag_state = db.execute(
+        "SELECT tag_page_token, tags_complete FROM desired_collections WHERE collection_id = ?",
+        (collection_id,),
+    ).fetchone()
+    if tag_state is None:
+        raise InvalidState("local collection tag state is unavailable")
+    tag_page_token = (
+        None if tag_state["tag_page_token"] is None else str(tag_state["tag_page_token"])
+    )
+    tags_complete = bool(tag_state["tags_complete"])
+    while not tags_complete:
+        payload = api.list_collection_tags(
+            collection_id,
+            revision=tag_revision,
+            tag_set_identity=tag_set_identity,
+            page_size=100,
+            page_token=tag_page_token,
+        )
+        if (
+            payload.get("collection_id") != collection_id
+            or payload.get("revision") != tag_revision
+            or payload.get("tag_set_identity") != tag_set_identity
+        ):
+            raise InvalidState("collection tags changed during bounded traversal")
+        raw_tags = payload.get("tags")
+        if not isinstance(raw_tags, list):
+            raise InvalidState("Riverhog returned invalid collection tags")
+        for raw_tag in raw_tags:
+            if not isinstance(raw_tag, str) or validate_collection_tag(raw_tag) != raw_tag:
+                raise InvalidState("Riverhog returned an invalid collection tag")
+            try:
+                db.execute(
+                    "INSERT INTO desired_collection_tags (collection_id, tag) VALUES (?, ?)",
+                    (collection_id, raw_tag),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise InvalidState("Riverhog repeated a collection tag") from exc
+        next_page_token = payload.get("next_page_token")
+        if next_page_token is not None and (
+            not isinstance(next_page_token, str) or not next_page_token
+        ):
+            raise InvalidState("Riverhog returned an invalid collection-tag page token")
+        tags_complete = next_page_token is None
+        db.execute(
+            """
+            UPDATE desired_collections
+            SET tag_page_token = ?, tags_complete = ?
+            WHERE collection_id = ? AND tag_revision = ? AND tag_set_identity = ?
+            """,
+            (
+                next_page_token,
+                int(tags_complete),
+                collection_id,
+                tag_revision,
+                tag_set_identity,
+            ),
+        )
+        db.commit()
+        tag_page_token = next_page_token
 
 
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
@@ -410,11 +519,25 @@ def _refresh_catalog(db: sqlite3.Connection, api: ApiClient, target: Path) -> No
                 )
             ]
         for collection_id in collection_ids:
-            present = replica.get(collection_id) is not None
+            descriptor = replica.get(collection_id)
             db.execute(
                 "UPDATE desired_collections SET remote_deleted = ? WHERE collection_id = ?",
-                (int(not present), collection_id),
+                (int(descriptor is None), collection_id),
             )
+            if descriptor is None:
+                continue
+            local_authority = db.execute(
+                "SELECT tag_revision, tag_set_identity FROM desired_collections "
+                "WHERE collection_id = ?",
+                (collection_id,),
+            ).fetchone()
+            if local_authority is None:
+                continue
+            if (
+                int(local_authority["tag_revision"]) != descriptor.tag_revision
+                or str(local_authority["tag_set_identity"]) != descriptor.tag_set_identity
+            ):
+                _refresh_collection(db, api, collection_id)
         db.execute(
             """
             INSERT INTO settings (key, value) VALUES ('catalog_reconcile_after', ?)
@@ -824,7 +947,7 @@ def list_collections(
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Search collection id or status"),
+        typer.Option("--query", "-q", help="Search collection id, tag, or status"),
     ] = None,
     ids: Annotated[
         bool,
@@ -870,21 +993,32 @@ def list_collections(
         filters = ""
         params: list[object] = []
         if normalized_query:
-            filters = "WHERE CAST(collection_id AS TEXT) LIKE ? OR status LIKE lower(?)"
+            filters = (
+                "WHERE CAST(collection_id AS TEXT) LIKE ? "
+                "OR EXISTS (SELECT 1 FROM desired_collection_tags AS t "
+                "           WHERE t.collection_id = local_collections.collection_id "
+                "             AND t.tag LIKE ?) "
+                "OR status LIKE lower(?)"
+            )
             pattern = f"%{normalized_query}%"
-            params.extend((pattern, pattern))
+            params.extend((pattern, pattern, pattern))
         base_query = f"""
                 WITH local_collections AS (
                 SELECT c.collection_id, c.created_at, c.remote_deleted,
-                       CASE c.remote_deleted
-                           WHEN 1 THEN 'remote-deleted'
+                       (SELECT COUNT(*) FROM desired_collection_tags AS t
+                        WHERE t.collection_id = c.collection_id) AS tag_count,
+                       CASE
+                           WHEN c.remote_deleted = 1 THEN 'remote-deleted'
+                           WHEN c.inventory_complete = 0 OR c.tags_complete = 0
+                               THEN 'synchronizing'
                            ELSE 'desired'
                        END AS status,
                        COUNT(f.path) AS files,
                        COALESCE(SUM(f.bytes), 0) AS bytes
                 FROM desired_collections AS c
                 LEFT JOIN desired_files AS f USING (collection_id)
-                GROUP BY c.collection_id, c.created_at, c.remote_deleted
+                GROUP BY c.collection_id, c.created_at, c.remote_deleted,
+                         c.inventory_complete, c.tags_complete
                 )
                 SELECT * FROM local_collections
                 {filters}
@@ -946,6 +1080,7 @@ def _local_collection_list_item(row: sqlite3.Row) -> dict[str, object]:
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
+        "tag_count": int(row["tag_count"]),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),

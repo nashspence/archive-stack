@@ -29,7 +29,7 @@ from riverhog_protocol.errors import (
     CatalogSyncViewChanged,
     Forbidden,
 )
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
@@ -43,6 +43,14 @@ from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CatalogSyncStateRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagMutationRecord,
+    CollectionTagNodeRecord,
+    CollectionTagPublicationFrontierRecord,
+    CollectionTagRecord,
+    CollectionTagRevisionRecord,
+    CollectionUploadTagNodeReferenceRecord,
+    CollectionUploadTagPublicationFrontierRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.runtime_config import RuntimeConfig
@@ -201,6 +209,8 @@ class SqlAlchemyCatalogSyncService:
                     description=row.description,
                     description_revision=row.description_revision,
                     description_identity=row.description_identity,
+                    tag_revision=row.tag_revision,
+                    tag_set_identity=row.tag_set_identity,
                     revision=row.catalog_revision,
                 )
                 for row in page_rows
@@ -318,6 +328,8 @@ class SqlAlchemyCatalogSyncService:
                             description=event.description,
                             description_revision=event.description_revision,
                             description_identity=event.description_identity,
+                            tag_revision=event.tag_revision,
+                            tag_set_identity=event.tag_set_identity,
                             revision=str(event.revision),
                         )
                     )
@@ -377,17 +389,18 @@ class SqlAlchemyCatalogSyncService:
                 if event.committed_at is None or event.committed_at >= cutoff:
                     break
                 expired.append(event)
-            if not expired:
-                return 0
-            last_revision = expired[-1].revision
-            if last_revision is None:
-                raise RuntimeError("published catalog event has no revision")
-            session.execute(
-                delete(CatalogEventRecord).where(
-                    CatalogEventRecord.sequence.in_([event.sequence for event in expired])
+            if expired:
+                last_revision = expired[-1].revision
+                if last_revision is None:
+                    raise RuntimeError("published catalog event has no revision")
+                session.execute(
+                    delete(CatalogEventRecord).where(
+                        CatalogEventRecord.sequence.in_([event.sequence for event in expired])
+                    )
                 )
-            )
-            state.retained_revision = int(last_revision)
+                state.retained_revision = int(last_revision)
+                session.flush()
+            _reap_unreferenced_tag_history(session, limit=limit)
             return len(expired)
 
     def _decode_cursor(
@@ -453,6 +466,105 @@ def _state(session: Session) -> CatalogSyncStateRecord:
     return state
 
 
+def _reap_unreferenced_tag_history(session: Session, *, limit: int) -> None:
+    """Reclaim one bounded prefix of tag history outside the retained catalog log."""
+
+    revisions = list(
+        session.scalars(
+            select(CollectionTagRevisionRecord)
+            .join(
+                CollectionRecord, CollectionRecord.id == CollectionTagRevisionRecord.collection_id
+            )
+            .where(
+                CollectionTagRevisionRecord.revision != CollectionRecord.tag_revision,
+                ~exists(
+                    select(1).where(
+                        CatalogEventRecord.collection_id
+                        == CollectionTagRevisionRecord.collection_id,
+                        CatalogEventRecord.tag_revision == CollectionTagRevisionRecord.revision,
+                    )
+                ),
+            )
+            .order_by(
+                CollectionTagRevisionRecord.collection_id,
+                CollectionTagRevisionRecord.revision,
+            )
+            .limit(limit)
+        )
+    )
+    for revision in revisions:
+        session.execute(
+            delete(CollectionTagPublicationFrontierRecord).where(
+                CollectionTagPublicationFrontierRecord.collection_id == revision.collection_id,
+                CollectionTagPublicationFrontierRecord.head_identity == revision.head_identity,
+            )
+        )
+        session.execute(
+            delete(CollectionTagMutationRecord).where(
+                CollectionTagMutationRecord.collection_id == revision.collection_id,
+                CollectionTagMutationRecord.result_revision == revision.revision,
+                CollectionTagMutationRecord.state == "succeeded",
+            )
+        )
+        session.delete(revision)
+    if revisions:
+        session.flush()
+
+    node_digests = list(
+        session.scalars(
+            select(CollectionTagNodeRecord.digest)
+            .where(
+                ~exists(
+                    select(1).where(
+                        CollectionTagPublicationFrontierRecord.node_digest
+                        == CollectionTagNodeRecord.digest
+                    )
+                ),
+                ~exists(
+                    select(1).where(
+                        CollectionUploadTagPublicationFrontierRecord.node_digest
+                        == CollectionTagNodeRecord.digest
+                    )
+                ),
+                ~exists(
+                    select(1).where(
+                        CollectionUploadTagNodeReferenceRecord.node_digest
+                        == CollectionTagNodeRecord.digest
+                    )
+                ),
+            )
+            .order_by(CollectionTagNodeRecord.digest)
+            .limit(limit)
+        )
+    )
+    if node_digests:
+        session.execute(
+            delete(CollectionTagNodeRecord).where(CollectionTagNodeRecord.digest.in_(node_digests))
+        )
+
+    unused_tag_digests = list(
+        session.scalars(
+            select(CollectionTagRecord.tag_sha256)
+            .where(
+                CollectionTagRecord.collection_count == 0,
+                ~exists(
+                    select(1).where(
+                        CollectionTagMembershipRecord.tag_sha256 == CollectionTagRecord.tag_sha256
+                    )
+                ),
+            )
+            .order_by(CollectionTagRecord.tag_sha256)
+            .limit(limit)
+        )
+    )
+    if unused_tag_digests:
+        session.execute(
+            delete(CollectionTagRecord).where(
+                CollectionTagRecord.tag_sha256.in_(unused_tag_digests)
+            )
+        )
+
+
 def _catalog_collection_page_statement(
     *,
     visible: ColumnElement[bool],
@@ -468,6 +580,8 @@ def _catalog_collection_page_statement(
             CollectionRecord.description,
             CollectionRecord.description_revision,
             CollectionRecord.description_identity,
+            CollectionRecord.tag_revision,
+            CollectionRecord.tag_set_identity,
             CollectionRecord.catalog_revision,
         )
         .where(
@@ -551,6 +665,8 @@ def _descriptor(
     description: str | None,
     description_revision: int,
     description_identity: str,
+    tag_revision: int,
+    tag_set_identity: str,
     revision: int | None,
 ) -> CatalogSyncDescriptor:
     if archive_root_sha256 is None or revision is None:
@@ -562,6 +678,8 @@ def _descriptor(
         description=description,
         description_revision=description_revision,
         description_identity=description_identity,
+        tag_revision=tag_revision,
+        tag_set_identity=tag_set_identity,
         revision=str(revision),
     )
 

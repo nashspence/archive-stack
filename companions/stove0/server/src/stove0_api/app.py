@@ -37,6 +37,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from state_schema import StateSchemaError
 from stove0_core import (
+    ClassificationAdmissionService,
     ConcurrentEvaluationUpdate,
     ConcurrentWorkUpdate,
     EvaluationReview,
@@ -61,6 +62,12 @@ from stove0_core import (
 )
 from stove0_observer_client import ContentObserverClient, load_semantic_validator_registry
 from stove0_operator_contracts import (
+    AdmissionPage,
+    AdmissionPolicyCatalogView,
+    AdmissionPolicyStatus,
+    AdmissionSort,
+    AdmissionState,
+    AdmissionView,
     EvaluationPage,
     EvaluationPhase,
     EvaluationSort,
@@ -136,6 +143,7 @@ class Stove0Composition:
     preview: WorkflowPreviewService
     evaluations: EvaluationService
     scheduler: Stove0Scheduler
+    admission: ClassificationAdmissionService | None = None
     target_callbacks: TargetCallbackAuthority | None = None
     browse_tokens: BrowseTokenCodec | None = None
 
@@ -205,6 +213,20 @@ class Stove0Composition:
             targets=targets,
             target_callbacks=target_callbacks,
         )
+        preview = WorkflowPreviewService(
+            riverhog=authority,
+            planning=planner,
+            observers=observers,
+            targets=targets,
+        )
+        admission = ClassificationAdmissionService(
+            catalog=config.admissions,
+            riverhog=riverhog_api,
+            state=state,
+            planner=planner,
+            preview=preview,
+            coordinator=coordinator,
+        )
         return cls(
             config=config,
             riverhog_api=riverhog_api,
@@ -212,19 +234,16 @@ class Stove0Composition:
             recipes=recipes,
             work=work,
             coordinator=coordinator,
-            preview=WorkflowPreviewService(
-                riverhog=authority,
-                planning=planner,
-                observers=observers,
-                targets=targets,
-            ),
+            preview=preview,
             evaluations=EvaluationService(state.evaluation_store(), work=work),
             scheduler=Stove0Scheduler(
                 coordinator=coordinator,
                 state=state,
                 production_seals=target_callbacks,
+                admission=admission,
                 operational_state_retention_seconds=(config.operational_state_retention_seconds),
             ),
+            admission=admission,
             target_callbacks=target_callbacks,
             browse_tokens=BrowseTokenCodec(
                 config.browse_token_signing_key,
@@ -246,6 +265,13 @@ def _target_callback(composition: Stove0Composition) -> TargetCallbackAuthority:
     if callbacks is None:
         raise HTTPException(status_code=503, detail="target callbacks are unavailable")
     return callbacks
+
+
+def _admission(composition: Stove0Composition) -> ClassificationAdmissionService:
+    admission = composition.admission
+    if admission is None:
+        raise HTTPException(status_code=503, detail="classification admission is unavailable")
+    return admission
 
 
 def create_app(
@@ -543,6 +569,92 @@ def create_app(
     def get_recipe(recipe_id: str, revision: int | None = None) -> RecipeView:
         recipe = composition.recipes.recipe(recipe_id, revision)
         return RecipeView.from_definition(recipe)
+
+    @app.get(
+        "/v1/admission-policies",
+        response_model=AdmissionPolicyCatalogView,
+        dependencies=[Depends(authorize)],
+        operation_id="list_admission_policies",
+        tags=["admissions"],
+    )
+    def list_admission_policies() -> AdmissionPolicyCatalogView:
+        return _admission(composition).policies()
+
+    @app.post(
+        "/v1/admission-policies/{policy_id}:rebaseline",
+        response_model=AdmissionPolicyStatus,
+        dependencies=[Depends(authorize)],
+        operation_id="rebaseline_admission_policy",
+        tags=["admissions"],
+    )
+    def rebaseline_admission_policy(policy_id: str) -> AdmissionPolicyStatus:
+        return _admission(composition).rebaseline(policy_id)
+
+    @app.post(
+        "/v1/admission-policies/{policy_id}:backfill",
+        response_model=AdmissionPolicyStatus,
+        dependencies=[Depends(authorize)],
+        operation_id="backfill_admission_policy",
+        tags=["admissions"],
+    )
+    def backfill_admission_policy(policy_id: str) -> AdmissionPolicyStatus:
+        return _admission(composition).rebaseline(policy_id, mode="backfill")
+
+    @app.get(
+        "/v1/admissions",
+        response_model=AdmissionPage,
+        dependencies=[Depends(authorize)],
+        operation_id="list_admissions",
+        tags=["admissions"],
+        openapi_extra=mutable_browse_operation(),
+    )
+    def list_admissions(
+        page_size: int = Query(default=25, ge=1, le=100),
+        page_token: BrowsePageTokenQuery = None,
+        policy_id: str | None = None,
+        state: AdmissionState | None = None,
+        q: BrowseQueryParameter = None,
+        sort: AdmissionSort = "created_at",
+        order: SortOrder = "desc",
+    ) -> AdmissionPage:
+        normalized_query = q.casefold() if q is not None else None
+        selectors: dict[str, object] = {
+            "policy_id": policy_id,
+            "state": state,
+            "q": normalized_query,
+            "sort": sort,
+            "order": order,
+        }
+        position = browse_position(
+            operation="list_admissions",
+            page_token=page_token,
+            selectors=selectors,
+        )
+        return AdmissionPage.model_validate(
+            browse_page(
+                _admission(composition).list_admissions(
+                    page_size=page_size,
+                    position=position,
+                    policy_id=policy_id,
+                    state=state,
+                    query=normalized_query,
+                    sort=sort,
+                    order=order,
+                ),
+                operation="list_admissions",
+                selectors=selectors,
+            )
+        )
+
+    @app.get(
+        "/v1/admissions/{admission_id}",
+        response_model=AdmissionView,
+        dependencies=[Depends(authorize)],
+        operation_id="get_admission",
+        tags=["admissions"],
+    )
+    def get_admission(admission_id: str) -> AdmissionView:
+        return _admission(composition).get_admission(admission_id)
 
     @app.get(
         "/v1/work",

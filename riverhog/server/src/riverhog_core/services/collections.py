@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import hashlib
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from http_api_contracts import closed_literal_values
 from riverhog_archive_contracts import normalize_passphrase_id
-from riverhog_protocol import CollectionSort, SortOrder
+from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+    CollectionSort,
+    SortOrder,
+    validate_collection_tag,
+)
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, text_search_key
-from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy import asc, desc, exists, func, select, union_all
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
@@ -19,7 +25,12 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
+    CollectionFileRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagPublicationRecord,
+    CollectionTagPublishedNodeRecord,
+    CollectionTagRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.domain.models import (
@@ -152,6 +163,7 @@ class SqlAlchemyCollectionService:
         q: str | None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
+        tags: Sequence[str] = (),
         sort: str = "id",
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
@@ -166,6 +178,7 @@ class SqlAlchemyCollectionService:
             q=q,
             encryption_format=encryption_format,
             passphrase_id=passphrase_id,
+            tags=tags,
             sort=sort,
             order=order,
             principal=principal,
@@ -192,6 +205,7 @@ class SqlAlchemyCollectionService:
                 query=q,
                 encryption_format=normalized_format,
                 passphrase_id=normalized_passphrase_id,
+                tags=tuple(tags),
                 collections=[_collection_summary(row) for row in rows],
             )
 
@@ -201,6 +215,7 @@ class SqlAlchemyCollectionService:
         q: str | None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
+        tags: Sequence[str] = (),
         sort: str = "id",
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
@@ -209,6 +224,7 @@ class SqlAlchemyCollectionService:
             q=q,
             encryption_format=encryption_format,
             passphrase_id=passphrase_id,
+            tags=tags,
             sort=sort,
             order=order,
             principal=principal,
@@ -297,6 +313,7 @@ def _collection_list_statement(
     q: str | None,
     encryption_format: str | None,
     passphrase_id: str | None,
+    tags: Sequence[str],
     sort: str,
     order: str,
     principal: ApplicationPrincipal | None,
@@ -305,6 +322,7 @@ def _collection_list_statement(
         q=q,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
+        tags=tags,
         sort=sort,
         order=order,
         principal=principal,
@@ -337,6 +355,7 @@ def _collection_list_filters(
     q: str | None,
     encryption_format: str | None,
     passphrase_id: str | None,
+    tags: Sequence[str],
     sort: str,
     order: str,
     principal: ApplicationPrincipal | None,
@@ -345,6 +364,14 @@ def _collection_list_filters(
         raise BadRequest(f"sort must be one of {', '.join(sorted(_COLLECTION_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
+    if len(tags) > COLLECTION_TAG_REQUEST_MEMBERS_MAX:
+        raise BadRequest("collection tag selector batch is too large")
+    try:
+        canonical_tags = tuple(validate_collection_tag(tag) for tag in tags)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+    if len(set(canonical_tags)) != len(canonical_tags):
+        raise BadRequest("collection tag selectors must not contain duplicates")
     normalized_format = _normalize_filter(encryption_format, name="encryption_format")
     if passphrase_id is None:
         normalized_passphrase_id = None
@@ -359,17 +386,38 @@ def _collection_list_filters(
     ]
     if q is not None:
         pattern = _like_pattern(text_search_key(q))
-        matching_ids = select(CollectionRecord.id).where(
-            or_(
-                CollectionRecord.search_text.like(pattern, escape="\\"),
-                CollectionRecord.description_search.like(pattern, escape="\\"),
+        matching_ids = union_all(
+            select(CollectionRecord.id.label("collection_id")).where(
+                CollectionRecord.search_text.like(pattern, escape="\\")
+            ),
+            select(CollectionRecord.id.label("collection_id")).where(
+                CollectionRecord.description_search.like(pattern, escape="\\")
+            ),
+            select(CollectionTagMembershipRecord.collection_id.label("collection_id"))
+            .join(
+                CollectionTagRecord,
+                CollectionTagRecord.tag_sha256 == CollectionTagMembershipRecord.tag_sha256,
             )
-        )
-        filters.append(CollectionRecord.id.in_(matching_ids))
+            .where(CollectionTagRecord.search_text.like(pattern, escape="\\")),
+            select(CollectionFileRecord.collection_id.label("collection_id")).where(
+                CollectionFileRecord.path_search_text.like(pattern, escape="\\")
+            ),
+        ).subquery()
+        filters.append(CollectionRecord.id.in_(select(matching_ids.c.collection_id)))
     if normalized_format is not None:
         filters.append(CollectionRecord.encryption_format == normalized_format)
     if normalized_passphrase_id is not None:
         filters.append(CollectionRecord.passphrase_id == normalized_passphrase_id)
+    for tag in canonical_tags:
+        tag_digest = hashlib.sha256(tag.encode("utf-8")).hexdigest()
+        filters.append(
+            exists(
+                select(1).where(
+                    CollectionTagMembershipRecord.collection_id == CollectionRecord.id,
+                    CollectionTagMembershipRecord.tag_sha256 == tag_digest,
+                )
+            )
+        )
     return filters, normalized_format, normalized_passphrase_id
 
 
@@ -390,6 +438,18 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
     description_storage_bytes = (
         select(func.coalesce(func.sum(CollectionDescriptionPublicationRecord.stored_bytes), 0))
         .where(CollectionDescriptionPublicationRecord.collection_id == CollectionRecord.id)
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
+    tag_head_storage_bytes = (
+        select(func.coalesce(func.sum(CollectionTagPublicationRecord.head_stored_bytes), 0))
+        .where(CollectionTagPublicationRecord.collection_id == CollectionRecord.id)
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
+    tag_node_storage_bytes = (
+        select(func.coalesce(func.sum(CollectionTagPublishedNodeRecord.stored_bytes), 0))
+        .where(CollectionTagPublishedNodeRecord.collection_id == CollectionRecord.id)
         .correlate(CollectionRecord)
         .scalar_subquery()
     )
@@ -438,6 +498,34 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
         .correlate(CollectionRecord)
         .scalar_subquery()
     )
+    current_tag_copies = (
+        select(func.count())
+        .select_from(CollectionTagPublicationRecord)
+        .join(
+            CollectionArchiveCopyRecord,
+            (
+                CollectionArchiveCopyRecord.collection_id
+                == CollectionTagPublicationRecord.collection_id
+            )
+            & (CollectionArchiveCopyRecord.store == CollectionTagPublicationRecord.store),
+        )
+        .where(
+            CollectionTagPublicationRecord.collection_id == CollectionRecord.id,
+            CollectionArchiveCopyRecord.state == "uploaded",
+            ~select(ArchiveCopyRetirementRecord.collection_id)
+            .where(
+                ArchiveCopyRetirementRecord.collection_id == CollectionRecord.id,
+                ArchiveCopyRetirementRecord.store == CollectionTagPublicationRecord.store,
+            )
+            .exists(),
+            CollectionTagPublicationRecord.state == "published",
+            CollectionTagPublicationRecord.published_revision == CollectionRecord.tag_revision,
+            CollectionTagPublicationRecord.published_tag_set_identity
+            == CollectionRecord.tag_set_identity,
+        )
+        .correlate(CollectionRecord)
+        .scalar_subquery()
+    )
     archive_root_sha256 = (
         select(func.min(CollectionArchiveObjectRecord.sha256))
         .where(
@@ -462,9 +550,15 @@ def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
             CollectionRecord.file_count.label("files"),
             CollectionRecord.file_bytes.label("bytes"),
             archive_copy_count.label("archive_copy_count"),
-            (remote_storage_bytes + description_storage_bytes).label("remote_storage_bytes"),
+            (
+                remote_storage_bytes
+                + description_storage_bytes
+                + tag_head_storage_bytes
+                + tag_node_storage_bytes
+            ).label("remote_storage_bytes"),
             retained_archive_copy_count.label("retained_archive_copy_count"),
             current_description_copies.label("current_description_copies"),
+            current_tag_copies.label("current_tag_copies"),
             archive_root_sha256.label("archive_root_sha256"),
             archive_root_sha256_max.label("archive_root_sha256_max"),
         ),
@@ -494,6 +588,13 @@ def _collection_summary(
             if collection.description_revision == 0
             else "current"
             if int(row.current_description_copies) == int(row.retained_archive_copy_count)
+            else "reconciling"
+        ),
+        tag_revision=collection.tag_revision,
+        tag_set_identity=collection.tag_set_identity,
+        tag_publication=(
+            "current"
+            if int(row.current_tag_copies) == int(row.retained_archive_copy_count)
             else "reconciling"
         ),
         content_identity=collection.content_identity,

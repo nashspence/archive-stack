@@ -5,9 +5,18 @@ import threading
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from riverhog_api_client import ApiClient
+from riverhog_protocol import (
+    CatalogSyncChangePage,
+    CatalogSyncCheckpoint,
+    CatalogSyncCollectionPage,
+    CatalogSyncDescriptor,
+    CatalogSyncUpsert,
+)
 from riverhog_protocol.collection_workflows import (
     ArtifactDispositionSetIdentity,
     CollectionDerivation,
@@ -18,6 +27,7 @@ from riverhog_protocol.collection_workflows import (
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from stove0_core import (
+    ClassificationAdmissionService,
     ConcurrentWorkUpdate,
     SqlAlchemyStateStore,
     Stove0Scheduler,
@@ -34,7 +44,7 @@ from stove0_core.work_state import (
     TargetSettlementSealCheckpoint,
     TargetSettlementSealRecord,
 )
-from stove0_operator_contracts import WorkCreatedEvent
+from stove0_operator_contracts import AdmissionCatalog, AdmissionPolicy, WorkCreatedEvent
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -904,6 +914,140 @@ def test_postgres_concurrent_branch_set_and_join_admission_converge_exactly_once
     assert parent is not None and parent.join_plan == join_plan
     child = second.load(join_plan.work.work_id)
     assert child is not None and child.workflow_plan == join_plan.workflow_plan
+
+
+def test_postgres_concurrent_classification_admission_converges_exactly_once(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    descriptor = CatalogSyncDescriptor(
+        collection_id=71,
+        archive_root_sha256="1" * 64,
+        content_identity="2" * 64,
+        description=None,
+        description_revision=0,
+        description_identity="3" * 64,
+        tag_revision=1,
+        tag_set_identity="4" * 64,
+        revision="1",
+    )
+    policy = AdmissionPolicy(
+        id="camera-archive",
+        revision=1,
+        required_tags=("camera",),
+        recipe_id="fixture.archive/v1",
+        recipe_revision=1,
+        recipe_sha256="5" * 64,
+    )
+
+    class CatalogApi:
+        def create_catalog_sync_checkpoint(self) -> CatalogSyncCheckpoint:
+            return CatalogSyncCheckpoint(
+                source_identity="6" * 64,
+                authorization_view_identity="7" * 64,
+                catalog_cursor="baseline",
+            )
+
+        def list_catalog_sync_collections(
+            self, cursor: str, *, limit: int
+        ) -> CatalogSyncCollectionPage:
+            assert cursor == "baseline" and limit == 100
+            return CatalogSyncCollectionPage(
+                source_identity="6" * 64,
+                authorization_view_identity="7" * 64,
+                collections=[],
+                changes_cursor="following",
+            )
+
+        def list_catalog_sync_changes(self, cursor: str, *, limit: int) -> CatalogSyncChangePage:
+            assert cursor == "following" and limit == 1
+            return CatalogSyncChangePage(
+                source_identity="6" * 64,
+                authorization_view_identity="7" * 64,
+                changes=[CatalogSyncUpsert(**descriptor.model_dump())],
+                next_cursor="after-change",
+                caught_up=True,
+                through_revision="1",
+            )
+
+        def collection_contains_tag(
+            self, collection_id: int, **kwargs: object
+        ) -> dict[str, object]:
+            return {
+                "collection_id": collection_id,
+                "revision": kwargs["revision"],
+                "tag_set_identity": kwargs["tag_set_identity"],
+                "tag": kwargs["tag"],
+                "present": True,
+            }
+
+    class Planner:
+        catalog = SimpleNamespace(
+            recipe=lambda recipe_id, revision: SimpleNamespace(sha256=policy.recipe_sha256)
+        )
+
+    api = cast(ApiClient, CatalogApi())
+
+    def service(state: SqlAlchemyStateStore) -> ClassificationAdmissionService:
+        return ClassificationAdmissionService(
+            catalog=AdmissionCatalog(policies=(policy,)),
+            riverhog=api,
+            state=state,
+            planner=cast(Any, Planner()),
+            preview=cast(Any, object()),
+            coordinator=cast(Any, object()),
+        )
+
+    barrier = threading.Barrier(2)
+    services: list[ClassificationAdmissionService] = []
+    startup_failures: list[BaseException] = []
+
+    def start_service(state: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            services.append(service(state))
+        except BaseException as exc:
+            startup_failures.append(exc)
+
+    threads = [threading.Thread(target=start_service, args=(state,)) for state in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not startup_failures
+    assert len(services) == 2
+    first_service, second_service = services
+    first_service.advance(limit=1)
+    first_service.advance(limit=1)
+    barrier = threading.Barrier(2)
+    runs: list[object] = []
+
+    def admit(candidate: ClassificationAdmissionService) -> None:
+        barrier.wait(timeout=5)
+        runs.append(candidate.advance(limit=1))
+
+    threads = [
+        threading.Thread(target=admit, args=(candidate,))
+        for candidate in (first_service, second_service)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert len(runs) == 2
+    assert all(not run.failures for run in runs)  # type: ignore[attr-defined]
+    admissions = first_service.list_admissions(
+        page_size=25,
+        position=None,
+        policy_id=None,
+        state=None,
+        query=None,
+        sort="created_at",
+        order="desc",
+    )["admissions"]
+    assert len(cast(tuple[object, ...], admissions)) == 1
 
 
 def test_postgres_concurrent_nested_tree_admission_is_atomic_and_normalized(

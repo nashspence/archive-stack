@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 from http_api_contracts import closed_literal_values
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -52,6 +53,8 @@ from stove0_operator_contracts import (
     JOIN_ADMITTED,
     WORK_CREATED,
     WORK_UPDATED,
+    AdmissionSort,
+    AdmissionState,
     EvaluationPhase,
     EvaluationSort,
     SortOrder,
@@ -98,6 +101,8 @@ _WORK_PHASES = closed_literal_values(WorkPhase)
 _WORK_SORTS = closed_literal_values(WorkSort)
 _EVALUATION_PHASES = closed_literal_values(EvaluationPhase)
 _EVALUATION_SORTS = closed_literal_values(EvaluationSort)
+_ADMISSION_SORTS = closed_literal_values(AdmissionSort)
+_ADMISSION_STATES = closed_literal_values(AdmissionState)
 _PRUNE_ROOT_BATCH = 100
 _PRUNE_ORPHAN_BATCH = 100
 _PRUNE_EVENT_BATCH = 1000
@@ -451,6 +456,113 @@ class _CursorRow(_Base):
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
     __table_args__ = (CheckConstraint("revision >= 1", name="ck_stove0_event_cursors_revision"),)
+
+
+class _AdmissionPolicyRow(_Base):
+    __tablename__ = "stove0_admission_policies"
+
+    policy_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    policy_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_identity: Mapped[str | None] = mapped_column(String(64))
+    authorization_view_identity: Mapped[str | None] = mapped_column(String(64))
+    cursor: Mapped[str | None] = mapped_column(String(4096))
+    baseline_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    through_revision: Mapped[str] = mapped_column(String(19), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("policy_revision >= 1", name="ck_stove0_admission_policy_revision"),
+        CheckConstraint("length(policy_id) >= 1", name="ck_stove0_admission_policy_id"),
+        CheckConstraint(
+            "phase IN ('new','baseline','following','reset_required')",
+            name="ck_stove0_admission_policy_phase",
+        ),
+        CheckConstraint(
+            "baseline_mode IN ('observe','backfill')",
+            name="ck_stove0_admission_policy_baseline_mode",
+        ),
+        Index("ix_stove0_admission_policies_phase", "phase", "policy_id"),
+    )
+
+
+class _AdmissionMatchRow(_Base):
+    __tablename__ = "stove0_admission_matches"
+
+    policy_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    generation: Mapped[str] = mapped_column(String(64), primary_key=True)
+    collection_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    matched: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    descriptor_revision: Mapped[str] = mapped_column(String(19), nullable=False)
+    tag_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("collection_id >= 1", name="ck_stove0_admission_match_collection"),
+        CheckConstraint("tag_revision >= 1", name="ck_stove0_admission_match_tag_revision"),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_admission_match_bytes"),
+        Index(
+            "ix_stove0_admission_matches_collection",
+            "collection_id",
+            "policy_id",
+            "generation",
+        ),
+    )
+
+
+class _AdmissionCandidateRow(_Base):
+    __tablename__ = "stove0_admission_candidates"
+
+    admission_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    preview_sha256: Mapped[str | None] = mapped_column(String(64))
+    work_id: Mapped[str | None] = mapped_column(String(64))
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    preview_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('intent','previewed','work_bound')",
+            name="ck_stove0_admission_candidate_state",
+        ),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_admission_candidate_bytes"),
+        CheckConstraint(
+            "preview_bytes IS NULL OR preview_bytes >= 0",
+            name="ck_stove0_admission_candidate_preview_bytes",
+        ),
+        Index("ix_stove0_admission_candidates_state", "state", "admission_id"),
+        Index("ix_stove0_admission_candidates_policy", "policy_id", "admission_id"),
+        Index("ix_stove0_admission_candidates_work", "work_id", "admission_id"),
+        Index("ix_stove0_admission_candidates_created", "created_at", "admission_id"),
+        Index("ix_stove0_admission_candidates_updated", "updated_at", "admission_id"),
+        Index(
+            "ix_stove0_admission_candidates_id_trgm",
+            "admission_id",
+            postgresql_using="gin",
+            postgresql_ops={"admission_id": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_stove0_admission_candidates_policy_trgm",
+            "policy_id",
+            postgresql_using="gin",
+            postgresql_ops={"policy_id": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_stove0_admission_candidates_work_trgm",
+            "work_id",
+            postgresql_using="gin",
+            postgresql_ops={"work_id": "gin_trgm_ops"},
+        ),
+    )
 
 
 class _EventRow(_Base):
@@ -2308,6 +2420,44 @@ def _evaluation_list_statement(
         filters.append(_EvaluationRow.evaluation_id.contains(query.strip().casefold()))
     key_columns = tuple(dict.fromkeys((columns[sort], _EvaluationRow.evaluation_id)))
     return filters, select(_EvaluationRow).where(*filters), key_columns
+
+
+def _admission_list_statement(
+    *,
+    policy_id: str | None,
+    state: AdmissionState | None,
+    query: str | None,
+    sort: AdmissionSort,
+    order: SortOrder,
+) -> tuple[list[Any], Select[tuple[_AdmissionCandidateRow]], tuple[Any, ...]]:
+    if (
+        sort not in _ADMISSION_SORTS
+        or order not in _SORT_ORDERS
+        or (state is not None and state not in _ADMISSION_STATES)
+    ):
+        raise ValueError("stove0 admission selectors are invalid")
+    columns = {
+        "created_at": _AdmissionCandidateRow.created_at,
+        "updated_at": _AdmissionCandidateRow.updated_at,
+        "state": _AdmissionCandidateRow.state,
+        "admission_id": _AdmissionCandidateRow.admission_id,
+    }
+    filters = []
+    if policy_id is not None:
+        filters.append(_AdmissionCandidateRow.policy_id == policy_id)
+    if state is not None:
+        filters.append(_AdmissionCandidateRow.state == state)
+    if query:
+        normalized = query.strip().casefold()
+        filters.append(
+            or_(
+                _AdmissionCandidateRow.admission_id.contains(normalized),
+                _AdmissionCandidateRow.policy_id.contains(normalized),
+                _AdmissionCandidateRow.work_id.contains(normalized),
+            )
+        )
+    key_columns = tuple(dict.fromkeys((columns[sort], _AdmissionCandidateRow.admission_id)))
+    return filters, select(_AdmissionCandidateRow).where(*filters), key_columns
 
 
 def _page_size(page_size: int) -> None:

@@ -44,16 +44,19 @@ from riverhog_api.browse import (
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
+    AddCollectionUploadTagsRequest,
     CollectionArchiveCopyListOut,
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
     CollectionDescriptionOut,
     CollectionSummaryOut,
+    CollectionTagSelectorBatch,
     CollectionUploadDiscardPlanOut,
     CollectionUploadDiscardResultOut,
     CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
+    CollectionUploadTagsOut,
     CollectionUploadUnitOut,
     CollectionUploadWorkBatchOut,
     CreateOrResumeCollectionUploadSessionOut,
@@ -122,6 +125,7 @@ def list_collections(
     order: Annotated[SortOrder, Query()] = "asc",
     encryption_format: str | None = Query(None),
     passphrase_id: str | None = Query(None),
+    tags: Annotated[CollectionTagSelectorBatch | None, Query()] = None,
 ) -> ListCollectionsResponse:
     selectors = canonical_selectors(
         q=q,
@@ -129,6 +133,7 @@ def list_collections(
         order=order,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
+        tags=tags or [],
     )
     summary = container.collections.list(
         page_size=page_size,
@@ -142,6 +147,7 @@ def list_collections(
         q=q,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
+        tags=tags or [],
         sort=sort,
         order=order,
         principal=principal,
@@ -249,6 +255,7 @@ def create_or_resume_collection_upload_session(
         idempotency_key=request.idempotency_key,
         ingest_source=request.ingest_source,
         description=request.description,
+        tags=request.tags,
         archive_store=request.archive_store,
         initiator=principal,
         event_context=request.event_context,
@@ -257,6 +264,26 @@ def create_or_resume_collection_upload_session(
         custody_mode=request.custody_mode,
     )
     return CreateOrResumeCollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id}/tags",
+    response_model=CollectionUploadTagsOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def add_collection_upload_session_tags(
+    collection_id: CollectionIdParameter,
+    request: AddCollectionUploadTagsRequest,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> CollectionUploadTagsOut:
+    return CollectionUploadTagsOut.model_validate(
+        container.collection_uploads.add_tags(
+            collection_id,
+            request.tags,
+            principal=principal,
+        )
+    )
 
 
 @router.post(

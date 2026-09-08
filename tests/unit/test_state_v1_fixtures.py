@@ -13,6 +13,7 @@ from mango_fish.schema import state_schema as mango_fish_state_schema
 from riverhog_cli.local_state import state_schema as local_state_schema
 from riverhog_core.state_migrations.v1_ddl import POSTGRESQL_DDL
 from riverhog_provenance import load_or_create_installation_id
+from stove0_core.state_migrations.v1_ddl import POSTGRESQL_DDL as STOVE0_POSTGRESQL_DDL
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests/fixtures/state/v1_0001"
@@ -157,6 +158,20 @@ def test_riverhog_postgresql_fixture_is_the_exact_current_migration_authority() 
     )
 
     assert (FIXTURES / "riverhog.postgresql.sql").read_text(encoding="utf-8") == expected
+
+
+def test_stove0_postgresql_fixture_is_the_exact_current_migration_authority() -> None:
+    expected = (
+        "-- Exact current Stove0 PostgreSQL v1 baseline conformance fixture.\n\n"
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;\n\n"
+        "CREATE TABLE stove0_state_schema_revision (\n"
+        "    version_num VARCHAR(32) NOT NULL,\n"
+        "    CONSTRAINT stove0_state_schema_revision_pkc PRIMARY KEY (version_num)\n"
+        ");\n\n" + ";\n\n".join(STOVE0_POSTGRESQL_DDL) + ";\n\n"
+        "INSERT INTO stove0_state_schema_revision (version_num) VALUES ('v1_0001');\n"
+    )
+
+    assert (FIXTURES / "stove0.postgresql.sql").read_text(encoding="utf-8") == expected
 
 
 def test_v1_baseline_revisions_depend_only_on_migration_owned_ddl() -> None:

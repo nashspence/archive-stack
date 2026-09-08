@@ -137,7 +137,6 @@ class ClaimedCollectionRuntime:
     def refresh_capability(self, capability_token: str) -> None:
         """Replace an expiring token without changing claim/fence identity."""
 
-        self.heartbeat()
         current = self.api.current
         replacement = ApiClient(
             base_url=current.base_url,
@@ -317,7 +316,6 @@ class CollectionTransformRuntime:
     def refresh_capability(self, capability_token: str) -> None:
         """Replace an expiring token without changing claim/fence identity."""
 
-        self.heartbeat()
         current = self.api.current
         replacement = ApiClient(
             base_url=current.base_url,

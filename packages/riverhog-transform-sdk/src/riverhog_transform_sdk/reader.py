@@ -22,6 +22,7 @@ Heartbeat = Callable[[], None]
 _CONTROL_PATHS = frozenset({PRODUCER_EVIDENCE_PATH, DERIVATION_EVIDENCE_PATH})
 _TERMINAL_RETRIEVAL_STATES = frozenset({"completed", "expired", "failed", "canceled"})
 RetrievalPolicy = Literal["available-only", "allow"]
+RiverhogRestorePolicy = Literal["never", "allow"]
 
 
 class ClaimedCollectionApi(Protocol):
@@ -41,7 +42,7 @@ class ClaimedCollectionApi(Protocol):
         files: Sequence[tuple[CollectionId, str]],
         *,
         lease_seconds: int | None = None,
-        restore_policy: RetrievalPolicy = "available-only",
+        restore_policy: RiverhogRestorePolicy = "never",
     ) -> dict[str, Any]: ...
 
     def create_retrieval_job(
@@ -194,7 +195,7 @@ class ClaimedCollectionReader:
         plan = self.api.plan_retrieval(
             refs,
             lease_seconds=lease_seconds,
-            restore_policy=restore_policy,
+            restore_policy=("never" if restore_policy == "available-only" else "allow"),
         )
         plan_etag = str(plan.get("etag") or "")
         if len(plan_etag) != 64:

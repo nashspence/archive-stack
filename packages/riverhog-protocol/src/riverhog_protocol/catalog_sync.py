@@ -16,6 +16,7 @@ from riverhog_protocol.collection_description import (
     MAX_COLLECTION_DESCRIPTION_REVISION,
     CollectionDescription,
 )
+from riverhog_protocol.collection_tags import MAX_COLLECTION_TAG_REVISION
 from riverhog_protocol.paths import CollectionId
 from riverhog_protocol.transport import CATALOG_SYNC_PAGE_SIZE_MAX
 
@@ -61,6 +62,8 @@ class CatalogSyncDescriptor(CatalogSyncModel):
         strict=True,
     )
     description_identity: CatalogSyncIdentity
+    tag_revision: int = Field(ge=1, le=MAX_COLLECTION_TAG_REVISION, strict=True)
+    tag_set_identity: CatalogSyncIdentity
     revision: CatalogSyncRevision
 
 

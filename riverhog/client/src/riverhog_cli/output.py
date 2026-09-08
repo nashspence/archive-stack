@@ -42,6 +42,10 @@ def format_collections(payload: Mapping[str, object]) -> str:
             f"  description revision: {collection.get('description_revision', 0)}  "
             f"publication={collection.get('description_publication', 'unknown')}"
         )
+        lines.append(
+            f"  tag revision: {collection.get('tag_revision', 'unknown')}  "
+            f"publication={collection.get('tag_publication', 'unknown')}"
+        )
     return "\n".join(lines)
 
 
@@ -53,6 +57,7 @@ def format_local_collections(payload: Mapping[str, object]) -> str:
             f"status={collection.get('status', 'unknown')}  "
             f"created={collection.get('created_at', 'unknown')}  "
             f"files={collection.get('files', 0)}  "
+            f"tags={collection.get('tag_count', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}"
         )
     return "\n".join(lines)
@@ -65,6 +70,7 @@ def format_local_collection(payload: Mapping[str, object]) -> str:
             f"status: {payload.get('status', 'unknown')}",
             f"created: {payload.get('created_at', 'unknown')}",
             f"files: {payload.get('files', 0)}",
+            f"tags: {payload.get('tag_count', 0)}",
             f"bytes: {_bytes(payload.get('bytes'))}",
         ]
     )
@@ -79,6 +85,9 @@ def format_collection_summary(
         f"description: {payload.get('description') or 'none'}",
         f"description revision: {payload.get('description_revision', 0)}",
         f"description publication: {payload.get('description_publication', 'unknown')}",
+        f"tag revision: {payload.get('tag_revision', 'unknown')}",
+        f"tag set: {payload.get('tag_set_identity', 'unknown')}",
+        f"tag publication: {payload.get('tag_publication', 'unknown')}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
@@ -372,38 +381,51 @@ def format_app_access_set(payload: Mapping[str, object]) -> str:
     )
 
 
-def format_collection_access_groups(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "groups")]
-    for group in _items(payload, "groups"):
-        lines.append(
-            f"- {group.get('id', 'unknown')}  status={group.get('status', 'unknown')}  "
-            f"collections={group.get('collection_count', 0)}  "
-            f"label={group.get('display_label') or 'none'}"
-        )
-    return "\n".join(lines)
-
-
-def format_collection_access_group_members(payload: Mapping[str, object]) -> str:
-    lines = [_page_line(payload, "members")]
+def format_tags(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "tags")]
     lines.extend(
-        f"- {member.get('collection_id', 'unknown')}  added={member.get('added_at', 'unknown')}"
-        for member in _items(payload, "members")
+        f"- {item.get('tag', 'unknown')}  collections={item.get('collection_count', 0)}"
+        for item in _items(payload, "tags")
     )
     return "\n".join(lines)
 
 
-def format_collection_access_groups_for_collection(payload: Mapping[str, object]) -> str:
-    return format_collection_access_groups(payload)
+def format_collection_tags(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"collection: {payload.get('collection_id', 'unknown')}",
+        f"revision: {payload.get('revision', 'unknown')}",
+        f"tag set: {payload.get('tag_set_identity', 'unknown')}",
+        _page_line(payload, "tags"),
+    ]
+    raw_tags = payload.get("tags")
+    if isinstance(raw_tags, list):
+        lines.extend(f"- {tag}" for tag in raw_tags if isinstance(tag, str))
+    return "\n".join(lines)
 
 
-def format_collection_access_group_membership(payload: Mapping[str, object]) -> str:
+def format_collection_tag_membership(payload: Mapping[str, object]) -> str:
     return "\n".join(
         [
-            f"access group: {payload.get('group_id', 'unknown')}",
             f"collection: {payload.get('collection_id', 'unknown')}",
-            f"present: {payload.get('present', False)}",
+            f"revision: {payload.get('revision', 'unknown')}",
+            f"tag set: {payload.get('tag_set_identity', 'unknown')}",
+            f"tag: {payload.get('tag', 'unknown')}",
+            f"present: {'yes' if payload.get('present') else 'no'}",
+        ]
+    )
+
+
+def format_collection_tag_mutation(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"operation: {payload.get('operation_id', 'unknown')}",
+            f"action: {payload.get('action', 'unknown')}",
+            f"tag: {payload.get('tag', 'unknown')}",
             f"changed: {payload.get('changed', False)}",
-            f"authorization revision: {payload.get('authorization_revision', 'unknown')}",
+            f"state: {payload.get('state', 'unknown')}",
+            f"revision: {payload.get('revision', 'unknown')}",
+            f"tag set: {payload.get('tag_set_identity', 'unknown')}",
         ]
     )
 

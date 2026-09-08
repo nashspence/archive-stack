@@ -421,6 +421,8 @@ class FtpAdapter:
             adapter_version="1.0.0",
             ingest_source=source.ingest_source,
             archive_store=source.archive_store,
+            description=source.description,
+            tags=source.tags,
             provenance_mode="captured" if source.provenance == "capture" else "omitted",
             provenance_omission_reason=(
                 source.provenance_omission_reason

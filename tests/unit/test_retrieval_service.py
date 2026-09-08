@@ -18,9 +18,9 @@ from riverhog_core.app_permissions import (
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionArchiveFileObjectRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagRecord,
     RetrievalJobRecord,
     RetrievalPlanObjectRecord,
     RetrievalPlanPlacementRecord,
@@ -33,7 +33,7 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission, Retriev
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
-from riverhog_protocol import CollectionUploadRawDigestBatchDocument
+from riverhog_protocol import CollectionUploadRawDigestBatchDocument, collection_tag_sha256
 from riverhog_protocol.errors import Conflict, NotFound, PreconditionFailed
 from sqlalchemy import select
 
@@ -44,7 +44,8 @@ from tests.unit.test_archive_root import MemoryImmutableStore
 from tests.unit.test_pack_upload import MemoryResumableStore
 
 MIB = 1024 * 1024
-GROUP_ID = "a" * 64
+TAG = "docs"
+TAG_SHA256 = collection_tag_sha256(TAG)
 
 
 class MemoryArchiveRangeStore:
@@ -413,23 +414,19 @@ def _seed_collection(
 
     with session_scope(make_session_factory(database_url)) as session:
         session.add(
-            CollectionAccessGroupRecord(
-                id=GROUP_ID,
-                creation_idempotency_key="docs",
-                created_by_app="fixture",
-                display_label="docs",
-                status="active",
-                authorization_revision=1,
+            CollectionTagRecord(
+                tag_sha256=TAG_SHA256,
+                tag=TAG,
+                search_text=TAG,
                 created_at="2026-08-08T00:00:00.000000Z",
                 updated_at="2026-08-08T00:00:00.000000Z",
                 collection_count=1,
             )
         )
         session.add(
-            CollectionAccessGroupMembershipRecord(
+            CollectionTagMembershipRecord(
                 collection_id=collection_id,
-                group_id=GROUP_ID,
-                added_by_app="fixture",
+                tag_sha256=TAG_SHA256,
                 added_at="2026-08-08T00:00:00.000000Z",
             )
         )
@@ -1022,12 +1019,12 @@ def test_cache_status_list_and_show_respect_catalog_group_access(tmp_path: Path)
     permitted = ApplicationPrincipal(
         app="indexer",
         key_id="indexer-key",
-        access=frozenset({ApplicationAccess(CATALOG_READ, f"group:{GROUP_ID}")}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"tag:{TAG}")}),
     )
     denied = ApplicationPrincipal(
         app="outsider",
         key_id="outsider-key",
-        access=frozenset({ApplicationAccess(CATALOG_READ, f"group:{'b' * 64}")}),
+        access=frozenset({ApplicationAccess(CATALOG_READ, "tag:other")}),
     )
 
     status = service.cache_status(principal=permitted)

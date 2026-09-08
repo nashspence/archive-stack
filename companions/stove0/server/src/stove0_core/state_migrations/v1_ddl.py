@@ -4,7 +4,123 @@
 
 # This module is migration authority. Runtime model metadata must never be imported here.
 
+_ADMISSION_DDL: tuple[str, ...] = (
+    """
+CREATE TABLE stove0_admission_policies (
+	policy_id VARCHAR(160) NOT NULL,
+	policy_revision INTEGER NOT NULL,
+	policy_sha256 VARCHAR(64) NOT NULL,
+	phase VARCHAR(32) NOT NULL,
+	generation VARCHAR(64) NOT NULL,
+	source_identity VARCHAR(64),
+	authorization_view_identity VARCHAR(64),
+	cursor VARCHAR(4096),
+	baseline_mode VARCHAR(16) NOT NULL,
+	through_revision VARCHAR(19) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	PRIMARY KEY (policy_id),
+	CONSTRAINT ck_stove0_admission_policy_revision CHECK (policy_revision >= 1),
+	CONSTRAINT ck_stove0_admission_policy_id CHECK (length(policy_id) >= 1),
+	CONSTRAINT ck_stove0_admission_policy_phase CHECK (phase IN ('new','baseline','following','reset_required')),
+	CONSTRAINT ck_stove0_admission_policy_baseline_mode CHECK (baseline_mode IN ('observe','backfill')),
+	CONSTRAINT ck_stove0_admission_policies_policy_sha256_hex CHECK (length(policy_sha256) = 64 AND lower(policy_sha256) = policy_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(policy_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_policies_generation_hex CHECK (length(generation) = 64 AND lower(generation) = generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_policies_source_identity_hex CHECK (source_identity IS NULL OR length(source_identity) = 64 AND lower(source_identity) = source_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(source_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_policies_authorization_view_identity_hex CHECK (authorization_view_identity IS NULL OR length(authorization_view_identity) = 64 AND lower(authorization_view_identity) = authorization_view_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(authorization_view_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_policies_phase ON stove0_admission_policies (phase, policy_id)
+    """.strip(),
+    """
+CREATE TABLE stove0_admission_matches (
+	policy_id VARCHAR(160) NOT NULL,
+	generation VARCHAR(64) NOT NULL,
+	collection_id BIGINT NOT NULL,
+	matched BOOLEAN NOT NULL,
+	descriptor_revision VARCHAR(19) NOT NULL,
+	tag_revision BIGINT NOT NULL,
+	tag_set_identity VARCHAR(64) NOT NULL,
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	PRIMARY KEY (policy_id, generation, collection_id),
+	CONSTRAINT ck_stove0_admission_match_collection CHECK (collection_id >= 1),
+	CONSTRAINT ck_stove0_admission_match_tag_revision CHECK (tag_revision >= 1),
+	CONSTRAINT ck_stove0_admission_match_bytes CHECK (document_bytes >= 0),
+	CONSTRAINT ck_stove0_admission_matches_generation_hex CHECK (length(generation) = 64 AND lower(generation) = generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_matches_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_matches_collection ON stove0_admission_matches (collection_id, policy_id, generation)
+    """.strip(),
+    """
+CREATE TABLE stove0_admission_candidates (
+	admission_id VARCHAR(64) NOT NULL,
+	policy_id VARCHAR(160) NOT NULL,
+	state VARCHAR(16) NOT NULL,
+	preview_sha256 VARCHAR(64),
+	work_id VARCHAR(64),
+	document_bytes BIGINT NOT NULL,
+	document_json TEXT NOT NULL,
+	preview_bytes BIGINT,
+	preview_json TEXT,
+	created_at VARCHAR(40) NOT NULL,
+	updated_at VARCHAR(40) NOT NULL,
+	PRIMARY KEY (admission_id),
+	CONSTRAINT ck_stove0_admission_candidate_state CHECK (state IN ('intent','previewed','work_bound')),
+	CONSTRAINT ck_stove0_admission_candidate_bytes CHECK (document_bytes >= 0),
+	CONSTRAINT ck_stove0_admission_candidate_preview_bytes CHECK (preview_bytes IS NULL OR preview_bytes >= 0),
+	CONSTRAINT ck_stove0_admission_candidates_admission_id_hex CHECK (length(admission_id) = 64 AND lower(admission_id) = admission_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(admission_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_candidates_preview_sha256_hex CHECK (preview_sha256 IS NULL OR length(preview_sha256) = 64 AND lower(preview_sha256) = preview_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(preview_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_candidates_work_id_hex CHECK (work_id IS NULL OR length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_policy ON stove0_admission_candidates (policy_id, admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_state ON stove0_admission_candidates (state, admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_work ON stove0_admission_candidates (work_id, admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_created ON stove0_admission_candidates (created_at, admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_updated ON stove0_admission_candidates (updated_at, admission_id)
+    """.strip(),
+)
+
+_ADMISSION_SQLITE_INDEX_DDL: tuple[str, ...] = (
+    """
+CREATE INDEX ix_stove0_admission_candidates_id_trgm ON stove0_admission_candidates (admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_policy_trgm ON stove0_admission_candidates (policy_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_work_trgm ON stove0_admission_candidates (work_id)
+    """.strip(),
+)
+
+_ADMISSION_POSTGRESQL_INDEX_DDL: tuple[str, ...] = (
+    """
+CREATE INDEX ix_stove0_admission_candidates_id_trgm ON stove0_admission_candidates USING gin (admission_id gin_trgm_ops)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_policy_trgm ON stove0_admission_candidates USING gin (policy_id gin_trgm_ops)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_work_trgm ON stove0_admission_candidates USING gin (work_id gin_trgm_ops)
+    """.strip(),
+)
+
+
 SQLITE_DDL: tuple[str, ...] = (
+    *_ADMISSION_DDL,
+    *_ADMISSION_SQLITE_INDEX_DDL,
     """
 CREATE TABLE stove0_artifact_selections (
 	selection_sha256 VARCHAR(64) NOT NULL,
@@ -263,6 +379,8 @@ CREATE INDEX ix_stove0_work_selection_references_selection ON stove0_work_select
 )
 
 POSTGRESQL_DDL: tuple[str, ...] = (
+    *_ADMISSION_DDL,
+    *_ADMISSION_POSTGRESQL_INDEX_DDL,
     """
 CREATE TABLE stove0_artifact_selections (
 	selection_sha256 VARCHAR(64) NOT NULL,

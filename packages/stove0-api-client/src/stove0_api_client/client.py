@@ -14,6 +14,12 @@ from http_api_contracts import (
 )
 from http_api_contracts import closed_literal_values, parse_error_payload, safe_http_base_url
 from stove0_operator_contracts import (
+    AdmissionPage,
+    AdmissionPolicyCatalogView,
+    AdmissionPolicyStatus,
+    AdmissionSort,
+    AdmissionState,
+    AdmissionView,
     EvaluationPage,
     EvaluationPhase,
     EvaluationReviewIn,
@@ -47,6 +53,8 @@ _WORK_SORTS = closed_literal_values(WorkSort)
 _WORK_PHASES = closed_literal_values(WorkPhase)
 _EVALUATION_SORTS = closed_literal_values(EvaluationSort)
 _EVALUATION_PHASES = closed_literal_values(EvaluationPhase)
+_ADMISSION_SORTS = closed_literal_values(AdmissionSort)
+_ADMISSION_STATES = closed_literal_values(AdmissionState)
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -138,6 +146,63 @@ class Stove0ApiClient:
                 f"/v1/recipes/{quote(recipe_id, safe='')}",
                 params=_params(revision=revision),
             )
+        )
+
+    def list_admission_policies(self) -> AdmissionPolicyCatalogView:
+        return AdmissionPolicyCatalogView.model_validate(
+            self._json("GET", "/v1/admission-policies")
+        )
+
+    def rebaseline_admission_policy(self, policy_id: str) -> AdmissionPolicyStatus:
+        return AdmissionPolicyStatus.model_validate(
+            self._json(
+                "POST",
+                f"/v1/admission-policies/{quote(policy_id, safe='')}:rebaseline",
+            )
+        )
+
+    def backfill_admission_policy(self, policy_id: str) -> AdmissionPolicyStatus:
+        return AdmissionPolicyStatus.model_validate(
+            self._json(
+                "POST",
+                f"/v1/admission-policies/{quote(policy_id, safe='')}:backfill",
+            )
+        )
+
+    def list_admissions(
+        self,
+        *,
+        page_size: int = 25,
+        page_token: str | None = None,
+        policy_id: str | None = None,
+        state: AdmissionState | None = None,
+        query: str | None = None,
+        sort: AdmissionSort = "created_at",
+        order: SortOrder = "desc",
+    ) -> AdmissionPage:
+        return AdmissionPage.model_validate(
+            self._json(
+                "GET",
+                "/v1/admissions",
+                params=_params(
+                    **{
+                        "page_size": page_size,
+                        "page_token": page_token,
+                        "policy_id": policy_id,
+                        "state": (
+                            _one_of(state, _ADMISSION_STATES, "admission state") if state else None
+                        ),
+                        "q": query,
+                        "sort": _one_of(sort, _ADMISSION_SORTS, "admission sort"),
+                        "order": _one_of(order, _SORT_ORDERS, "sort order"),
+                    }
+                ),
+            )
+        )
+
+    def get_admission(self, admission_id: str) -> AdmissionView:
+        return AdmissionView.model_validate(
+            self._json("GET", f"/v1/admissions/{quote(admission_id, safe='')}")
         )
 
     def list_work(

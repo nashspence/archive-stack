@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from riverhog_protocol import CollectionDescription, CollectionTag
 from riverhog_provenance.common import require_urn_uuid
 
 CloseMode = Literal["stable", "explicit-flush"]
@@ -25,6 +26,8 @@ class SourceConfig(ConfigModel):
     root: Path
     ingest_source: str = Field(min_length=1, max_length=512)
     archive_store: str | None = Field(default=None, min_length=1, max_length=160)
+    description: CollectionDescription | None = None
+    tags: tuple[CollectionTag, ...] = ()
     close_mode: CloseMode = "stable"
     stable_seconds: int = Field(default=30, ge=1, le=7 * 24 * 60 * 60)
     max_files: int = Field(default=1000, ge=1)
@@ -42,6 +45,8 @@ class SourceConfig(ConfigModel):
 
     @model_validator(mode="after")
     def complete_policy(self) -> Self:
+        if len(self.tags) != len(set(self.tags)):
+            raise ValueError("FTP adapter source tags must be unique")
         if self.provenance == "omit":
             reason = (self.provenance_omission_reason or "").strip()
             if not reason or reason != self.provenance_omission_reason:

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from stove0_operator_contracts import AdmissionCatalog
+
 DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 
@@ -46,6 +48,7 @@ class Stove0RuntimeConfig:
     capability_ttl_seconds: int
     scheduler_interval_seconds: float
     operational_state_retention_seconds: int
+    admissions: AdmissionCatalog = AdmissionCatalog()
     browse_token_signing_key: str = "stove0-development-browse-token-signing-key-v1"
     browse_token_lifetime_seconds: int = 24 * 60 * 60
 
@@ -100,6 +103,7 @@ class Stove0RuntimeConfig:
                 False,
             ),
             recipes_path=recipes_path,
+            admissions=_admissions(values),
             observers=_registrations(
                 values,
                 "STOVE0_OBSERVERS_JSON",
@@ -178,6 +182,20 @@ def _required(values: Mapping[str, str], name: str) -> str:
     if not value:
         raise ValueError(f"{name} is required")
     return value
+
+
+def _admissions(values: Mapping[str, str]) -> AdmissionCatalog:
+    path_value = values.get("STOVE0_ADMISSIONS_PATH", "").strip()
+    if not path_value:
+        return AdmissionCatalog()
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError("STOVE0_ADMISSIONS_PATH must name a readable admission document")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("STOVE0_ADMISSIONS_PATH must contain JSON") from exc
+    return AdmissionCatalog.model_validate(payload)
 
 
 def _secret(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
@@ -19,6 +20,7 @@ from stove0_target_protocol import (
 )
 
 _JSON_CONTENT_TYPE = "application/json"
+_LOG = logging.getLogger(__name__)
 _DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _JOB_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})/cancel$")
@@ -145,9 +147,11 @@ class TargetHttpBinding:
             return _error(404, "not_found", "target endpoint not found")
         except TargetServiceError as exc:
             if operation is None or not operation.accepts_error(status=exc.status, code=exc.code):
+                _LOG.exception("target service emitted an undeclared error")
                 return _error(500, "target_failed", "target execution failed")
             return _error(exc.status, exc.code, exc.message)
         except Exception:
+            _LOG.exception("target execution failed")
             return _error(500, "target_failed", "target execution failed")
 
     def _parse(self, body: bytes, model: type[ModelT]) -> ModelT:

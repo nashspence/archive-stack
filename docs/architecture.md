@@ -11,15 +11,15 @@ Contracts define packages; architecture records ownership.
   before writing immutable final-object units to the selected archive store; ingress is not a
   storage tier.
   Collections freeze their encryption format and opaque key identity; configuration owns keys.
-- **Operational state.** Database state records catalog identity, placement, and workflows.
+- **Operational state.** Database state records identity, placement, and workflows.
   Checkpoints, unsealed membership, and open resumable writes are not archive authority.
 - **Provenance authority.** Per-file provenance is append-only custody history. Journals remain
   exact prefixes across handoffs; clients capture or continue them by default, and omissions require
   a reason. Journals and their index are authoritative; database rows are a rebuildable projection.
-- **Collection views.** Collections are immutable namespaces/deletion units; access groups are
-  mutable authorization. An optional mutable description is copy-adjacent recovery material
-  projected into the catalog; applications own richer indexes.
-- **Deployment configuration.** Deployments own credentials, topology, and policy.
+- **Collection views.** Collections are immutable namespaces/deletion units. Mutable descriptions
+  and classification-tag sets are copy-adjacent recovery material projected into the catalog;
+  tag membership may label authorization; applications own richer indexes.
+- **Deployment configuration.** Deployments own credentials, topology, and policies.
 
 ## Boundary model
 

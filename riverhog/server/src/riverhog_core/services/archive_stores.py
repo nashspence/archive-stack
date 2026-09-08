@@ -17,6 +17,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
+    CollectionTagPublicationRecord,
+    CollectionTagPublishedNodeRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.domain.models import (
@@ -236,7 +238,19 @@ def _store_aggregates(
         literal(1).label("objects"),
         func.coalesce(CollectionDescriptionPublicationRecord.stored_bytes, 0).label("stored_bytes"),
     ).where(CollectionDescriptionPublicationRecord.object_path.is_not(None))
-    owned = union_all(immutable, descriptions).subquery()
+    tag_heads = select(
+        CollectionTagPublicationRecord.collection_id.label("collection_id"),
+        CollectionTagPublicationRecord.store.label("store"),
+        literal(1).label("objects"),
+        func.coalesce(CollectionTagPublicationRecord.head_stored_bytes, 0).label("stored_bytes"),
+    ).where(CollectionTagPublicationRecord.head_object_path.is_not(None))
+    tag_nodes = select(
+        CollectionTagPublishedNodeRecord.collection_id.label("collection_id"),
+        CollectionTagPublishedNodeRecord.store.label("store"),
+        literal(1).label("objects"),
+        CollectionTagPublishedNodeRecord.stored_bytes.label("stored_bytes"),
+    )
+    owned = union_all(immutable, descriptions, tag_heads, tag_nodes).subquery()
     rows = session.execute(
         select(
             copies.c.store,

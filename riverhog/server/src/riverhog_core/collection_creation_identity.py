@@ -6,7 +6,12 @@ from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
-from riverhog_protocol import CollectionDescription, CollectionUploadCustodyMode
+from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+    CollectionDescription,
+    CollectionTag,
+    CollectionUploadCustodyMode,
+)
 from riverhog_protocol.collection_workflows import canonical_json_sha256
 from riverhog_protocol.storage_names import ArchiveStoreName
 
@@ -21,6 +26,9 @@ class CollectionUploadCreationIdentityPayload(BaseModel):
     )
     ingest_source: str | None = None
     description: CollectionDescription | None = None
+    initial_tags: list[CollectionTag] = Field(
+        default_factory=list, max_length=COLLECTION_TAG_REQUEST_MEMBERS_MAX
+    )
     archive_store: ArchiveStoreName
     event_context: dict[str, JsonValue] | None = None
     provenance_mode: Literal["captured", "omitted"]

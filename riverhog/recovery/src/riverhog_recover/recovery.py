@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -35,7 +35,15 @@ from riverhog_archive_contracts import (
 )
 from riverhog_protocol import (
     COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_TAG_HEAD_RELATIVE_PATH,
+    COLLECTION_TAG_NODE_BYTES_MAX,
     CollectionDescriptionDocument,
+    CollectionTagHeadDocument,
+    CollectionTagIntegrityError,
+    CollectionTagNodeMissing,
+    CollectionTagSet,
+    CollectionTagSetRoot,
+    collection_tag_node_path,
 )
 from riverhog_provenance import (
     PROVENANCE_JOURNAL_ENTRY_BYTES_MAX,
@@ -92,6 +100,133 @@ class _RecoveredJournalCurrent:
     path: str
     bytes: int
     sha256: str
+
+
+class RecoveredCollectionTags:
+    """One independently recoverable exact tag authority with streamed members."""
+
+    def __init__(
+        self,
+        *,
+        archive: Path,
+        passphrase: str,
+        age_command: str,
+        head: CollectionTagHeadDocument,
+    ) -> None:
+        self.archive = archive
+        self.head = head
+        self._store = _RecoveredCollectionTagNodeStore(
+            archive=archive,
+            passphrase=passphrase,
+            age_command=age_command,
+        )
+
+    def iter_tags(self) -> Iterator[str]:
+        """Yield every exact tag while authenticating only bounded nodes."""
+
+        try:
+            yield from CollectionTagSet(
+                self._store,
+                CollectionTagSetRoot.seal(self.head.root_sha256),
+            ).iter_tags()
+        except (CollectionTagIntegrityError, CollectionTagNodeMissing, ValueError) as exc:
+            raise RecoveryError(f"collection tag authority is invalid: {exc}") from exc
+
+
+class _RecoveredCollectionTagNodeStore:
+    def __init__(self, *, archive: Path, passphrase: str, age_command: str) -> None:
+        self.archive = archive
+        self.passphrase = passphrase
+        self.age_command = age_command
+
+    def get(self, digest: str) -> bytes:
+        relative = collection_tag_node_path(digest)
+        encrypted = _archive_file(self.archive, relative)
+        try:
+            with tempfile.TemporaryDirectory(prefix="riverhog-tag-node-") as scratch_name:
+                plaintext = Path(scratch_name) / "node.bin"
+                _age_decrypt(
+                    encrypted,
+                    plaintext,
+                    passphrase=self.passphrase,
+                    command=self.age_command,
+                )
+                if plaintext.stat().st_size > COLLECTION_TAG_NODE_BYTES_MAX:
+                    raise RecoveryError("collection tag node exceeds its contract limit")
+                return plaintext.read_bytes()
+        except RecoveryError:
+            raise
+        except OSError as exc:
+            raise RecoveryError(f"cannot read collection tag node: {exc}") from exc
+
+    def put(self, digest: str, encoded: bytes) -> None:
+        del digest, encoded
+        raise TypeError("recovered collection tag authorities are read-only")
+
+
+def recover_collection_tags(
+    archive_dir: Path,
+    *,
+    passphrases: Mapping[str, str],
+    age_command: str = "age",
+) -> RecoveredCollectionTags:
+    """Open the exact mutable tag authority without reading collection payloads."""
+
+    archive = archive_dir.expanduser().resolve()
+    if not archive.is_dir():
+        raise RecoveryError(f"archive directory does not exist: {archive}")
+    descriptor = read_recovery_descriptor(archive)
+    try:
+        passphrase = passphrases[descriptor.encryption.passphrase_id]
+    except KeyError as exc:
+        raise RecoveryError(
+            f"no passphrase is available for archive key ID {descriptor.encryption.passphrase_id}"
+        ) from exc
+    if not isinstance(passphrase, str) or not passphrase:
+        raise RecoveryError(
+            f"archive passphrase is empty for key ID {descriptor.encryption.passphrase_id}"
+        )
+    try:
+        encrypted_manifest = _archive_file(archive, descriptor.root.path)
+        _verify_stored_identity(
+            encrypted_manifest,
+            expected_bytes=descriptor.root.stored_bytes,
+            expected_sha256=descriptor.root.stored_sha256,
+            label=descriptor.root.path,
+        )
+        encrypted_head = _archive_file(archive, COLLECTION_TAG_HEAD_RELATIVE_PATH)
+        with tempfile.TemporaryDirectory(prefix="riverhog-tags-") as scratch_name:
+            scratch = Path(scratch_name)
+            manifest_path = scratch / "manifest.json"
+            head_path = scratch / "head.json"
+            _age_decrypt(
+                encrypted_manifest,
+                manifest_path,
+                passphrase=passphrase,
+                command=age_command,
+            )
+            manifest_bytes = manifest_path.read_bytes()
+            CollectionArchiveManifest.from_json_bytes(manifest_bytes)
+            archive_root_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+            _age_decrypt(
+                encrypted_head,
+                head_path,
+                passphrase=passphrase,
+                command=age_command,
+            )
+            head = CollectionTagHeadDocument.from_json_bytes(head_path.read_bytes())
+        if head.archive_root_sha256 != archive_root_sha256:
+            raise RecoveryError("collection tag authority belongs to another archive root")
+        return RecoveredCollectionTags(
+            archive=archive,
+            passphrase=passphrase,
+            age_command=age_command,
+            head=head,
+        )
+    except RecoveryError:
+        raise
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RecoveryError(str(exc)) from exc
 
 
 def recover_collection_description(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from riverhog_application_access import permission_resources as access_permission_resources
+from riverhog_protocol import collection_tag_sha256
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import and_, exists, false, or_, select
@@ -12,14 +13,13 @@ from sqlalchemy.sql.elements import ColumnElement
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     COLLECTION_PREFIX,
-    GROUP_PREFIX,
+    TAG_PREFIX,
     ApplicationPrincipal,
 )
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionTransformCapabilityArtifactRecord
 from riverhog_core.runtime_config import RuntimeConfig
@@ -80,19 +80,14 @@ def require_collection_access(
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources or f"{COLLECTION_PREFIX}{collection_id}" in resources:
         return
-    allowed_groups = group_ids(resources)
+    allowed_tags = tag_hashes(resources)
     if (
-        allowed_groups
+        allowed_tags
         and session.scalar(
-            select(CollectionAccessGroupMembershipRecord.collection_id)
-            .join(
-                CollectionAccessGroupRecord,
-                CollectionAccessGroupRecord.id == CollectionAccessGroupMembershipRecord.group_id,
-            )
+            select(CollectionTagMembershipRecord.collection_id)
             .where(
-                CollectionAccessGroupMembershipRecord.collection_id == collection_id,
-                CollectionAccessGroupMembershipRecord.group_id.in_(allowed_groups),
-                CollectionAccessGroupRecord.status == "active",
+                CollectionTagMembershipRecord.collection_id == collection_id,
+                CollectionTagMembershipRecord.tag_sha256.in_(allowed_tags),
             )
             .limit(1)
         )
@@ -105,11 +100,17 @@ def require_collection_access(
 def require_collection_create_access(
     principal: ApplicationPrincipal | None,
     permission: str,
+    *,
+    tags: Iterable[str] = (),
 ) -> None:
     if principal is None:
         return
     resources = permission_resources(principal, permission)
     if ALL_RESOURCES in resources:
+        return
+    requested = {f"{TAG_PREFIX}{tag}" for tag in tags}
+    allowed = {resource for resource in resources if resource.startswith(TAG_PREFIX)}
+    if requested and requested <= allowed:
         return
     raise NotFound("collection creation is not available")
 
@@ -132,27 +133,21 @@ def collection_access_filter(
     if ALL_RESOURCES in resources:
         return published
     allowed_collection_ids = collection_ids(resources)
-    allowed_group_ids = group_ids(resources)
+    allowed_tag_hashes = tag_hashes(resources)
     filters: list[ColumnElement[bool]] = []
     capability_filter = _capability_collection_filter(column, principal)
     if capability_filter is not None:
         filters.append(capability_filter)
     if allowed_collection_ids:
         filters.append(column.in_(allowed_collection_ids))
-    if allowed_group_ids:
+    if allowed_tag_hashes:
         filters.append(
             exists(
                 select(1)
-                .select_from(CollectionAccessGroupMembershipRecord)
-                .join(
-                    CollectionAccessGroupRecord,
-                    CollectionAccessGroupRecord.id
-                    == CollectionAccessGroupMembershipRecord.group_id,
-                )
+                .select_from(CollectionTagMembershipRecord)
                 .where(
-                    CollectionAccessGroupMembershipRecord.collection_id == column,
-                    CollectionAccessGroupMembershipRecord.group_id.in_(allowed_group_ids),
-                    CollectionAccessGroupRecord.status == "active",
+                    CollectionTagMembershipRecord.collection_id == column,
+                    CollectionTagMembershipRecord.tag_sha256.in_(allowed_tag_hashes),
                 )
             )
         )
@@ -207,11 +202,11 @@ def collection_ids(resources: Iterable[str]) -> set[int]:
     }
 
 
-def group_ids(resources: Iterable[str]) -> set[str]:
+def tag_hashes(resources: Iterable[str]) -> set[str]:
     return {
-        resource.removeprefix(GROUP_PREFIX)
+        collection_tag_sha256(resource.removeprefix(TAG_PREFIX))
         for resource in resources
-        if resource.startswith(GROUP_PREFIX)
+        if resource.startswith(TAG_PREFIX)
     }
 
 
@@ -222,5 +217,5 @@ __all__ = [
     "permission_resources",
     "require_collection_access",
     "require_collection_create_access",
-    "group_ids",
+    "tag_hashes",
 ]

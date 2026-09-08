@@ -147,7 +147,7 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             outside_grant = await client.post(
                 "/v1/apps/reader/keys",
                 json={
-                    "access": [{"permission": CATALOG_READ, "resource": f"group:{'a' * 64}"}],
+                    "access": [{"permission": CATALOG_READ, "resource": "tag:outside"}],
                 },
                 headers=manager_headers,
             )

@@ -7,6 +7,7 @@ import time
 from datetime import timedelta
 from typing import Literal, Protocol, cast
 
+from stove0_operator_contracts import AdmissionRun
 from time_formats import format_utc_timestamp, utc_now
 
 from stove0_core.coordinator import Stove0Coordinator
@@ -20,6 +21,10 @@ SchedulerRole = Literal["controller", "worker", "combined"]
 
 class ProductionSealProcessor(Protocol):
     def process_due_production_seals(self, *, limit: int = 1) -> int: ...
+
+
+class AdmissionProcessor(Protocol):
+    def advance(self, *, limit: int = 25) -> AdmissionRun: ...
 
 
 _CONTROLLER_PHASES = frozenset(
@@ -46,7 +51,7 @@ _WORKER_PHASES = frozenset(
 
 
 class Stove0Scheduler:
-    """Advance work that was explicitly previewed and accepted."""
+    """Advance work admitted through an explicit or configured preview acceptance."""
 
     def __init__(
         self,
@@ -54,6 +59,7 @@ class Stove0Scheduler:
         coordinator: Stove0Coordinator,
         state: SqlAlchemyStateStore,
         production_seals: ProductionSealProcessor | None = None,
+        admission: AdmissionProcessor | None = None,
         operational_state_retention_seconds: int = 30 * 24 * 60 * 60,
     ) -> None:
         if operational_state_retention_seconds < 1:
@@ -61,6 +67,7 @@ class Stove0Scheduler:
         self.coordinator = coordinator
         self.state = state
         self.production_seals = production_seals
+        self.admission = admission
         self.operational_state_retention_seconds = operational_state_retention_seconds
         self._prune_lock = threading.Lock()
         self._next_prune = 0.0
@@ -137,8 +144,17 @@ class Stove0Scheduler:
         pruning = self._prune_operational_state() if role in {"controller", "combined"} else None
         if role in {"worker", "combined"} and self.production_seals is not None:
             self.production_seals.process_due_production_seals(limit=work_limit)
+        admission = (
+            self.admission.advance(limit=work_limit)
+            if role in {"controller", "combined"} and self.admission is not None
+            else None
+        )
         work = self.advance(role=role, limit=work_limit)
-        return {"pruning": pruning, "work": work}
+        return {
+            "pruning": pruning,
+            "admission": (None if admission is None else admission.model_dump(mode="python")),
+            "work": work,
+        }
 
     def _prune_operational_state(self) -> dict[str, int] | None:
         observed = time.monotonic()

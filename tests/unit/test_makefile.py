@@ -58,6 +58,21 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                         '"2222222222222222222222222222222222222222222222222222222222222222"}\''
                     ),
                     "fi",
+                    'if [[ "$*" == *"RIVERHOG_SMOKE_CLIENT_RECEIPT_OUTPUT=1"* ]]; then',
+                    (
+                        "  printf '%s\\n' "
+                        '\'{"archive_root_sha256":'
+                        '"3333333333333333333333333333333333333333333333333333333333333333",'
+                        '"collection_id":3,"content_identity":'
+                        '"4444444444444444444444444444444444444444444444444444444444444444"}\''
+                    ),
+                    "fi",
+                    'if [[ "$*" == *"RIVERHOG_SMOKE_ADMISSION_OUTPUT=ftp"* ]]; then',
+                    "  printf '%064d\\n' 0",
+                    "fi",
+                    'if [[ "$*" == *"RIVERHOG_SMOKE_ADMISSION_OUTPUT=client"* ]]; then',
+                    "  printf '1%.0s' {1..64}; printf '\\n'",
+                    "fi",
                     'if [[ "$*" == *"RIVERHOG_SMOKE_INVOCATION_OUTPUT=1"* ]]; then',
                     "  printf '%064d\\n' 0",
                     "fi",
@@ -715,6 +730,17 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert " restart app" in docker_log
     assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
     assert " app python -c " in docker_log
+    assert " stop controller" in docker_log
+    assert "RIVERHOG_SMOKE_SCHEDULER_STEP=intent" in docker_log
+    assert "RIVERHOG_SMOKE_SCHEDULER_STEP=previewed" in docker_log
+    assert "RIVERHOG_SMOKE_SCHEDULER_STEP=work_bound" in docker_log
+    assert docker_log.count(" restart api") == 3
+    assert "RIVERHOG_SMOKE_ADMISSION_OUTPUT=ftp" in docker_log
+    assert "RIVERHOG_SMOKE_CLIENT_RECEIPT_OUTPUT=1" in docker_log
+    assert "collection upload start /official-client-input" in docker_log
+    assert "--tag stove0/conformance" in docker_log
+    assert "RIVERHOG_SMOKE_ADMISSION_OUTPUT=client" in docker_log
+    assert "EXPECTED_WORK_ID=" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 

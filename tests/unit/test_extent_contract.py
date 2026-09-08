@@ -258,6 +258,8 @@ def test_bounded_carriers_do_not_become_domain_cardinality_maxima() -> None:
     }
     assert semantic_set_maxima == {
         "bounded-diagnostic-sample-with-explicit-overflow-markers",
+        "bounded-exact-tag-selector-batch",
+        "bounded-exact-classification-admission-predicate",
         "bounded-object-identity-assertion-envelope",
         "state-conditioned-empty-set",
         "wildcard-access-grant-is-exclusive",

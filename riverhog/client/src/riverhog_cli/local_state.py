@@ -39,6 +39,10 @@ Table(
     Column("inventory_identity", Text, nullable=False),
     Column("inventory_cursor", Text),
     Column("inventory_complete", Integer, nullable=False, server_default=text("0")),
+    Column("tag_revision", Integer, nullable=False),
+    Column("tag_set_identity", Text, nullable=False),
+    Column("tag_page_token", Text),
+    Column("tags_complete", Integer, nullable=False, server_default=text("0")),
     Column("created_at", Text, nullable=False),
     Column("remote_deleted", Integer, nullable=False, server_default=text("0")),
     CheckConstraint("collection_id > 0", name="ck_desired_collections_id"),
@@ -50,7 +54,25 @@ Table(
     CheckConstraint(
         "inventory_complete IN (0, 1)", name="ck_desired_collections_inventory_complete"
     ),
+    CheckConstraint("tag_revision >= 1", name="ck_desired_collections_tag_revision"),
+    CheckConstraint(
+        "length(tag_set_identity) = 64 AND tag_set_identity = lower(tag_set_identity) "
+        "AND tag_set_identity NOT GLOB '*[^0-9a-f]*'",
+        name="ck_desired_collections_tag_set_identity",
+    ),
+    CheckConstraint("tags_complete IN (0, 1)", name="ck_desired_collections_tags_complete"),
     CheckConstraint("remote_deleted IN (0, 1)", name="ck_desired_collections_remote_deleted"),
+)
+Table(
+    "desired_collection_tags",
+    LOCAL_STATE_METADATA,
+    Column(
+        "collection_id",
+        Integer,
+        ForeignKey("desired_collections.collection_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("tag", Text, primary_key=True),
 )
 Table(
     "desired_files",

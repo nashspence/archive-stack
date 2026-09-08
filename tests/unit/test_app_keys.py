@@ -22,10 +22,10 @@ from riverhog_core.app_permissions import (
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyRecord,
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
+    CollectionTagRecord,
     KeyDownloadReservationRecord,
     RetrievalJobRecord,
     RetrievalPlanFileRecord,
@@ -72,24 +72,20 @@ def create_key(
     )
 
 
-def seed_group(
+def seed_tag(
     config: RuntimeConfig,
     label: str,
     *,
     collection_id: int | None = None,
 ) -> str:
-    group_id = hashlib.sha256(label.encode()).hexdigest()
+    tag_id = hashlib.sha256(label.encode()).hexdigest()
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         session.add(
-            CollectionAccessGroupRecord(
-                id=group_id,
-                creation_idempotency_key=label,
-                created_by_app="bootstrap",
-                created_by_key_id=None,
-                display_label=label,
-                status="active",
-                authorization_revision=1,
+            CollectionTagRecord(
+                tag_sha256=tag_id,
+                tag=label,
+                search_text=label,
                 created_at="2026-07-24T00:00:00.000000Z",
                 updated_at="2026-07-24T00:00:00.000000Z",
                 collection_count=1 if collection_id is not None else 0,
@@ -113,14 +109,13 @@ def seed_group(
                 )
             )
             session.add(
-                CollectionAccessGroupMembershipRecord(
+                CollectionTagMembershipRecord(
                     collection_id=collection_id,
-                    group_id=group_id,
-                    added_by_app="fixture",
+                    tag_sha256=tag_id,
                     added_at="2026-07-24T00:00:00.000000Z",
                 )
             )
-    return group_id
+    return tag_id
 
 
 def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
@@ -160,18 +155,18 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
     assert listed["keys"] == [{key: created[key] for key in created if key != "token"}]
 
 
-def test_action_specific_group_access_does_not_leak_between_operations(tmp_path: Path) -> None:
+def test_action_specific_tag_access_does_not_leak_between_operations(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    group_id = seed_group(config, "camera")
+    seed_tag(config, "camera")
     created = create_key(
         service,
         app="reader",
-        access=(ApplicationAccess(CATALOG_READ, f"group:{group_id}"),),
+        access=(ApplicationAccess(CATALOG_READ, "tag:camera"),),
     )
     principal = service.authenticate(str(created["token"]))
     assert principal is not None
-    assert principal.allows_group(CATALOG_READ, group_id)
-    assert not principal.allows_group(RETRIEVAL_MANAGE, group_id)
+    assert principal.allows_tag(CATALOG_READ, "camera")
+    assert not principal.allows_tag(RETRIEVAL_MANAGE, "camera")
 
 
 def test_app_keys_rotate_revoke_expire_and_authenticate_without_restart(tmp_path: Path) -> None:
@@ -252,15 +247,15 @@ def test_key_browsing_crosses_nullable_sort_positions_without_omission(
 def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
     collection_id = 1
-    docs_group = seed_group(config, "docs", collection_id=collection_id)
-    other_group = seed_group(config, "other")
+    seed_tag(config, "docs", collection_id=collection_id)
+    seed_tag(config, "other")
     manager = ApplicationPrincipal(
         app="manager",
         key_id="manager-key",
         access=frozenset(
             {
                 ApplicationAccess(KEYS_MANAGE),
-                ApplicationAccess(CATALOG_READ, f"group:{docs_group}"),
+                ApplicationAccess(CATALOG_READ, "tag:docs"),
             }
         ),
     )
@@ -276,20 +271,20 @@ def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> 
         create_key(
             service,
             app="other-reader",
-            access=(ApplicationAccess(CATALOG_READ, f"group:{other_group}"),),
+            access=(ApplicationAccess(CATALOG_READ, "tag:other"),),
             grantor=manager,
         )
 
 
 def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path) -> None:
     service, config = app_keys(tmp_path)
-    photos_group = seed_group(config, "photos")
+    seed_tag(config, "photos")
     created = create_key(
         service,
         app="review",
         access=(
-            ApplicationAccess(CATALOG_READ, f"group:{photos_group}"),
-            ApplicationAccess(RETRIEVAL_MANAGE, f"group:{photos_group}"),
+            ApplicationAccess(CATALOG_READ, "tag:photos"),
+            ApplicationAccess(RETRIEVAL_MANAGE, "tag:photos"),
         ),
     )
     factory = make_session_factory(config.database_url)
@@ -317,16 +312,24 @@ def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path)
     assert listed[0]["app"] == "review"
     assert listed[0]["key_id"] == created["id"]
     assert listed[0]["permission"] == "retrieval:manage"
-    assert listed[0]["resource"] == f"group:{photos_group}"
+    assert listed[0]["resource"] == "tag:photos"
 
 
-def test_access_targets_must_exist(tmp_path: Path) -> None:
+def test_collection_access_targets_must_exist_while_tag_scopes_are_declarative(
+    tmp_path: Path,
+) -> None:
     service, _config = app_keys(tmp_path)
-    with pytest.raises(NotFound, match="collection access group not found"):
+    tagged = create_key(
+        service,
+        app="future-tag-reader",
+        access=(ApplicationAccess(CATALOG_READ, "tag:future"),),
+    )
+    assert tagged["access"] == [{"permission": CATALOG_READ, "resource": "tag:future"}]
+    with pytest.raises(NotFound, match="collection not found"):
         create_key(
             service,
             app="reader",
-            access=(ApplicationAccess(CATALOG_READ, f"group:{'f' * 64}"),),
+            access=(ApplicationAccess(CATALOG_READ, "collection:999"),),
         )
 
 

@@ -50,8 +50,8 @@ def harness(tmp_path: Path) -> Harness:
             collection_id=COLLECTION_ID,
             occurred_at="2026-07-18T00:00:00.000000Z",
             inventory_identity=collection.inventory_identity,
-            before_groups=(),
-            after_groups=(),
+            before_tags=(),
+            after_tags=(),
         )
     memory_store = MemoryArchiveStore(archive)
     archive_stores = ArchiveStoreRegistry({"deep": archive_store_binding(memory_store)})

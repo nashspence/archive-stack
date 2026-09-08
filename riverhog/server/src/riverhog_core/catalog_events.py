@@ -11,14 +11,13 @@ from time_formats import utc_timestamp_now
 
 from riverhog_core.app_permissions import ALL_RESOURCES, ApplicationPrincipal
 from riverhog_core.catalog_models import (
-    CatalogEventAccessGroupRecord,
     CatalogEventRecord,
+    CatalogEventTagRecord,
     CatalogSyncStateRecord,
-    CollectionAccessGroupMembershipRecord,
-    CollectionAccessGroupRecord,
     CollectionRecord,
+    CollectionTagMembershipRecord,
 )
-from riverhog_core.collection_access import collection_ids, group_ids, permission_resources
+from riverhog_core.collection_access import collection_ids, permission_resources, tag_hashes
 
 
 def record_catalog_event(
@@ -28,8 +27,8 @@ def record_catalog_event(
     collection_id: int,
     occurred_at: str,
     inventory_identity: str,
-    before_groups: Iterable[str],
-    after_groups: Iterable[str],
+    before_tags: Iterable[str],
+    after_tags: Iterable[str],
 ) -> CatalogEventRecord:
     collection = _catalog_collection(session, collection_id)
     event = CatalogEventRecord(
@@ -42,17 +41,19 @@ def record_catalog_event(
         description=collection.description,
         description_revision=collection.description_revision,
         description_identity=collection.description_identity,
+        tag_revision=collection.tag_revision,
+        tag_set_identity=collection.tag_set_identity,
         published=False,
     )
     session.add(event)
     session.flush()
-    for phase, groups in (("before", before_groups), ("after", after_groups)):
-        for group_id in sorted(set(groups)):
+    for phase, tags in (("before", before_tags), ("after", after_tags)):
+        for tag_sha256 in sorted(set(tags)):
             session.add(
-                CatalogEventAccessGroupRecord(
+                CatalogEventTagRecord(
                     sequence=event.sequence,
                     phase=phase,
-                    group_id=group_id,
+                    tag_sha256=tag_sha256,
                 )
             )
     publish_catalog_event(session, event=event)
@@ -67,7 +68,7 @@ def begin_catalog_event(
     occurred_at: str,
     inventory_identity: str,
 ) -> CatalogEventRecord:
-    """Create an event whose access-group snapshots will be populated relationally."""
+    """Create an event whose tag-visibility snapshots will be populated relationally."""
 
     collection = _catalog_collection(session, collection_id)
     event = CatalogEventRecord(
@@ -80,6 +81,8 @@ def begin_catalog_event(
         description=collection.description,
         description_revision=collection.description_revision,
         description_identity=collection.description_identity,
+        tag_revision=collection.tag_revision,
+        tag_set_identity=collection.tag_set_identity,
         published=False,
     )
     session.add(event)
@@ -124,32 +127,26 @@ def _catalog_collection(session: Session, collection_id: int) -> CollectionRecor
     return collection
 
 
-def snapshot_catalog_event_collection_access_groups(
+def snapshot_catalog_event_collection_tags(
     session: Session,
     *,
     event: CatalogEventRecord,
     phase: str,
     collection_id: int,
 ) -> None:
-    """Copy active group visibility without materializing group cardinality."""
+    """Copy exact tag visibility without materializing tag cardinality."""
 
     if phase not in {"before", "after"}:
-        raise ValueError("catalog event access-group phase is invalid")
+        raise ValueError("catalog event tag phase is invalid")
     session.execute(
-        insert(CatalogEventAccessGroupRecord).from_select(
-            ("sequence", "phase", "group_id"),
+        insert(CatalogEventTagRecord).from_select(
+            ("sequence", "phase", "tag_sha256"),
             select(
                 literal(event.sequence),
                 literal(phase),
-                CollectionAccessGroupMembershipRecord.group_id,
-            )
-            .join(
-                CollectionAccessGroupRecord,
-                CollectionAccessGroupRecord.id == CollectionAccessGroupMembershipRecord.group_id,
-            )
-            .where(
-                CollectionAccessGroupMembershipRecord.collection_id == collection_id,
-                CollectionAccessGroupRecord.status == "active",
+                CollectionTagMembershipRecord.tag_sha256,
+            ).where(
+                CollectionTagMembershipRecord.collection_id == collection_id,
             ),
         )
     )
@@ -167,14 +164,14 @@ def catalog_event_projection(
         return true(), native_change
 
     allowed_collections = collection_ids(resources)
-    allowed_groups = group_ids(resources)
+    allowed_tags = tag_hashes(resources)
     exact_match = (
         CatalogEventRecord.collection_id.in_(allowed_collections)
         if allowed_collections
         else false()
     )
-    after_match = _group_snapshot_match("after", allowed_groups)
-    before_match = _group_snapshot_match("before", allowed_groups)
+    after_match = _tag_snapshot_match("after", allowed_tags)
+    before_match = _tag_snapshot_match("before", allowed_tags)
     remains_visible = or_(exact_match, after_match)
     return (
         or_(remains_visible, before_match),
@@ -186,14 +183,14 @@ def catalog_event_projection(
     )
 
 
-def _group_snapshot_match(phase: str, allowed_groups: set[str]) -> ColumnElement[bool]:
-    if not allowed_groups:
+def _tag_snapshot_match(phase: str, allowed_tags: set[str]) -> ColumnElement[bool]:
+    if not allowed_tags:
         return false()
     return exists(
         select(1).where(
-            CatalogEventAccessGroupRecord.sequence == CatalogEventRecord.sequence,
-            CatalogEventAccessGroupRecord.phase == phase,
-            CatalogEventAccessGroupRecord.group_id.in_(allowed_groups),
+            CatalogEventTagRecord.sequence == CatalogEventRecord.sequence,
+            CatalogEventTagRecord.phase == phase,
+            CatalogEventTagRecord.tag_sha256.in_(allowed_tags),
         )
     )
 
@@ -203,5 +200,5 @@ __all__ = [
     "catalog_event_projection",
     "publish_catalog_event",
     "record_catalog_event",
-    "snapshot_catalog_event_collection_access_groups",
+    "snapshot_catalog_event_collection_tags",
 ]

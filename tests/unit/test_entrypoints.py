@@ -201,12 +201,12 @@ def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> N
     ) in architecture
 
 
-def test_architecture_states_the_mutable_description_authority_policy() -> None:
+def test_architecture_states_the_mutable_collection_view_authority_policy() -> None:
     architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
 
     assert (
-        "An optional mutable description is copy-adjacent recovery material projected into the "
-        "catalog"
+        "Mutable descriptions and classification-tag sets are copy-adjacent recovery material "
+        "projected into the catalog"
     ) in architecture
     assert "applications own richer indexes" in architecture
 

@@ -39,13 +39,25 @@ def test_reference_topology_uses_one_postgres_authority_and_distinct_roles() -> 
     )
     assert "STOVE0_API_TOKEN_FILE" not in services["controller"]["environment"]
     assert "STOVE0_API_TOKEN_FILE" not in services["worker"]["environment"]
-    recipe_mount = services["api"]["volumes"][0]
-    assert recipe_mount == {
-        "type": "bind",
-        "source": "${STOVE0_RECIPES_HOST_PATH:?STOVE0_RECIPES_HOST_PATH is required}",
-        "target": "/etc/stove0/recipes.yaml",
-        "read_only": True,
-    }
+    configuration_mounts = services["api"]["volumes"][:2]
+    assert configuration_mounts == [
+        {
+            "type": "bind",
+            "source": "${STOVE0_RECIPES_HOST_PATH:?STOVE0_RECIPES_HOST_PATH is required}",
+            "target": "/etc/stove0/recipes.yaml",
+            "read_only": True,
+        },
+        {
+            "type": "bind",
+            "source": "${STOVE0_ADMISSIONS_HOST_PATH:?STOVE0_ADMISSIONS_HOST_PATH is required}",
+            "target": "/etc/stove0/admissions.json",
+            "read_only": True,
+        },
+    ]
+    for name in ("api", "controller", "worker"):
+        assert services[name]["environment"]["STOVE0_ADMISSIONS_PATH"] == (
+            "/etc/stove0/admissions.json"
+        )
 
 
 def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() -> None:

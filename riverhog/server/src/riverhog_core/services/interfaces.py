@@ -8,7 +8,6 @@ from riverhog_protocol import (
     CatalogSyncChangePage,
     CatalogSyncCheckpoint,
     CatalogSyncCollectionPage,
-    CollectionAccessGroupStatus,
     PortableCollectionFile,
     PortableCollectionHeader,
     PortableCollectionInventoryPage,
@@ -42,6 +41,7 @@ class CollectionService(Protocol):
         q: str | None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
+        tags: Sequence[str] = (),
         sort: str = "id",
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
@@ -52,6 +52,7 @@ class CollectionService(Protocol):
         q: str | None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
+        tags: Sequence[str] = (),
         sort: str = "id",
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
@@ -194,71 +195,56 @@ class ProvenanceService(Protocol):
     def process_due_verifications(self, *, limit: int = 1) -> int: ...
 
 
-class CollectionAccessGroupService(Protocol):
-    def create(
-        self,
-        *,
-        idempotency_key: str,
-        display_label: str | None,
-        creator: ApplicationPrincipal,
-    ) -> JsonObject: ...
-    def get(
-        self,
-        group_id: str,
-    ) -> JsonObject: ...
-    def update(
-        self,
-        group_id: str,
-        *,
-        display_label: str | None,
-        status: CollectionAccessGroupStatus,
-    ) -> JsonObject: ...
-    def list(
+class CollectionTagService(Protocol):
+    def list_tags(
         self,
         *,
         page_size: int,
         position: BrowsePosition,
         q: str | None,
-        status: CollectionAccessGroupStatus | None,
-        sort: str,
-        order: str,
+        principal: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def iter_groups(
-        self,
-        *,
-        q: str | None,
-        status: CollectionAccessGroupStatus | None,
-        sort: str,
-        order: str,
-    ) -> Iterator[JsonObject]: ...
-    def list_members(
-        self,
-        group_id: str,
-        *,
-        page_size: int,
-        position: BrowsePosition,
-    ) -> JsonObject: ...
-    def list_collection_groups(
+    def list_collection(
         self,
         collection_id: int,
         *,
         page_size: int,
         position: BrowsePosition,
-    ) -> JsonObject: ...
-    def add_member(
-        self,
-        group_id: str,
-        collection_id: int,
-        *,
+        expected_revision: int,
+        expected_tag_set_identity: str,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
-    def remove_member(
+    def contains(
         self,
-        group_id: str,
         collection_id: int,
         *,
+        tag: str,
+        revision: int,
+        tag_set_identity: str,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def add(
+        self,
+        collection_id: int,
+        *,
+        tag: str,
+        operation_id: str,
+        expected_revision: int,
+        expected_tag_set_identity: str,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def remove(
+        self,
+        collection_id: int,
+        *,
+        tag: str,
+        operation_id: str,
+        expected_revision: int,
+        expected_tag_set_identity: str,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def requeue_interrupted_for_startup(self, *, limit: int = 100) -> int: ...
+    def process_due(self, *, limit: int = 1) -> int: ...
 
 
 class CollectionDeletionService(Protocol):

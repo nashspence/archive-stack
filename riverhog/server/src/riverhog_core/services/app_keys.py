@@ -37,7 +37,6 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
     AppKeyRecord,
-    CollectionAccessGroupRecord,
     CollectionRecord,
     KeyDownloadReservationRecord,
     RetrievalJobRecord,
@@ -924,15 +923,7 @@ def _require_access_targets(session: Session, access: Sequence[ApplicationAccess
     for current in access:
         if current.resource == "*":
             continue
-        if current.resource.startswith("group:"):
-            group_id = current.resource.removeprefix("group:")
-            record = session.scalar(
-                select(CollectionAccessGroupRecord)
-                .where(CollectionAccessGroupRecord.id == group_id)
-                .with_for_update()
-            )
-            if record is None:
-                raise NotFound(f"collection access group not found: {group_id}")
+        if current.resource.startswith("tag:"):
             continue
         collection_id = int(current.resource.removeprefix("collection:"))
         collection = session.get(CollectionRecord, collection_id)
@@ -947,35 +938,13 @@ def _authorization_view_identity(
     key_id: str,
     access: Sequence[ApplicationAccess],
 ) -> str:
-    group_ids = sorted(
-        current.resource.removeprefix("group:")
-        for current in access
-        if current.resource.startswith("group:")
-    )
-    group_rows = {
-        str(group_id): (str(status), int(revision))
-        for group_id, status, revision in session.execute(
-            select(
-                CollectionAccessGroupRecord.id,
-                CollectionAccessGroupRecord.status,
-                CollectionAccessGroupRecord.authorization_revision,
-            ).where(CollectionAccessGroupRecord.id.in_(group_ids))
-        )
-    }
+    _ = session
     return canonical_json_sha256(
         {
             "format": "riverhog-authorization-view/v1",
             "app": app,
             "key_id": key_id,
             "access": [_access_payload(current) for current in access],
-            "groups": [
-                {
-                    "id": group_id,
-                    "status": group_rows.get(group_id, ("missing", 0))[0],
-                    "authorization_revision": group_rows.get(group_id, ("missing", 0))[1],
-                }
-                for group_id in group_ids
-            ],
         }
     )
 

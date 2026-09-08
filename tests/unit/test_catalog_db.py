@@ -171,10 +171,13 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     assert {
         column["name"] for column in inspector.get_columns("collection_upload_provenance_journals")
     } >= {"accepted_bytes", "next_chunk_ordinal"}
-    assert {column["name"] for column in inspector.get_columns("catalog_event_access_groups")} == {
-        "sequence",
-        "phase",
-        "group_id",
+    assert {column["name"] for column in inspector.get_columns("collection_tags")} == {
+        "tag",
+        "tag_sha256",
+        "search_text",
+        "created_at",
+        "updated_at",
+        "collection_count",
     }
     assert {column["name"] for column in inspector.get_columns("retrieval_plan_files")} == {
         "plan_id",

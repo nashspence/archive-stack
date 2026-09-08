@@ -43,12 +43,18 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/collection-upload-sessions",
         "/v1/collection-upload-sessions/{collection_id}",
         "/v1/collection-upload-sessions/{collection_id}/files",
+        "/v1/collection-upload-sessions/{collection_id}/tags",
         "/v1/collection-upload-sessions/{collection_id}/complete",
         "/v1/collection-upload-sessions/{collection_id}/cancel",
         "/v1/collection-upload-sessions/{collection_id}/work",
         "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "/v1/collections/{collection_id}",
         "/v1/collections/{collection_id}/description",
+        "/v1/collections/{collection_id}/tags",
+        "/v1/collections/{collection_id}/tags:contains",
+        "/v1/collections/{collection_id}/tags:add",
+        "/v1/collections/{collection_id}/tags:remove",
+        "/v1/tags",
         "/v1/collections/{collection_id}/provenance/files",
         "/v1/collections/{collection_id}/provenance/files/{path}",
         "/v1/collections/{collection_id}/provenance/trace/{path}",
@@ -69,11 +75,6 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/download-quota",
         "/v1/download-quotas",
         "/v1/search",
-        "/v1/collection-access-groups",
-        "/v1/collection-access-groups/{group_id}",
-        "/v1/collection-access-groups/{group_id}/collections",
-        "/v1/collection-access-groups/{group_id}/collections/{collection_id}",
-        "/v1/collections/{collection_id}/access-groups",
     }.issubset(paths)
     assert "delete" in paths["/v1/retrieval-jobs/{job_id}"]
     assert "delete" in paths["/v1/archive/copies/{collection_id}/{destination_store}"]
@@ -401,11 +402,13 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
             "description_revision",
             "description_identity",
             "description_publication",
+            "tag_publication",
         } <= set(schemas[schema]["required"])
+    assert {"tag_revision", "tag_set_identity"} <= set(schemas["CollectionSummaryOut"]["required"])
     list_parameters = {
         parameter["name"] for parameter in document["paths"]["/v1/collections"]["get"]["parameters"]
     }
-    assert {"encryption_format", "passphrase_id"} <= list_parameters
+    assert {"encryption_format", "passphrase_id", "tags"} <= list_parameters
 
     mapped = map_collection(
         CollectionSummary(
@@ -415,6 +418,9 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
             description_revision=0,
             description_identity="0" * 64,
             description_publication="not_required",
+            tag_revision=1,
+            tag_set_identity="3" * 64,
+            tag_publication="current",
             content_identity="1" * 64,
             archive_root_sha256="2" * 64,
             encryption_format="age-v1-scrypt",

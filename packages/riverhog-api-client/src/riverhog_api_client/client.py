@@ -36,6 +36,7 @@ from riverhog_application_access import (
     ApplicationResource as ApplicationResource,
 )
 from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
     ApplicationAccessSort,
     ApplicationKeySort,
     ApplicationSort,
@@ -47,11 +48,10 @@ from riverhog_protocol import (
     CatalogSyncChangePage,
     CatalogSyncCheckpoint,
     CatalogSyncCollectionPage,
-    CollectionAccessGroupSort,
-    CollectionAccessGroupStatus,
     CollectionDescription,
     CollectionId,
     CollectionSort,
+    CollectionTag,
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
@@ -132,6 +132,7 @@ _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
 _COLLECTION_UPLOAD_VOLUME_ID: TypeAdapter[str] = TypeAdapter(CollectionUploadVolumeId)
 _COLLECTION_UPLOAD_UNIT_NUMBER: TypeAdapter[int] = TypeAdapter(CollectionUploadUnitNumber)
 _COLLECTION_DESCRIPTION: TypeAdapter[str] = TypeAdapter(CollectionDescription)
+_COLLECTION_TAG: TypeAdapter[str] = TypeAdapter(CollectionTag)
 _SORT_ORDERS = closed_literal_values(SortOrder)
 _COLLECTION_SORTS = closed_literal_values(CollectionSort)
 _COLLECTION_UPLOAD_SORTS = closed_literal_values(CollectionUploadSort)
@@ -146,7 +147,6 @@ _ARCHIVE_STORE_SORTS = closed_literal_values(ArchiveStoreSort)
 _APPLICATION_SORTS = closed_literal_values(ApplicationSort)
 _APPLICATION_KEY_SORTS = closed_literal_values(ApplicationKeySort)
 _APPLICATION_ACCESS_SORTS = closed_literal_values(ApplicationAccessSort)
-_COLLECTION_ACCESS_GROUP_SORTS = closed_literal_values(CollectionAccessGroupSort)
 _DOWNLOAD_QUOTA_SORTS = closed_literal_values(DownloadQuotaSort)
 _ARCHIVE_COPY_SORTS = closed_literal_values(ArchiveCopySort)
 _ARCHIVE_COPY_STATES = closed_literal_values(ArchiveCopyState)
@@ -294,6 +294,18 @@ def _validated_collection_upload_idempotency_key(
         return _COLLECTION_UPLOAD_IDEMPOTENCY_KEY.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _collection_tags(values: Sequence[str], *, allow_empty: bool = True) -> list[str]:
+    if (not values and not allow_empty) or len(values) > COLLECTION_TAG_REQUEST_MEMBERS_MAX:
+        raise BadRequest("collection tag request has invalid cardinality")
+    try:
+        normalized = [_COLLECTION_TAG.validate_python(value, strict=True) for value in values]
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+    if len(set(normalized)) != len(normalized):
+        raise BadRequest("collection tags must not contain duplicates")
+    return normalized
 
 
 def _validated_retrieval_plan_idempotency_key(
@@ -1045,6 +1057,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         ingest_source: str | None = None,
         description: CollectionDescription | None = None,
+        tags: Sequence[CollectionTag] = (),
         archive_store: ArchiveStoreName | None = None,
         event_context: Mapping[str, Any] | None = None,
         provenance_mode: ProvenanceMode = "captured",
@@ -1073,6 +1086,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 payload["description"] = _COLLECTION_DESCRIPTION.validate_python(description)
             except ValidationError as exc:
                 raise BadRequest(str(exc)) from exc
+        normalized_tags = _collection_tags(tags)
+        if normalized_tags:
+            payload["tags"] = normalized_tags
         if archive_store is not None:
             payload["archive_store"] = _archive_store_name(archive_store)
         if event_context is not None:
@@ -1080,6 +1096,18 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if provenance_omission_reason is not None:
             payload["provenance_omission_reason"] = provenance_omission_reason
         return self._json("POST", "/v1/collection-upload-sessions", json=payload)
+
+    def add_collection_upload_session_tags(
+        self,
+        collection_id: CollectionId,
+        tags: Sequence[CollectionTag],
+    ) -> dict[str, Any]:
+        normalized_collection_id = _collection_id(collection_id)
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{normalized_collection_id}/tags",
+            json={"tags": _collection_tags(tags, allow_empty=False)},
+        )
 
     def register_collection_upload_session_files(
         self,
@@ -1880,6 +1908,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page_size: int = 25,
         page_token: str | None = None,
         q: str | None = None,
+        tags: Sequence[CollectionTag] = (),
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
         sort: CollectionSort = "id",
@@ -1900,6 +1929,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         if q is not None:
             params["q"] = q
+        normalized_tags = _collection_tags(tags)
+        if normalized_tags:
+            params["tags"] = normalized_tags
         if encryption_format:
             params["encryption_format"] = encryption_format
         if passphrase_id:
@@ -2097,110 +2129,114 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             json=_riverhog_application_access_grant_payload(permission, resource),
         )
 
-    def create_collection_access_group(
-        self,
-        *,
-        idempotency_key: str,
-        display_label: str | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"idempotency_key": idempotency_key}
-        if display_label is not None:
-            payload["display_label"] = display_label
-        return self._json("POST", "/v1/collection-access-groups", json=payload)
-
-    def get_collection_access_group(self, group_id: str) -> dict[str, Any]:
-        return self._json(
-            "GET", f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}"
-        )
-
-    def list_collection_access_groups(
+    def list_tags(
         self,
         *,
         page_size: int = 25,
         page_token: str | None = None,
         q: str | None = None,
-        status: CollectionAccessGroupStatus | None = None,
-        sort: CollectionAccessGroupSort = "id",
-        order: SortOrder = "asc",
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            **_page_params(page_size=page_size, page_token=page_token),
-            "sort": _one_of(
-                sort,
-                _COLLECTION_ACCESS_GROUP_SORTS,
-                "collection-access-group sort",
-            ),
-            "order": _one_of(order, _SORT_ORDERS, "sort order"),
-        }
+        params: dict[str, Any] = _page_params(page_size=page_size, page_token=page_token)
         if q is not None:
             params["q"] = q
-        if status is not None:
-            params["status"] = _one_of(
-                status,
-                frozenset({"active", "disabled"}),
-                "collection-access-group status",
-            )
-        return self._json("GET", "/v1/collection-access-groups", params=params)
+        return self._json("GET", "/v1/tags", params=params)
 
-    def update_collection_access_group(
+    def list_collection_tags(
         self,
-        group_id: str,
+        collection_id: CollectionId,
         *,
-        display_label: str | None,
-        status: CollectionAccessGroupStatus,
-    ) -> dict[str, Any]:
-        return self._json(
-            "PUT",
-            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}",
-            json={"display_label": display_label, "status": status},
-        )
-
-    def list_collection_access_group_members(
-        self,
-        group_id: str,
-        *,
+        revision: int,
+        tag_set_identity: str,
         page_size: int = 25,
         page_token: str | None = None,
     ) -> dict[str, Any]:
+        params = {
+            **_page_params(page_size=page_size, page_token=page_token),
+            "revision": revision,
+            "tag_set_identity": _sha256_identity(tag_set_identity, "tag-set identity"),
+        }
         return self._json(
             "GET",
-            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections",
-            params=_page_params(page_size=page_size, page_token=page_token),
+            f"/v1/collections/{_collection_id(collection_id)}/tags",
+            params=params,
         )
 
-    def list_collection_access_groups_for_collection(
+    def collection_contains_tag(
         self,
         collection_id: CollectionId,
         *,
-        page_size: int = 25,
-        page_token: str | None = None,
+        tag: CollectionTag,
+        revision: int,
+        tag_set_identity: str,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/collections/{_collection_id(collection_id)}/access-groups",
-            params=_page_params(page_size=page_size, page_token=page_token),
+            f"/v1/collections/{_collection_id(collection_id)}/tags:contains",
+            params={
+                "tag": _collection_tags((tag,), allow_empty=False)[0],
+                "revision": revision,
+                "tag_set_identity": _sha256_identity(tag_set_identity, "tag-set identity"),
+            },
         )
 
-    def add_collection_access_group_member(
+    def add_collection_tag(
         self,
-        group_id: str,
         collection_id: CollectionId,
+        *,
+        tag: CollectionTag,
+        operation_id: str,
+        expected_revision: int,
+        expected_tag_set_identity: str,
     ) -> dict[str, Any]:
-        return self._json(
-            "PUT",
-            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections/"
-            f"{_collection_id(collection_id)}",
+        return self._mutate_collection_tag(
+            collection_id,
+            action="add",
+            tag=tag,
+            operation_id=operation_id,
+            expected_revision=expected_revision,
+            expected_tag_set_identity=expected_tag_set_identity,
         )
 
-    def remove_collection_access_group_member(
+    def remove_collection_tag(
         self,
-        group_id: str,
         collection_id: CollectionId,
+        *,
+        tag: CollectionTag,
+        operation_id: str,
+        expected_revision: int,
+        expected_tag_set_identity: str,
+    ) -> dict[str, Any]:
+        return self._mutate_collection_tag(
+            collection_id,
+            action="remove",
+            tag=tag,
+            operation_id=operation_id,
+            expected_revision=expected_revision,
+            expected_tag_set_identity=expected_tag_set_identity,
+        )
+
+    def _mutate_collection_tag(
+        self,
+        collection_id: CollectionId,
+        *,
+        action: Literal["add", "remove"],
+        tag: CollectionTag,
+        operation_id: str,
+        expected_revision: int,
+        expected_tag_set_identity: str,
     ) -> dict[str, Any]:
         return self._json(
-            "DELETE",
-            f"/v1/collection-access-groups/{_sha256_identity(group_id, 'group id')}/collections/"
-            f"{_collection_id(collection_id)}",
+            "POST",
+            f"/v1/collections/{_collection_id(collection_id)}/tags:{action}",
+            json={
+                "tag": _collection_tags((tag,), allow_empty=False)[0],
+                "operation_id": operation_id,
+                "expected_revision": expected_revision,
+                "expected_tag_set_identity": _sha256_identity(
+                    expected_tag_set_identity,
+                    "tag-set identity",
+                ),
+            },
         )
 
     def get_download_quota(self) -> dict[str, Any]:

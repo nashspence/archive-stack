@@ -11,8 +11,8 @@ from riverhog_core.app_permissions import (
     ARCHIVES_MANAGE,
     ARCHIVES_READ,
     CATALOG_READ,
-    COLLECTION_ACCESS_GROUPS_MANAGE,
     COLLECTION_DESCRIPTIONS_MANAGE,
+    COLLECTION_TAGS_MANAGE,
     COLLECTION_TRANSFORMS_CONTROL,
     COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
@@ -202,12 +202,12 @@ CollectionTransformLeaseManager = Annotated[
         )
     ),
 ]
-CollectionAccessGroupManager = Annotated[
+CollectionTagManager = Annotated[
     ApplicationPrincipal,
     Depends(
         cast(
             Callable[..., object],
-            require_permission(COLLECTION_ACCESS_GROUPS_MANAGE),
+            require_permission(COLLECTION_TAGS_MANAGE),
         )
     ),
 ]
@@ -253,7 +253,7 @@ __all__ = [
     "CollectionCreator",
     "CollectionDescriptionManager",
     "CollectionDeleter",
-    "CollectionAccessGroupManager",
+    "CollectionTagManager",
     "CollectionTransformController",
     "CollectionTransformExecutor",
     "CollectionTransformLeaseManager",

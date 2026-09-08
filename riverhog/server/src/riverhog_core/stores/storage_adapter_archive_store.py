@@ -9,7 +9,14 @@ from riverhog_age import encrypt_age_scrypt, iter_decrypt_age_scrypt
 from riverhog_protocol import (
     COLLECTION_DESCRIPTION_DOCUMENT_FORMAT,
     COLLECTION_DESCRIPTION_RELATIVE_PATH,
+    COLLECTION_TAG_HEAD_FORMAT,
+    COLLECTION_TAG_HEAD_RELATIVE_PATH,
+    COLLECTION_TAG_NODE_FORMAT,
     CollectionDescriptionDocument,
+    CollectionTagHeadDocument,
+    collection_tag_node_digest,
+    collection_tag_node_path,
+    decode_collection_tag_node,
 )
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
@@ -38,6 +45,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveVerificationError,
     CollectionArchiveIdentity,
     CollectionDescriptionReceipt,
+    CollectionTagObjectReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.runtime_config import RuntimeConfig
@@ -205,6 +213,119 @@ class StorageAdapterArchiveStore:
         )
         if self._head(object_path=object_path, revision=None, placement="immediate") is not None:
             raise RuntimeError("collection description deletion could not be verified")
+
+    def publish_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+        encoded: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt:
+        _ = collection_id
+        decode_collection_tag_node(encoded)
+        if collection_tag_node_digest(encoded) != digest:
+            raise ValueError("collection tag node digest differs")
+        relative_path = collection_tag_node_path(digest)
+        object_path = f"{_archive_prefix(archive_storage_prefix)}/{relative_path}"
+        identity = {
+            "riverhog-format": COLLECTION_TAG_NODE_FORMAT,
+            "riverhog-tag-node-sha256": digest,
+            "riverhog-encryption": "age-v1-scrypt",
+            "riverhog-passphrase-id": passphrase_id,
+            _PLAINTEXT_BYTES_METADATA: str(len(encoded)),
+            _PLAINTEXT_SHA256_METADATA: hashlib.sha256(encoded).hexdigest(),
+        }
+        existing = self._head(object_path=object_path, revision=None, placement="immediate")
+        if existing is not None and _metadata_contains(existing, identity):
+            return _tag_receipt(existing)
+        ciphertext = encrypt_age_scrypt(
+            encoded,
+            self._config.archive_passphrase_for(passphrase_id),
+            log_n=self._config.archive_scrypt_work_factor,
+        )
+        receipt = self._put_small(
+            object_path=object_path,
+            content=ciphertext,
+            content_type="application/vnd.riverhog.collection-tag-node.v1+age",
+            identity=identity,
+            mode="create_only",
+        )
+        return _tag_receipt(receipt)
+
+    def publish_collection_tag_head(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+    ) -> CollectionTagObjectReceipt:
+        _ = collection_id
+        head = CollectionTagHeadDocument.from_json_bytes(document)
+        object_path = (
+            f"{_archive_prefix(archive_storage_prefix)}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}"
+        )
+        identity = {
+            "riverhog-format": COLLECTION_TAG_HEAD_FORMAT,
+            "riverhog-archive-root-sha256": head.archive_root_sha256,
+            "riverhog-tag-head-identity": head.head_identity,
+            "riverhog-tag-set-identity": head.tag_set_identity,
+            "riverhog-tag-revision": str(head.revision),
+            "riverhog-encryption": "age-v1-scrypt",
+            "riverhog-passphrase-id": passphrase_id,
+            _PLAINTEXT_BYTES_METADATA: str(len(document)),
+            _PLAINTEXT_SHA256_METADATA: hashlib.sha256(document).hexdigest(),
+        }
+        existing = self._head(object_path=object_path, revision=None, placement="immediate")
+        if existing is not None and _metadata_contains(existing, identity):
+            return _tag_receipt(existing)
+        ciphertext = encrypt_age_scrypt(
+            document,
+            self._config.archive_passphrase_for(passphrase_id),
+            log_n=self._config.archive_scrypt_work_factor,
+        )
+        receipt = self._put_small(
+            object_path=object_path,
+            content=ciphertext,
+            content_type="application/vnd.riverhog.collection-tag-head.v1+age",
+            identity=identity,
+            mode="replace_current",
+        )
+        return _tag_receipt(receipt)
+
+    def delete_collection_tags(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None:
+        _ = collection_id
+        prefix = _archive_prefix(archive_storage_prefix)
+        for relative_path in (COLLECTION_TAG_HEAD_RELATIVE_PATH, "tags/nodes"):
+            object_prefix = f"{prefix}/{relative_path}"
+            self._adapter.delete_prefix(DeletePrefixRequest(object_prefix=object_prefix))
+
+    def delete_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+    ) -> None:
+        _ = collection_id
+        object_path = (
+            f"{_archive_prefix(archive_storage_prefix)}/{collection_tag_node_path(digest)}"
+        )
+        self._adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(object_path=object_path),
+                mode="all_versions",
+            )
+        )
+        if self._head(object_path=object_path, revision=None, placement="immediate") is not None:
+            raise RuntimeError("collection tag-node deletion could not be verified")
 
     def read_archive_artifact(
         self,
@@ -501,7 +622,9 @@ def _metadata_contains(receipt: ObjectMetadataReceipt, expected: dict[str, str])
     )
 
 
-def _required_stored_sha256(receipt: ObjectMetadataReceipt, *, object_path: str) -> str:
+def _required_stored_sha256(
+    receipt: ObjectMetadataReceipt | ImmutableObjectReceipt, *, object_path: str
+) -> str:
     value = receipt.stored_sha256
     if (
         value is None
@@ -510,6 +633,18 @@ def _required_stored_sha256(receipt: ObjectMetadataReceipt, *, object_path: str)
     ):
         raise RuntimeError(f"archive object is missing its stored sha256: {object_path}")
     return value
+
+
+def _tag_receipt(
+    receipt: ObjectMetadataReceipt | ImmutableObjectReceipt,
+) -> CollectionTagObjectReceipt:
+    return CollectionTagObjectReceipt(
+        object_path=receipt.object_path,
+        revision=receipt.revision,
+        stored_bytes=receipt.stored_bytes,
+        stored_sha256=_required_stored_sha256(receipt, object_path=receipt.object_path),
+        published_at=receipt.completed_at,
+    )
 
 
 def _archive_prefix(value: str) -> str:

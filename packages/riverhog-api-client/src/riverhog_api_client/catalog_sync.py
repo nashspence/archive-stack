@@ -5,18 +5,21 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from riverhog_protocol import (
     CATALOG_SYNC_PAGE_SIZE_MAX,
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
     CatalogSyncChangePage,
     CatalogSyncCheckpoint,
     CatalogSyncCollectionPage,
     CatalogSyncDelete,
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
+    validate_collection_tag,
 )
 from riverhog_protocol.errors import RiverhogError
 
@@ -29,6 +32,15 @@ class CatalogSyncApi(Protocol):
     def list_catalog_sync_changes(
         self, cursor: str, *, limit: int = 100
     ) -> CatalogSyncChangePage: ...
+    def list_collection_tags(
+        self,
+        collection_id: int,
+        *,
+        revision: int,
+        tag_set_identity: str,
+        page_size: int = 25,
+        page_token: str | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class CatalogReplica:
@@ -74,6 +86,8 @@ class CatalogReplica:
                     description TEXT,
                     description_revision INTEGER,
                     description_identity TEXT,
+                    tag_revision INTEGER,
+                    tag_set_identity TEXT,
                     deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
                     PRIMARY KEY (generation, collection_id),
                     FOREIGN KEY (generation) REFERENCES catalog_replica_generations(id)
@@ -85,16 +99,46 @@ class CatalogReplica:
                            AND description IS NULL
                            AND description_revision IS NULL
                            AND description_identity IS NULL
+                           AND tag_revision IS NULL
+                           AND tag_set_identity IS NULL
                         OR deleted = 0
                            AND length(archive_root_sha256) = 64
                            AND length(content_identity) = 64
                            AND description_revision >= 0
                            AND length(description_identity) = 64
+                           AND tag_revision >= 1
+                           AND length(tag_set_identity) = 64
                     )
                 ) WITHOUT ROWID;
                 CREATE INDEX IF NOT EXISTS ix_catalog_replica_collections_live
                     ON catalog_replica_collections (generation, collection_id)
                     WHERE deleted = 0;
+                CREATE TABLE IF NOT EXISTS catalog_replica_tag_sync (
+                    generation TEXT NOT NULL,
+                    collection_id INTEGER NOT NULL CHECK (collection_id > 0),
+                    tag_revision INTEGER NOT NULL CHECK (tag_revision >= 1),
+                    tag_set_identity TEXT NOT NULL CHECK (length(tag_set_identity) = 64),
+                    page_token TEXT,
+                    complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+                    PRIMARY KEY (generation, collection_id),
+                    FOREIGN KEY (generation, collection_id)
+                        REFERENCES catalog_replica_collections(generation, collection_id)
+                        ON DELETE CASCADE
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS ix_catalog_replica_tag_sync_work
+                    ON catalog_replica_tag_sync (generation, complete, collection_id);
+                CREATE TABLE IF NOT EXISTS catalog_replica_tags (
+                    generation TEXT NOT NULL,
+                    collection_id INTEGER NOT NULL CHECK (collection_id > 0),
+                    tag_revision INTEGER NOT NULL CHECK (tag_revision >= 1),
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY (generation, collection_id, tag_revision, tag),
+                    FOREIGN KEY (generation, collection_id)
+                        REFERENCES catalog_replica_tag_sync(generation, collection_id)
+                        ON DELETE CASCADE
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS ix_catalog_replica_tags_lookup
+                    ON catalog_replica_tags (tag, generation, collection_id);
                 """
             )
 
@@ -173,6 +217,9 @@ class CatalogReplica:
         cursor = before["cursor"]
         if phase not in {"catalog", "catchup", "following"} or not isinstance(cursor, str):
             raise RuntimeError("catalog replica requires an explicit synchronization start")
+        pending_tags = self._pending_tags(before)
+        if pending_tags is not None:
+            return self._step_tags(api, before=before, pending=pending_tags, limit=limit)
         try:
             if phase == "catalog":
                 page: CatalogSyncCollectionPage | CatalogSyncChangePage = (
@@ -221,7 +268,11 @@ class CatalogReplica:
                     )
                     next_cursor = page.next_cursor
                     next_phase = "following" if page.caught_up else phase
-                promote = before["building_generation"] is not None and next_phase == "following"
+                promote = (
+                    before["building_generation"] is not None
+                    and next_phase == "following"
+                    and not self._has_pending_tags(db, generation)
+                )
                 active = before["active_generation"]
                 if promote and active is not None:
                     db.execute(
@@ -249,25 +300,62 @@ class CatalogReplica:
                 raise
         return self.status()
 
-    def page(self, *, after: int = 0, limit: int = 100) -> list[CatalogSyncDescriptor]:
+    def page(
+        self,
+        *,
+        after: int = 0,
+        limit: int = 100,
+        tags: Sequence[str] = (),
+    ) -> list[CatalogSyncDescriptor]:
         if isinstance(after, bool) or after < 0:
             raise ValueError("local catalog position must be non-negative")
         if isinstance(limit, bool) or not 1 <= limit <= CATALOG_SYNC_PAGE_SIZE_MAX:
             raise ValueError("local catalog page size is outside the v1 bound")
+        canonical_tags = tuple(validate_collection_tag(tag) for tag in tags)
+        if len(canonical_tags) > COLLECTION_TAG_REQUEST_MEMBERS_MAX or len(
+            set(canonical_tags)
+        ) != len(canonical_tags):
+            raise ValueError("local catalog tag selector is outside the v1 bound")
         with closing(self._connect()) as db:
             state = db.execute("SELECT * FROM catalog_replica_state").fetchone()
             if state is None or not state["usable"] or state["active_generation"] is None:
                 raise RuntimeError("catalog replica is not synchronized for its current view")
-            rows = db.execute(
+            tag_filter = ""
+            parameters: list[object] = [state["active_generation"], after]
+            if canonical_tags:
+                placeholders = ",".join("?" for _tag in canonical_tags)
+                tag_filter = f"""
+                AND EXISTS (
+                    SELECT 1 FROM catalog_replica_tag_sync AS s
+                    WHERE s.generation = catalog_replica_collections.generation
+                      AND s.collection_id = catalog_replica_collections.collection_id
+                      AND s.tag_revision = catalog_replica_collections.tag_revision
+                      AND s.tag_set_identity = catalog_replica_collections.tag_set_identity
+                      AND s.complete = 1
+                )
+                AND (
+                    SELECT COUNT(*) FROM catalog_replica_tags AS t
+                    WHERE t.generation = catalog_replica_collections.generation
+                      AND t.collection_id = catalog_replica_collections.collection_id
+                      AND t.tag_revision = catalog_replica_collections.tag_revision
+                      AND t.tag IN ({placeholders})
+                ) = ?
                 """
+                parameters.extend(canonical_tags)
+                parameters.append(len(canonical_tags))
+            parameters.append(limit)
+            rows = db.execute(
+                f"""
                 SELECT collection_id, revision, archive_root_sha256, content_identity,
-                       description, description_revision, description_identity
+                       description, description_revision, description_identity,
+                       tag_revision, tag_set_identity
                 FROM catalog_replica_collections
                 WHERE generation = ? AND collection_id > ? AND deleted = 0
+                {tag_filter}
                 ORDER BY collection_id
                 LIMIT ?
                 """,
-                (state["active_generation"], after, limit),
+                parameters,
             ).fetchall()
             return [
                 CatalogSyncDescriptor(
@@ -278,8 +366,62 @@ class CatalogReplica:
                     description=row["description"],
                     description_revision=int(row["description_revision"]),
                     description_identity=str(row["description_identity"]),
+                    tag_revision=int(row["tag_revision"]),
+                    tag_set_identity=str(row["tag_set_identity"]),
                 )
                 for row in rows
+            ]
+
+    def tag_page(
+        self,
+        collection_id: int,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[str]:
+        """Read one bounded page from a completely hydrated current local tag authority."""
+
+        if isinstance(collection_id, bool) or collection_id < 1:
+            raise ValueError("collection identity must be positive")
+        if isinstance(limit, bool) or not 1 <= limit <= CATALOG_SYNC_PAGE_SIZE_MAX:
+            raise ValueError("local tag page size is outside the v1 bound")
+        canonical_after = None if after is None else validate_collection_tag(after)
+        with closing(self._connect()) as db:
+            state = db.execute("SELECT * FROM catalog_replica_state").fetchone()
+            if state is None or not state["usable"] or state["active_generation"] is None:
+                raise RuntimeError("catalog replica is not synchronized for its current view")
+            authority = db.execute(
+                """
+                SELECT c.tag_revision, c.tag_set_identity, s.complete
+                FROM catalog_replica_collections AS c
+                JOIN catalog_replica_tag_sync AS s
+                  ON s.generation = c.generation AND s.collection_id = c.collection_id
+                 AND s.tag_revision = c.tag_revision
+                 AND s.tag_set_identity = c.tag_set_identity
+                WHERE c.generation = ? AND c.collection_id = ? AND c.deleted = 0
+                """,
+                (state["active_generation"], collection_id),
+            ).fetchone()
+            if authority is None or not authority["complete"]:
+                raise RuntimeError("local collection tag authority is not synchronized")
+            return [
+                str(row["tag"])
+                for row in db.execute(
+                    """
+                    SELECT tag FROM catalog_replica_tags
+                    WHERE generation = ? AND collection_id = ? AND tag_revision = ?
+                      AND (? IS NULL OR tag > ?)
+                    ORDER BY tag LIMIT ?
+                    """,
+                    (
+                        state["active_generation"],
+                        collection_id,
+                        int(authority["tag_revision"]),
+                        canonical_after,
+                        canonical_after,
+                        limit,
+                    ),
+                )
             ]
 
     def get(self, collection_id: int) -> CatalogSyncDescriptor | None:
@@ -294,7 +436,8 @@ class CatalogReplica:
             row = db.execute(
                 """
                 SELECT collection_id, revision, archive_root_sha256, content_identity,
-                       description, description_revision, description_identity
+                       description, description_revision, description_identity,
+                       tag_revision, tag_set_identity
                 FROM catalog_replica_collections
                 WHERE generation = ? AND collection_id = ? AND deleted = 0
                 """,
@@ -310,6 +453,8 @@ class CatalogReplica:
                 description=row["description"],
                 description_revision=int(row["description_revision"]),
                 description_identity=str(row["description_identity"]),
+                tag_revision=int(row["tag_revision"]),
+                tag_set_identity=str(row["tag_set_identity"]),
             )
 
     def reclaim(self, *, limit: int = 100) -> int:
@@ -362,6 +507,142 @@ class CatalogReplica:
             except BaseException:
                 db.rollback()
                 raise
+
+    def _pending_tags(self, state: dict[str, object]) -> sqlite3.Row | None:
+        generation = state["building_generation"] or state["active_generation"]
+        if not isinstance(generation, str):
+            return None
+        with closing(self._connect()) as db:
+            return cast(
+                sqlite3.Row | None,
+                db.execute(
+                    """
+                SELECT generation, collection_id, tag_revision, tag_set_identity, page_token
+                FROM catalog_replica_tag_sync
+                WHERE generation = ? AND complete = 0
+                ORDER BY collection_id
+                LIMIT 1
+                """,
+                    (generation,),
+                ).fetchone(),
+            )
+
+    def _step_tags(
+        self,
+        api: CatalogSyncApi,
+        *,
+        before: dict[str, object],
+        pending: sqlite3.Row,
+        limit: int,
+    ) -> dict[str, object]:
+        try:
+            payload = api.list_collection_tags(
+                int(pending["collection_id"]),
+                revision=int(pending["tag_revision"]),
+                tag_set_identity=str(pending["tag_set_identity"]),
+                page_size=limit,
+                page_token=None if pending["page_token"] is None else str(pending["page_token"]),
+            )
+        except RiverhogError as exc:
+            self._invalidate(exc, serial=_required_int(before, "serial"), tag_authority=True)
+            raise
+        expected = (
+            int(pending["collection_id"]),
+            int(pending["tag_revision"]),
+            str(pending["tag_set_identity"]),
+        )
+        if (
+            payload.get("collection_id"),
+            payload.get("revision"),
+            payload.get("tag_set_identity"),
+        ) != expected:
+            raise ValueError("collection tag page changed its bound authority")
+        raw_tags = payload.get("tags")
+        if not isinstance(raw_tags, list) or len(raw_tags) > limit:
+            raise ValueError("collection tag page has invalid contents")
+        tags = tuple(validate_collection_tag(tag) for tag in raw_tags if isinstance(tag, str))
+        if len(tags) != len(raw_tags) or tuple(sorted(tags, key=lambda tag: tag.encode())) != tags:
+            raise ValueError("collection tag page is not canonical")
+        next_page_token = payload.get("next_page_token")
+        if next_page_token is not None and (
+            not isinstance(next_page_token, str) or not next_page_token
+        ):
+            raise ValueError("collection tag page continuation is invalid")
+
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_serial(db, _required_int(before, "serial"))
+                current = db.execute(
+                    "SELECT * FROM catalog_replica_tag_sync "
+                    "WHERE generation = ? AND collection_id = ?",
+                    (pending["generation"], pending["collection_id"]),
+                ).fetchone()
+                if current is None or (
+                    int(current["tag_revision"]),
+                    str(current["tag_set_identity"]),
+                    current["page_token"],
+                ) != (expected[1], expected[2], pending["page_token"]):
+                    raise RuntimeError("local collection tag authority changed")
+                for tag in tags:
+                    try:
+                        db.execute(
+                            "INSERT INTO catalog_replica_tags "
+                            "(generation, collection_id, tag_revision, tag) VALUES (?, ?, ?, ?)",
+                            (pending["generation"], expected[0], expected[1], tag),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError("collection tag traversal repeated a member") from exc
+                db.execute(
+                    "UPDATE catalog_replica_tag_sync SET page_token = ?, complete = ? "
+                    "WHERE generation = ? AND collection_id = ?",
+                    (
+                        next_page_token,
+                        int(next_page_token is None),
+                        pending["generation"],
+                        expected[0],
+                    ),
+                )
+                promote = (
+                    next_page_token is None
+                    and before["building_generation"] == pending["generation"]
+                    and before["phase"] == "following"
+                    and not self._has_pending_tags(db, str(pending["generation"]))
+                )
+                active = before["active_generation"]
+                if promote and active is not None:
+                    db.execute(
+                        "UPDATE catalog_replica_generations SET obsolete = 1 WHERE id = ?",
+                        (active,),
+                    )
+                db.execute(
+                    """
+                    UPDATE catalog_replica_state
+                    SET serial = serial + 1, active_generation = ?, building_generation = ?,
+                        usable = ?
+                    """,
+                    (
+                        pending["generation"] if promote else active,
+                        None if promote else before["building_generation"],
+                        int(active is not None or promote),
+                    ),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        return self.status()
+
+    @staticmethod
+    def _has_pending_tags(db: sqlite3.Connection, generation: str) -> bool:
+        return (
+            db.execute(
+                "SELECT 1 FROM catalog_replica_tag_sync "
+                "WHERE generation = ? AND complete = 0 LIMIT 1",
+                (generation,),
+            ).fetchone()
+            is not None
+        )
 
     @staticmethod
     def _apply_catalog_page(
@@ -423,6 +704,8 @@ class CatalogReplica:
         description = None if deleted else item.description  # type: ignore[union-attr]
         description_revision = None if deleted else item.description_revision  # type: ignore[union-attr]
         description_identity = None if deleted else item.description_identity  # type: ignore[union-attr]
+        tag_revision = None if deleted else item.tag_revision  # type: ignore[union-attr]
+        tag_set_identity = None if deleted else item.tag_set_identity  # type: ignore[union-attr]
         existing = db.execute(
             "SELECT * FROM catalog_replica_collections WHERE generation = ? AND collection_id = ?",
             (generation, item.collection_id),
@@ -434,6 +717,8 @@ class CatalogReplica:
                 existing["description"],
                 existing["description_revision"],
                 existing["description_identity"],
+                existing["tag_revision"],
+                existing["tag_set_identity"],
                 bool(existing["deleted"]),
             ) != (
                 root,
@@ -441,6 +726,8 @@ class CatalogReplica:
                 description,
                 description_revision,
                 description_identity,
+                tag_revision,
+                tag_set_identity,
                 deleted,
             ):
                 raise ValueError("equal catalog revisions have different contents")
@@ -450,8 +737,9 @@ class CatalogReplica:
             INSERT INTO catalog_replica_collections (
                 generation, collection_id, revision,
                 archive_root_sha256, content_identity, description,
-                description_revision, description_identity, deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                description_revision, description_identity,
+                tag_revision, tag_set_identity, deleted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (generation, collection_id) DO UPDATE SET
                 revision = excluded.revision,
                 archive_root_sha256 = excluded.archive_root_sha256,
@@ -459,6 +747,8 @@ class CatalogReplica:
                 description = excluded.description,
                 description_revision = excluded.description_revision,
                 description_identity = excluded.description_identity,
+                tag_revision = excluded.tag_revision,
+                tag_set_identity = excluded.tag_set_identity,
                 deleted = excluded.deleted
             WHERE excluded.revision > catalog_replica_collections.revision
             """,
@@ -471,11 +761,42 @@ class CatalogReplica:
                 description,
                 description_revision,
                 description_identity,
+                tag_revision,
+                tag_set_identity,
                 int(deleted),
             ),
         )
+        if deleted:
+            db.execute(
+                "DELETE FROM catalog_replica_tag_sync WHERE generation = ? AND collection_id = ?",
+                (generation, item.collection_id),
+            )
+        elif (
+            existing is None
+            or existing["tag_revision"] != tag_revision
+            or existing["tag_set_identity"] != tag_set_identity
+        ):
+            db.execute(
+                "DELETE FROM catalog_replica_tag_sync WHERE generation = ? AND collection_id = ?",
+                (generation, item.collection_id),
+            )
+            db.execute(
+                """
+                INSERT INTO catalog_replica_tag_sync (
+                    generation, collection_id, tag_revision, tag_set_identity,
+                    page_token, complete
+                ) VALUES (?, ?, ?, ?, NULL, 0)
+                """,
+                (generation, item.collection_id, tag_revision, tag_set_identity),
+            )
 
-    def _invalidate(self, error: RiverhogError, *, serial: int) -> None:
+    def _invalidate(
+        self,
+        error: RiverhogError,
+        *,
+        serial: int,
+        tag_authority: bool = False,
+    ) -> None:
         if error.code not in {
             "unauthorized",
             "forbidden",
@@ -483,7 +804,7 @@ class CatalogReplica:
             "catalog_sync_history_expired",
             "catalog_sync_source_changed",
             "catalog_sync_view_changed",
-        }:
+        } and not (tag_authority and error.code == "precondition_failed"):
             return
         with closing(self._connect()) as db:
             clear_active = error.code in {

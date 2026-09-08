@@ -118,6 +118,8 @@ def test_reference_configuration_is_current_and_secret_injected(
     assert [source.id for source in config.sources] == ["ftp-intake"]
     source = config.source("ftp-intake")
     assert source.ingest_source == "ftp:example-intake"
+    assert source.description == "Reference FTP intake"
+    assert source.tags == ("source:ftp",)
     assert source.close_mode == "stable"
     assert source.stable_seconds == 30
     assert source.provenance_omission_reason == (

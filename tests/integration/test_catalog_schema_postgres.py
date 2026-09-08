@@ -104,10 +104,9 @@ def test_postgres_current_v1_fixture_validates_and_restarts(
     with restarted.begin() as connection:
         connection.execute(
             text(
-                "INSERT INTO collection_access_groups "
-                "(id, creation_idempotency_key, created_by_app, status, "
-                "authorization_revision, created_at, updated_at, collection_count) "
-                "VALUES (:id, 'fixture', 'fixture', 'active', 1, "
+                "INSERT INTO collection_tags "
+                "(tag_sha256, tag, search_text, created_at, updated_at, collection_count) "
+                "VALUES (:id, 'fixture', 'fixture', "
                 "'2026-01-01T00:00:00.000000Z', "
                 "'2026-01-01T00:00:00.000000Z', 0)"
             ),
@@ -245,8 +244,8 @@ def test_postgres_catalog_revisions_serialize_commit_and_restart(
                 collection_id=collection_id,
                 occurred_at="2026-09-07T00:00:00.000000Z",
                 inventory_identity=f"{collection_id:064x}",
-                before_groups=(),
-                after_groups=(),
+                before_tags=(),
+                after_tags=(),
             )
             if collection_id == 1:
                 first_locked.set()
