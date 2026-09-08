@@ -19,6 +19,8 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.errors import RiverhogError
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from stove0_operator_contracts import (
     AdmissionCatalog,
     AdmissionIntent,
@@ -240,25 +242,34 @@ class ClassificationAdmissionService:
     def _synchronize_policy_rows(self) -> None:
         now = utc_timestamp_now()
         with self.state.sessions() as session, session.begin():
+            dialect = session.get_bind().dialect.name
+            if dialect == "postgresql":
+                insert_policy = postgresql_insert
+            elif dialect == "sqlite":
+                insert_policy = sqlite_insert
+            else:
+                raise RuntimeError(f"unsupported Stove0 state-store dialect: {dialect}")
             for policy in self.catalog.policies:
+                session.execute(
+                    insert_policy(_AdmissionPolicyRow)
+                    .values(
+                        policy_id=policy.id,
+                        policy_revision=policy.revision,
+                        policy_sha256=policy.policy_sha256,
+                        phase="new",
+                        generation=secrets.token_hex(32),
+                        source_identity=None,
+                        authorization_view_identity=None,
+                        cursor=None,
+                        baseline_mode="observe",
+                        through_revision="0",
+                        updated_at=now,
+                    )
+                    .on_conflict_do_nothing(index_elements=[_AdmissionPolicyRow.policy_id])
+                )
                 row = session.get(_AdmissionPolicyRow, policy.id, with_for_update=True)
                 if row is None:
-                    session.add(
-                        _AdmissionPolicyRow(
-                            policy_id=policy.id,
-                            policy_revision=policy.revision,
-                            policy_sha256=policy.policy_sha256,
-                            phase="new",
-                            generation=secrets.token_hex(32),
-                            source_identity=None,
-                            authorization_view_identity=None,
-                            cursor=None,
-                            baseline_mode="observe",
-                            through_revision="0",
-                            updated_at=now,
-                        )
-                    )
-                    continue
+                    raise RuntimeError("admission policy state is unavailable after insertion")
                 if row.policy_sha256 == policy.policy_sha256:
                     continue
                 if policy.revision <= row.policy_revision:

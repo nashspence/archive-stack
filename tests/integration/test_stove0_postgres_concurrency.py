@@ -998,10 +998,28 @@ def test_postgres_concurrent_classification_admission_converges_exactly_once(
             coordinator=cast(Any, object()),
         )
 
-    first_service = service(first)
+    barrier = threading.Barrier(2)
+    services: list[ClassificationAdmissionService] = []
+    startup_failures: list[BaseException] = []
+
+    def start_service(state: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            services.append(service(state))
+        except BaseException as exc:
+            startup_failures.append(exc)
+
+    threads = [threading.Thread(target=start_service, args=(state,)) for state in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not startup_failures
+    assert len(services) == 2
+    first_service, second_service = services
     first_service.advance(limit=1)
     first_service.advance(limit=1)
-    second_service = service(second)
     barrier = threading.Barrier(2)
     runs: list[object] = []
 
