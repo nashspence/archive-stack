@@ -11712,7 +11712,7 @@
         {
           "distribution": "stove0-server",
           "fixture_sha256s": [
-            "c37e8350e7035ebcfbd588434498e2d0243b92ae4b216a0ac2a9bd46d62014b1"
+            "6fec3eecfca50325cdc0823fd9d2b301fbbbd3cf272abd5fe58ac3fb8dca7a29"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
