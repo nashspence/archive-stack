@@ -21,7 +21,6 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_events import (
     begin_catalog_event,
     publish_catalog_event,
-    snapshot_catalog_event_collection_tags,
 )
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
@@ -445,20 +444,19 @@ class SqlAlchemyCollectionDeletionService:
             event_created = False
             if event_sequence is None:
                 active = session.get(CollectionDeletionRecord, collection_id)
+                collection = session.get(CollectionRecord, collection_id)
                 if active is None:
                     return False
+                if collection is None:
+                    raise RuntimeError("collection deletion catalog authority is unavailable")
                 created_event = begin_catalog_event(
                     session,
                     change="deleted",
                     collection_id=collection_id,
                     occurred_at=active.started_at,
                     inventory_identity=str(plan["inventory_identity"]),
-                )
-                snapshot_catalog_event_collection_tags(
-                    session,
-                    event=created_event,
-                    phase="before",
-                    collection_id=collection_id,
+                    before_tag_revision=collection.tag_revision,
+                    after_tag_revision=None,
                 )
                 event_sequence = created_event.sequence
                 plan[_CATALOG_EVENT_SEQUENCE_KEY] = event_sequence

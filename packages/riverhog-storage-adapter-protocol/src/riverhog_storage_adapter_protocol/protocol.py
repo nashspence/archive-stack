@@ -340,6 +340,7 @@ class SmallObjectWriteRequest(StorageAdapterModel):
     required_identity_assertions: RequiredIdentityAssertions
     placement: ObjectPlacement
     mode: Literal["create_only", "replace_current"]
+    expected_current_stored_sha256: Sha256 | None = None
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256
 
@@ -352,6 +353,12 @@ class SmallObjectWriteRequest(StorageAdapterModel):
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
         return _canonical_identity_assertions(value)
+
+    @model_validator(mode="after")
+    def validate_replacement_fence(self) -> Self:
+        if self.mode == "create_only" and self.expected_current_stored_sha256 is not None:
+            raise ValueError("create-only writes must not name a current-object fence")
+        return self
 
 
 class ImmutableObjectReceipt(StorageAdapterModel):
@@ -481,6 +488,7 @@ class ObjectReadStream:
 class DeleteObjectRequest(StorageAdapterModel):
     object: ObjectLocator
     mode: Literal["current", "exact_revision", "all_versions"]
+    expected_current_stored_sha256: Sha256 | None = None
 
     @model_validator(mode="after")
     def validate_revision(self) -> Self:
@@ -488,6 +496,8 @@ class DeleteObjectRequest(StorageAdapterModel):
             raise ValueError("exact revision deletion requires a revision")
         if self.mode != "exact_revision" and self.object.revision is not None:
             raise ValueError("current/all-version deletion must not name a revision")
+        if self.mode != "current" and self.expected_current_stored_sha256 is not None:
+            raise ValueError("only current-object deletion may use a stored-content fence")
         return self
 
 

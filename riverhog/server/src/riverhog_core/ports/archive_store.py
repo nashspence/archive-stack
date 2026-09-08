@@ -113,6 +113,7 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionDescriptionReceipt: ...
 
     def delete_collection_description(
@@ -139,6 +140,7 @@ class ArchiveStore(Protocol):
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionTagObjectReceipt: ...
 
     def delete_collection_tags(
@@ -154,6 +156,7 @@ class ArchiveStore(Protocol):
         collection_id: int,
         archive_storage_prefix: str,
         digest: str,
+        expected_current_stored_sha256: str,
     ) -> None: ...
 
     def read_archive_artifact(

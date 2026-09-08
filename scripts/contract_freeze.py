@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import extent_contract
+import extent_witnesses
 import gogurt_core
 import operation_qualification
 import release as release_contract
@@ -785,17 +786,35 @@ def trace_projection(projection: Mapping[str, object]) -> dict[str, object]:
     source_kinds = dict(
         sorted(Counter(identity.split(":", 1)[0] for identity in source_ids).items())
     )
+    behavioral_witnesses, segmented_links = extent_witnesses.bind_segmented_decisions(
+        ROOT,
+        decisions,
+    )
+    segmented_by_id = {str(link["id"]): link for link in segmented_links}
+    segmented_witness_link_count = sum(
+        len(cast(list[str], link["behavioral_witnesses"])) for link in segmented_links
+    )
     return {
         "schema": TRACE_SCHEMA,
         "contract_schema": projection["schema"],
         "contract_canonical_sha256": hashlib.sha256(semantic_payload).hexdigest(),
         "contract_projection_sha256": hashlib.sha256(rendered_payload).hexdigest(),
         "sources": sources,
+        "behavioral_witnesses": behavioral_witnesses,
         "extent_sources": [
             {
                 "id": decision["id"],
                 "owner": decision["owner"],
                 "source_pointer": decision["source_pointer"],
+                **(
+                    {
+                        "behavioral_witnesses": segmented_by_id[str(decision["id"])][
+                            "behavioral_witnesses"
+                        ]
+                    }
+                    if str(decision["id"]) in segmented_by_id
+                    else {}
+                ),
             }
             for decision in decisions
         ],
@@ -804,6 +823,9 @@ def trace_projection(projection: Mapping[str, object]) -> dict[str, object]:
             "source_kinds": source_kinds,
             "extent_decisions": len(decisions),
             "extent_source_links": len(decisions),
+            "segmented_decisions": len(segmented_links),
+            "segmented_behavioral_witness_links": segmented_witness_link_count,
+            "behavioral_witnesses": len(behavioral_witnesses),
         },
     }
 
@@ -948,7 +970,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
-    except (ContractFreezeError, release_contract.ReleaseError) as exc:
+    except (
+        ContractFreezeError,
+        extent_witnesses.ExtentWitnessError,
+        release_contract.ReleaseError,
+    ) as exc:
         print(f"contract freeze failed: {exc}", file=sys.stderr)
         return 2
 

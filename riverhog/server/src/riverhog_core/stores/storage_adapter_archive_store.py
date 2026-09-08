@@ -146,6 +146,7 @@ class StorageAdapterArchiveStore:
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionDescriptionReceipt:
         description = CollectionDescriptionDocument.from_json_bytes(document)
         object_path = (
@@ -185,7 +186,8 @@ class StorageAdapterArchiveStore:
             content=ciphertext,
             content_type="application/vnd.riverhog.collection-description.v1+age",
             identity=identity,
-            mode="replace_current",
+            mode=("create_only" if expected_current_stored_sha256 is None else "replace_current"),
+            expected_current_stored_sha256=expected_current_stored_sha256,
         )
         return CollectionDescriptionReceipt(
             object_path=receipt.object_path,
@@ -261,6 +263,7 @@ class StorageAdapterArchiveStore:
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionTagObjectReceipt:
         _ = collection_id
         head = CollectionTagHeadDocument.from_json_bytes(document)
@@ -291,7 +294,8 @@ class StorageAdapterArchiveStore:
             content=ciphertext,
             content_type="application/vnd.riverhog.collection-tag-head.v1+age",
             identity=identity,
-            mode="replace_current",
+            mode=("create_only" if expected_current_stored_sha256 is None else "replace_current"),
+            expected_current_stored_sha256=expected_current_stored_sha256,
         )
         return _tag_receipt(receipt)
 
@@ -313,6 +317,7 @@ class StorageAdapterArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         digest: str,
+        expected_current_stored_sha256: str,
     ) -> None:
         _ = collection_id
         object_path = (
@@ -321,7 +326,8 @@ class StorageAdapterArchiveStore:
         self._adapter.delete_object(
             DeleteObjectRequest(
                 object=ObjectLocator(object_path=object_path),
-                mode="all_versions",
+                mode="current",
+                expected_current_stored_sha256=expected_current_stored_sha256,
             )
         )
         if self._head(object_path=object_path, revision=None, placement="immediate") is not None:
@@ -470,6 +476,7 @@ class StorageAdapterArchiveStore:
         content_type: str,
         identity: dict[str, str],
         mode: Literal["create_only", "replace_current"],
+        expected_current_stored_sha256: str | None = None,
     ) -> ImmutableObjectReceipt:
         return self._adapter.put_small_object(
             SmallObjectWriteRequest(
@@ -478,6 +485,7 @@ class StorageAdapterArchiveStore:
                 required_identity_assertions=identity,
                 placement="immediate",
                 mode=mode,
+                expected_current_stored_sha256=expected_current_stored_sha256,
                 stored_bytes=len(content),
                 stored_sha256=hashlib.sha256(content).hexdigest(),
             ),

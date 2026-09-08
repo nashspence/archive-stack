@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import cast
+from typing import Any, cast
 
 from riverhog_protocol import MAX_CATALOG_SYNC_REVISION
-from sqlalchemy import case, exists, false, insert, literal, or_, select, true
+from sqlalchemy import case, exists, false, literal, or_, select, true
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from time_formats import utc_timestamp_now
@@ -12,10 +12,9 @@ from time_formats import utc_timestamp_now
 from riverhog_core.app_permissions import ALL_RESOURCES, ApplicationPrincipal
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
-    CatalogEventTagRecord,
     CatalogSyncStateRecord,
     CollectionRecord,
-    CollectionTagMembershipRecord,
+    CollectionTagVisibilityRecord,
 )
 from riverhog_core.collection_access import collection_ids, permission_resources, tag_hashes
 
@@ -31,31 +30,24 @@ def record_catalog_event(
     after_tags: Iterable[str],
 ) -> CatalogEventRecord:
     collection = _catalog_collection(session, collection_id)
-    event = CatalogEventRecord(
+    if tuple(before_tags):
+        raise ValueError("fixture-created catalog events have no before visibility")
+    event = begin_catalog_event(
+        session,
         change=change,
         collection_id=collection_id,
         occurred_at=occurred_at,
         inventory_identity=inventory_identity,
-        archive_root_sha256=collection.archive_root_sha256,
-        content_identity=collection.content_identity,
-        description=collection.description,
-        description_revision=collection.description_revision,
-        description_identity=collection.description_identity,
-        tag_revision=collection.tag_revision,
-        tag_set_identity=collection.tag_set_identity,
-        published=False,
+        before_tag_revision=None,
+        after_tag_revision=collection.tag_revision,
     )
-    session.add(event)
-    session.flush()
-    for phase, tags in (("before", before_tags), ("after", after_tags)):
-        for tag_sha256 in sorted(set(tags)):
-            session.add(
-                CatalogEventTagRecord(
-                    sequence=event.sequence,
-                    phase=phase,
-                    tag_sha256=tag_sha256,
-                )
-            )
+    for tag_sha256 in sorted(set(after_tags)):
+        open_catalog_tag_visibility(
+            session,
+            collection_id=collection_id,
+            tag_sha256=tag_sha256,
+            revision=collection.tag_revision,
+        )
     publish_catalog_event(session, event=event)
     return event
 
@@ -67,8 +59,10 @@ def begin_catalog_event(
     collection_id: int,
     occurred_at: str,
     inventory_identity: str,
+    before_tag_revision: int | None,
+    after_tag_revision: int | None,
 ) -> CatalogEventRecord:
-    """Create an event whose tag-visibility snapshots will be populated relationally."""
+    """Create an event bound to relational tag-visibility revisions."""
 
     collection = _catalog_collection(session, collection_id)
     event = CatalogEventRecord(
@@ -83,6 +77,8 @@ def begin_catalog_event(
         description_identity=collection.description_identity,
         tag_revision=collection.tag_revision,
         tag_set_identity=collection.tag_set_identity,
+        before_tag_revision=before_tag_revision,
+        after_tag_revision=after_tag_revision,
         published=False,
     )
     session.add(event)
@@ -127,29 +123,55 @@ def _catalog_collection(session: Session, collection_id: int) -> CollectionRecor
     return collection
 
 
-def snapshot_catalog_event_collection_tags(
+def open_catalog_tag_visibility(
     session: Session,
     *,
-    event: CatalogEventRecord,
-    phase: str,
     collection_id: int,
+    tag_sha256: str,
+    revision: int,
 ) -> None:
-    """Copy exact tag visibility without materializing tag cardinality."""
+    """Open one membership interval at an exact collection tag revision."""
 
-    if phase not in {"before", "after"}:
-        raise ValueError("catalog event tag phase is invalid")
-    session.execute(
-        insert(CatalogEventTagRecord).from_select(
-            ("sequence", "phase", "tag_sha256"),
-            select(
-                literal(event.sequence),
-                literal(phase),
-                CollectionTagMembershipRecord.tag_sha256,
-            ).where(
-                CollectionTagMembershipRecord.collection_id == collection_id,
-            ),
+    active = session.scalar(
+        select(CollectionTagVisibilityRecord).where(
+            CollectionTagVisibilityRecord.collection_id == collection_id,
+            CollectionTagVisibilityRecord.tag_sha256 == tag_sha256,
+            CollectionTagVisibilityRecord.end_revision.is_(None),
         )
     )
+    if active is not None:
+        raise RuntimeError("collection tag visibility interval is already open")
+    session.add(
+        CollectionTagVisibilityRecord(
+            collection_id=collection_id,
+            tag_sha256=tag_sha256,
+            start_revision=revision,
+            end_revision=None,
+        )
+    )
+
+
+def close_catalog_tag_visibility(
+    session: Session,
+    *,
+    collection_id: int,
+    tag_sha256: str,
+    revision: int,
+) -> None:
+    """Close one active membership interval at an exact collection tag revision."""
+
+    active = session.scalar(
+        select(CollectionTagVisibilityRecord)
+        .where(
+            CollectionTagVisibilityRecord.collection_id == collection_id,
+            CollectionTagVisibilityRecord.tag_sha256 == tag_sha256,
+            CollectionTagVisibilityRecord.end_revision.is_(None),
+        )
+        .with_for_update()
+    )
+    if active is None or revision <= active.start_revision:
+        raise RuntimeError("active collection tag visibility interval is unavailable")
+    active.end_revision = revision
 
 
 def catalog_event_projection(
@@ -170,8 +192,8 @@ def catalog_event_projection(
         if allowed_collections
         else false()
     )
-    after_match = _tag_snapshot_match("after", allowed_tags)
-    before_match = _tag_snapshot_match("before", allowed_tags)
+    after_match = _tag_revision_match(CatalogEventRecord.after_tag_revision, allowed_tags)
+    before_match = _tag_revision_match(CatalogEventRecord.before_tag_revision, allowed_tags)
     remains_visible = or_(exact_match, after_match)
     return (
         or_(remains_visible, before_match),
@@ -183,14 +205,18 @@ def catalog_event_projection(
     )
 
 
-def _tag_snapshot_match(phase: str, allowed_tags: set[str]) -> ColumnElement[bool]:
+def _tag_revision_match(revision: Any, allowed_tags: set[str]) -> ColumnElement[bool]:
     if not allowed_tags:
         return false()
     return exists(
         select(1).where(
-            CatalogEventTagRecord.sequence == CatalogEventRecord.sequence,
-            CatalogEventTagRecord.phase == phase,
-            CatalogEventTagRecord.tag_sha256.in_(allowed_tags),
+            CollectionTagVisibilityRecord.collection_id == CatalogEventRecord.collection_id,
+            CollectionTagVisibilityRecord.tag_sha256.in_(allowed_tags),
+            CollectionTagVisibilityRecord.start_revision <= revision,
+            or_(
+                CollectionTagVisibilityRecord.end_revision.is_(None),
+                CollectionTagVisibilityRecord.end_revision > revision,
+            ),
         )
     )
 
@@ -198,7 +224,8 @@ def _tag_snapshot_match(phase: str, allowed_tags: set[str]) -> ColumnElement[boo
 __all__ = [
     "begin_catalog_event",
     "catalog_event_projection",
+    "close_catalog_tag_visibility",
+    "open_catalog_tag_visibility",
     "publish_catalog_event",
     "record_catalog_event",
-    "snapshot_catalog_event_collection_tags",
 ]

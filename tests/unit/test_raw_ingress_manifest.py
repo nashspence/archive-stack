@@ -19,7 +19,9 @@ def test_raw_source_is_hashed_once_into_small_authority_and_bounded_batches() ->
         part_plaintext_bytes=65536,
     )
     try:
-        parts = tuple(value for _first, batch in result.iter_batches() for value in batch)
+        batches = tuple(result.iter_batches(limit=2))
+        parts = tuple(value for _first, batch in batches for value in batch)
+        assert [first for first, _batch in batches] == [0, 2]
         assert result.summary.sha256 == hashlib.sha256(content).hexdigest()
         assert parts[0] == hashlib.sha256(content[:65536]).hexdigest()
         assert raw_volume_part_span(

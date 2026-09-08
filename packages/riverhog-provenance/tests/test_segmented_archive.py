@@ -86,6 +86,29 @@ def test_ordered_segmented_provenance_authority_round_trips() -> None:
 
 
 def test_provenance_segmentation_limits_one_volume_not_the_logical_total() -> None:
+    logical_files = [
+        {
+            "path": f"camera/{index:05d}.mp4",
+            "bytes": index,
+            "sha256": hashlib.sha256(str(index).encode()).hexdigest(),
+            "status": "omitted",
+            "omission_reason": "fixture",
+        }
+        for index in range(PROVENANCE_BINDING_SEGMENT_FILES_MAX + 1)
+    ]
+    recovered: list[dict[str, object]] = []
+    starts: list[int] = []
+    for first in range(0, len(logical_files), PROVENANCE_BINDING_SEGMENT_FILES_MAX):
+        payload = binding_segment_bytes(
+            first_file_order=first,
+            files=logical_files[first : first + PROVENANCE_BINDING_SEGMENT_FILES_MAX],
+        )
+        parsed_first, parsed = parse_binding_segment(payload)
+        starts.append(parsed_first)
+        recovered.extend(parsed)
+    assert starts == [0, PROVENANCE_BINDING_SEGMENT_FILES_MAX]
+    assert recovered == logical_files
+
     with pytest.raises(ProvenanceValidationError, match="segmentation rule"):
         binding_segment_bytes(
             first_file_order=0,

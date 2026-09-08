@@ -554,7 +554,7 @@ def _seed_stove0_selector_relations(engine: Engine, *, rows: int) -> None:
             INSERT INTO stove0_admission_candidates (
                 admission_id, policy_id, state, preview_sha256, work_id,
                 document_bytes, document_json, preview_bytes, preview_json,
-                created_at, updated_at
+                attempt_count, next_attempt_at, failure, created_at, updated_at
             )
             SELECT repeat(md5('stove-admission-' || g), 2),
                    'policy-' || lpad((g % 32)::text, 2, '0'),
@@ -565,7 +565,9 @@ def _seed_stove0_selector_relations(engine: Engine, *, rows: int) -> None:
                         ELSE NULL END,
                    CASE WHEN g % 3 = 2 THEN repeat(md5('work-' || g), 2)
                         ELSE NULL END,
-                   2, '{{}}', NULL, NULL, {timestamp}, {timestamp}
+                   2, '{{}}', NULL, NULL, 0,
+                   CASE WHEN g % 3 = 2 THEN NULL ELSE {timestamp} END,
+                   NULL, {timestamp}, {timestamp}
             FROM generate_series(1, {rows}) AS g
             """
             )

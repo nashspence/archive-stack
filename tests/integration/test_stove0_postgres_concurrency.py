@@ -14,6 +14,7 @@ from riverhog_protocol import (
     CatalogSyncChangePage,
     CatalogSyncCheckpoint,
     CatalogSyncCollectionPage,
+    CatalogSyncDelete,
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
 )
@@ -38,6 +39,7 @@ from stove0_core import (
     stove0_state_schema,
 )
 from stove0_core._checkpoint_sha256 import CheckpointSHA256
+from stove0_core.persistence import _AdmissionObservedRevisionRow, _AdmissionPolicyRow
 from stove0_core.work_state import (
     TargetProductionSealCheckpoint,
     TargetProductionSealRecord,
@@ -1048,6 +1050,62 @@ def test_postgres_concurrent_classification_admission_converges_exactly_once(
         order="desc",
     )["admissions"]
     assert len(cast(tuple[object, ...], admissions)) == 1
+
+    delete = CatalogSyncDelete(collection_id=descriptor.collection_id, revision="3")
+    delete_page = CatalogSyncChangePage(
+        source_identity="6" * 64,
+        authorization_view_identity="7" * 64,
+        changes=[delete],
+        next_cursor="after-delete",
+        caught_up=False,
+        through_revision="3",
+    )
+    assert first_service._commit_change_page(  # noqa: SLF001 - PostgreSQL replay proof
+        policy,
+        cursor="after-change",
+        page=delete_page,
+        evaluated=None,
+    )
+    stale_descriptor = descriptor.model_copy(
+        update={"tag_revision": 2, "tag_set_identity": "8" * 64, "revision": "2"}
+    )
+    stale = CatalogSyncUpsert(**stale_descriptor.model_dump())
+    stale_page = CatalogSyncChangePage(
+        source_identity="6" * 64,
+        authorization_view_identity="7" * 64,
+        changes=[stale],
+        next_cursor="after-stale",
+        caught_up=True,
+        through_revision="3",
+    )
+    assert second_service._commit_change_page(  # noqa: SLF001 - PostgreSQL replay proof
+        policy,
+        cursor="after-delete",
+        page=stale_page,
+        evaluated=(stale, True),
+    )
+    conflicting_descriptor = stale_descriptor.model_copy(update={"revision": "3"})
+    conflict = CatalogSyncUpsert(**conflicting_descriptor.model_dump())
+    conflict_page = stale_page.model_copy(
+        update={"changes": [conflict], "next_cursor": "after-conflict"}
+    )
+    with pytest.raises(RuntimeError, match="changed its exact authority"):
+        first_service._commit_change_page(  # noqa: SLF001 - PostgreSQL conflict proof
+            policy,
+            cursor="after-stale",
+            page=conflict_page,
+            evaluated=(conflict, True),
+        )
+
+    with first.sessions() as session:
+        policy_row = session.get(_AdmissionPolicyRow, policy.id)
+        assert policy_row is not None
+        observed = session.get(
+            _AdmissionObservedRevisionRow,
+            (policy.id, policy_row.generation, descriptor.collection_id),
+        )
+        assert observed is not None
+        assert (observed.descriptor_revision, observed.operation) == ("3", "delete")
 
 
 def test_postgres_concurrent_nested_tree_admission_is_atomic_and_normalized(

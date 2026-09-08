@@ -157,6 +157,11 @@ class _FakeS3Client:
         key = str(request["Key"])
         if request.get("IfNoneMatch") == "*" and key in self.current:
             raise _client_error("PreconditionFailed", 412, "CompleteWriteSession")
+        if request.get("IfMatch") is not None:
+            current_version = self.current.get(key)
+            current = None if current_version is None else self.versions.get((key, current_version))
+            if current is None or current["ETag"] != request["IfMatch"]:
+                raise _client_error("PreconditionFailed", 412, "CompleteWriteSession")
         upload_id = str(request["UploadId"])
         if upload_id not in self.uploads:
             raise _client_error("NoSuchUpload", 404, "CompleteWriteSession")
@@ -211,6 +216,11 @@ class _FakeS3Client:
 
     def delete_object(self, **request: Any) -> None:
         key = str(request["Key"])
+        if request.get("IfMatch") is not None:
+            current_version = self.current.get(key)
+            current = None if current_version is None else self.versions.get((key, current_version))
+            if current is None or current["ETag"] != request["IfMatch"]:
+                raise _client_error("PreconditionFailed", 412, "DeleteObject")
         if request.get("VersionId") is not None:
             version = str(request["VersionId"])
             self.versions.pop((key, version), None)
@@ -311,6 +321,73 @@ def test_small_object_rejects_a_changed_content_type() -> None:
         )
 
     assert raised.value.code == "identity_conflict"
+
+
+class _RacingS3Client(_FakeS3Client):
+    def __init__(self, *, operation: str) -> None:
+        super().__init__()
+        self.operation = operation
+        self.raced = False
+
+    def _replace_concurrently(self, key: str) -> None:
+        if self.raced:
+            return
+        self.raced = True
+        self._store(
+            {
+                "Key": key,
+                "ContentType": "application/octet-stream",
+                "Metadata": {},
+                "StorageClass": None,
+            },
+            b"concurrent",
+        )
+
+    def complete_multipart_upload(self, **request: Any) -> dict[str, str]:
+        if self.operation == "write" and request.get("IfMatch") is not None:
+            self._replace_concurrently(str(request["Key"]))
+        return super().complete_multipart_upload(**request)
+
+    def delete_object(self, **request: Any) -> None:
+        if self.operation == "delete" and request.get("IfMatch") is not None:
+            self._replace_concurrently(str(request["Key"]))
+        super().delete_object(**request)
+
+
+@pytest.mark.parametrize("operation", ("write", "delete"))
+def test_current_object_fence_rejects_a_change_between_head_and_mutation(
+    operation: str,
+) -> None:
+    client = _RacingS3Client(operation=operation)
+    adapter = S3StorageAdapter(client, _config())
+    first = adapter.put_small_object(_small_request(b"first"), b"first")
+
+    with pytest.raises(StorageAdapterRejection) as raised:
+        if operation == "write":
+            adapter.put_small_object(
+                _small_request(b"replacement", identity="logical/v2").model_copy(
+                    update={
+                        "mode": "replace_current",
+                        "expected_current_stored_sha256": first.stored_sha256,
+                    }
+                ),
+                b"replacement",
+            )
+        else:
+            adapter.delete_object(
+                DeleteObjectRequest(
+                    object=ObjectLocator(object_path="archives/collection/manifest.age"),
+                    mode="current",
+                    expected_current_stored_sha256=first.stored_sha256,
+                )
+            )
+
+    assert raised.value.code == "identity_conflict"
+    current_version = client.current["owned/archives/collection/manifest.age"]
+    assert (
+        client.versions[("owned/archives/collection/manifest.age", current_version)]["Body"]
+        == b"concurrent"
+    )
 
 
 def test_small_object_streams_once_before_atomic_conditional_publication() -> None:
@@ -534,7 +611,10 @@ def test_deletion_is_exact_and_prefix_cleanup_removes_all_versions() -> None:
     first = adapter.put_small_object(_small_request(b"first"), b"first")
     adapter.put_small_object(
         _small_request(b"second", identity="logical/v2").model_copy(
-            update={"mode": "replace_current"}
+            update={
+                "mode": "replace_current",
+                "expected_current_stored_sha256": first.stored_sha256,
+            }
         ),
         b"second",
     )

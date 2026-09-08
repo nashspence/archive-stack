@@ -122,6 +122,22 @@ compose run --rm \
   --env RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 \
   --entrypoint python \
   test -m pytest -q tests/integration/test_garage_encrypted_archive_store.py
+# Keep ambiguous external effects and catalog replay behind deterministic
+# barriers in the installed test image. Ordinary completed-stage restarts below
+# complement these exact interleavings; they do not substitute for them.
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --entrypoint python test -m pytest -q \
+  packages/riverhog-protocol/tests/test_collection_tag_protocol.py::test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags \
+  tests/unit/test_collection_descriptions.py::test_delayed_primary_description_writer_cannot_overwrite_newer_authority \
+  tests/unit/test_collection_descriptions.py::test_delayed_description_replica_cannot_overwrite_newer_authority \
+  tests/unit/test_collection_tags.py::test_maximum_length_tag_is_a_nonfinal_browse_page \
+  tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable \
+  tests/unit/test_collection_tags.py::test_committed_tag_head_reconciles_after_its_response_is_lost \
+  tests/unit/test_collection_tags.py::test_delayed_old_head_writer_cannot_overwrite_newer_acknowledged_authority \
+  tests/unit/test_collection_tags.py::test_delayed_gc_cannot_delete_a_node_republished_by_a_newer_authority \
+  companions/stove0/tests/test_classification_admission.py::test_stale_upsert_cannot_resurrect_a_deleted_catalog_revision \
+  companions/stove0/tests/test_classification_admission.py::test_equal_catalog_revision_with_different_authority_fails_closed \
+  companions/stove0/tests/test_classification_admission.py::test_failed_lowest_candidate_is_delayed_and_does_not_starve_the_next
 ensure_compose_image app
 compose up --detach --wait app
 compose exec -T app sh -c \

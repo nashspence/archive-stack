@@ -149,7 +149,19 @@ def list_admissions(
             sort=cast(Any, sort),
             order=cast(Any, order),
         ),
-        table=("admissions", ("admission_id", "policy_id", "collection_id", "state", "work_id")),
+        table=(
+            "admissions",
+            (
+                "admission_id",
+                "policy_id",
+                "collection_id",
+                "state",
+                "attempt_count",
+                "next_attempt_at",
+                "failure",
+                "work_id",
+            ),
+        ),
     )
 
 

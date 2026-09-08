@@ -140,6 +140,14 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
     }
     assert trace["coverage"]["extent_decisions"] == len(extents["decisions"])
     assert trace["coverage"]["extent_source_links"] == len(extents["decisions"])
+    segmented = [
+        decision
+        for decision in extents["decisions"]
+        if decision["policy"] == "segmented_no_total_max"
+    ]
+    assert trace["coverage"]["segmented_decisions"] == len(segmented)
+    assert trace["coverage"]["segmented_behavioral_witness_links"] >= len(segmented)
+    assert trace["coverage"]["behavioral_witnesses"] == len(trace["behavioral_witnesses"])
 
 
 def test_extent_semantic_diff_is_grouped_by_owning_boundary() -> None:

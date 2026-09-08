@@ -132,8 +132,8 @@ from riverhog_core.browse import bounded_page, keyset_statement, validate_page_s
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
+    open_catalog_tag_visibility,
     publish_catalog_event,
-    snapshot_catalog_event_collection_tags,
 )
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -2794,12 +2794,8 @@ class SqlAlchemyCollectionUploadService:
             collection_id=upload.collection_id,
             occurred_at=now,
             inventory_identity=collection.inventory_identity,
-        )
-        snapshot_catalog_event_collection_tags(
-            session,
-            event=catalog_event,
-            phase="after",
-            collection_id=upload.collection_id,
+            before_tag_revision=None,
+            after_tag_revision=collection.tag_revision,
         )
         publish_catalog_event(session, event=catalog_event)
         authority = _final_authority(upload)
@@ -3481,6 +3477,9 @@ def _advance_catalog_identity(session: Session, upload: CollectionUploadRecord) 
 def _advance_catalog_tags(session: Session, upload: CollectionUploadRecord) -> None:
     """Project one bounded batch from staging into the searchable tag catalog."""
 
+    if upload.tag_revision is None:
+        raise RuntimeError("initial collection tag revision is unavailable")
+    tag_revision = upload.tag_revision
     cursor = _catalog_cursor(upload)
     section = str(cursor.get("section", "nodes"))
     if section == "nodes":
@@ -3592,6 +3591,12 @@ def _advance_catalog_tags(session: Session, upload: CollectionUploadRecord) -> N
                 tag_sha256=staged_tag.tag_sha256,
                 added_at=now,
             )
+        )
+        open_catalog_tag_visibility(
+            session,
+            collection_id=upload.collection_id,
+            tag_sha256=staged_tag.tag_sha256,
+            revision=tag_revision,
         )
         tag_record.collection_count += 1
     _set_catalog_cursor(

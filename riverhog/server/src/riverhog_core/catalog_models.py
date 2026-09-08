@@ -1415,6 +1415,8 @@ class CatalogEventRecord(Base):
     description_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     tag_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    before_tag_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    after_tag_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     committed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     published: Mapped[bool] = mapped_column(
         Boolean,
@@ -1446,6 +1448,16 @@ class CatalogEventRecord(Base):
             name="ck_catalog_events_tag_revision",
         ),
         CheckConstraint(
+            f"before_tag_revision IS NULL OR before_tag_revision >= 1 AND "
+            f"before_tag_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_catalog_events_before_tag_revision",
+        ),
+        CheckConstraint(
+            f"after_tag_revision IS NULL OR after_tag_revision >= 1 AND "
+            f"after_tag_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_catalog_events_after_tag_revision",
+        ),
+        CheckConstraint(
             _fixed_lowercase_integer_check("tag_set_identity", 64),
             name="ck_catalog_events_tag_set_identity",
         ),
@@ -1470,25 +1482,36 @@ class CatalogSyncStateRecord(Base):
     )
 
 
-class CatalogEventTagRecord(Base):
-    __tablename__ = "catalog_event_tags"
+class CollectionTagVisibilityRecord(Base):
+    """One half-open tag-revision interval used by historical authorization."""
 
-    sequence: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
-    phase: Mapped[str] = mapped_column(String, primary_key=True)
+    __tablename__ = "collection_tag_visibility"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     tag_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    start_revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    end_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
-        ForeignKeyConstraint(["sequence"], ["catalog_events.sequence"], ondelete="CASCADE"),
-        CheckConstraint("phase IN ('before', 'after')", name="ck_catalog_event_tags_phase"),
         CheckConstraint(
             _fixed_lowercase_integer_check("tag_sha256", 64),
-            name="ck_catalog_event_tags_sha256",
+            name="ck_collection_tag_visibility_sha256",
+        ),
+        CheckConstraint(
+            f"start_revision >= 1 AND start_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_visibility_start",
+        ),
+        CheckConstraint(
+            f"end_revision IS NULL OR end_revision > start_revision AND "
+            f"end_revision <= {MAX_COLLECTION_TAG_REVISION}",
+            name="ck_collection_tag_visibility_end",
         ),
         Index(
-            "ix_catalog_event_tags_visibility",
-            "phase",
+            "ix_collection_tag_visibility_lookup",
+            "collection_id",
             "tag_sha256",
-            "sequence",
+            "start_revision",
+            "end_revision",
         ),
     )
 

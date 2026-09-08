@@ -727,6 +727,13 @@ class FilesystemStorageAdapter:
                     "identity_conflict",
                     "filesystem object already exists with a different identity",
                 )
+            if request.expected_current_stored_sha256 is not None and (
+                current is None or current.stored_sha256 != request.expected_current_stored_sha256
+            ):
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "filesystem current object differs from the replacement fence",
+                )
 
             revision = self._small_revision(request)
             historical = self._load_object(request.object_path, revision=revision)
@@ -916,6 +923,15 @@ class FilesystemStorageAdapter:
                 self._prune_empty_parents(object_dir.parent, stop=self._root / "objects")
                 return
             if request.mode == "current":
+                if request.expected_current_stored_sha256 is not None:
+                    current = self._load_object(request.object.object_path, revision=None)
+                    if current is None:
+                        return
+                    if current.stored_sha256 != request.expected_current_stored_sha256:
+                        raise StorageAdapterRejection(
+                            "identity_conflict",
+                            "filesystem current object differs from the deletion fence",
+                        )
                 (object_dir / "current").unlink(missing_ok=True)
                 self._fsync_dir(object_dir)
                 return
@@ -928,9 +944,9 @@ class FilesystemStorageAdapter:
             revision_dir = self._revision_dir(object_key, revision)
             if not revision_dir.exists():
                 return
-            current = self._read_current_revision(object_dir)
+            current_revision = self._read_current_revision(object_dir)
             shutil.rmtree(revision_dir)
-            if current == revision:
+            if current_revision == revision:
                 (object_dir / "current").unlink(missing_ok=True)
             revisions_dir = object_dir / "revisions"
             if not any(revisions_dir.iterdir()):

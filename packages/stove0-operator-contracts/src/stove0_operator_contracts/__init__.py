@@ -264,6 +264,9 @@ class AdmissionView(OperatorModel):
     state: AdmissionState
     preview_sha256: Sha256 | None = None
     work_id: Sha256 | None = None
+    attempt_count: int = Field(ge=0)
+    next_attempt_at: str | None = Field(default=None, min_length=1, max_length=40)
+    failure: str | None = Field(default=None, min_length=1, max_length=1000)
     created_at: str = Field(min_length=1, max_length=40)
     updated_at: str = Field(min_length=1, max_length=40)
 
@@ -275,6 +278,8 @@ class AdmissionView(OperatorModel):
             raise ValueError("previewed admission has invalid stage identities")
         if self.state == "work_bound" and (self.preview_sha256 is None or self.work_id is None):
             raise ValueError("work-bound admission requires preview and work identities")
+        if (self.state == "work_bound") != (self.next_attempt_at is None):
+            raise ValueError("admission retry scheduling differs from its stage")
         return self
 
 

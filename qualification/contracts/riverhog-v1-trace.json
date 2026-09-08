@@ -1,10 +1,299 @@
 {
-  "contract_canonical_sha256": "26c138e6b2d65a0838c47254a0eb6102a39c2d17e7ca347b47ad684241f8aca4",
-  "contract_projection_sha256": "6e294c317384d2bdc40e9704fa6e06a0377f44959acfbd8aa017c0e59ec595ad",
+  "behavioral_witnesses": [
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke"
+      ],
+      "id": "riverhog-upload-work-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-actionable-work-acquisition"
+      ],
+      "test_node_ids": [
+        "packages/riverhog-protocol/tests/test_collection_upload_transport.py::test_bounded_upload_work_batch_binds_assignment_and_checkpoint_state",
+        "tests/unit/test_archive_write_reaper.py::test_archive_maintenance_drains_bounded_progress_before_idle_interval",
+        "tests/unit/test_incremental_collection_producer.py::test_many_artifact_publication_retains_only_the_unsealed_pack_window"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke",
+        "make provider-qualification"
+      ],
+      "id": "riverhog-archive-volume-part-progression/v1",
+      "owner": "https://nashspence.github.io/riverhog/v1/schemas/collection-archive-volume-v1.schema.json",
+      "reasons": [
+        "bounded-archive-volume-parts"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_incremental_plan.py::test_artifact_at_a_time_construction_seals_the_exact_one_shot_v1_plans",
+        "tests/unit/test_pack_upload.py::test_checkpoint_resumes_across_riverhog_and_adapter_restart",
+        "tests/unit/test_raw_upload.py::test_raw_upload_resumes_on_server_defined_age_part_boundaries"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make postgres-concurrency",
+        "make compose-smoke"
+      ],
+      "id": "riverhog-work-authority-append/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-authority-append"
+      ],
+      "test_node_ids": [
+        "companions/stove0/tests/test_riverhog_adapter.py::test_post_root_settlement_restarts_from_bounded_portable_inventory_progress",
+        "tests/integration/test_collection_deletion_concurrency.py::test_postgres_exact_output_intent_creation_resumes_one_upload"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make postgres-concurrency",
+        "make compose-smoke"
+      ],
+      "id": "riverhog-work-disposition-append/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-disposition-append"
+      ],
+      "test_node_ids": [
+        "companions/stove0/tests/test_riverhog_adapter.py::test_post_root_settlement_restarts_from_bounded_portable_inventory_progress",
+        "tests/integration/test_collection_deletion_concurrency.py::test_postgres_concurrent_first_disposition_and_output_create_one_set"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke",
+        "make provider-qualification"
+      ],
+      "id": "riverhog-provenance-volume-progression/v1",
+      "owner": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-bindings-v1.schema.json",
+      "reasons": [
+        "bounded-provenance-binding-volume"
+      ],
+      "test_node_ids": [
+        "packages/riverhog-provenance/tests/test_segmented_archive.py::test_ordered_segmented_provenance_authority_round_trips",
+        "packages/riverhog-provenance/tests/test_segmented_archive.py::test_provenance_segmentation_limits_one_volume_not_the_logical_total",
+        "tests/unit/test_collection_uploads.py::test_provenance_append_persists_next_ordinal_across_retry_and_restart"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke",
+        "make provider-qualification"
+      ],
+      "id": "riverhog-raw-digest-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-raw-digest-append"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_raw_ingress_manifest.py::test_raw_source_is_hashed_once_into_small_authority_and_bounded_batches",
+        "tests/unit/test_raw_upload.py::test_raw_upload_resumes_on_server_defined_age_part_boundaries"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make postgres-concurrency",
+        "make compose-smoke"
+      ],
+      "id": "riverhog-retrieval-work-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-retrieval-work-request"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_retrieval_service.py::test_retrieval_plan_resumes_across_more_than_two_internal_segment_pages",
+        "tests/integration/test_catalog_schema_postgres.py::test_postgres_retrieval_plan_advances_in_bounded_restartable_steps"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make postgres-concurrency",
+        "make database-qualification"
+      ],
+      "id": "riverhog-read-collection-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-route-page",
+        "bounded-route-progression"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_public_interface_parity.py::test_public_read_collection_selectors_are_bounded_and_frozen",
+        "tests/unit/test_catalog_sync.py::test_catalog_sync_crosses_many_pages_and_repairs_fixed_frontier_changes",
+        "tests/integration/test_lifecycle_event_concurrency.py::test_event_reads_and_concurrent_context_reapers_do_only_bounded_work"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make database-qualification",
+        "make compose-smoke"
+      ],
+      "id": "stove0-read-collection-progression/v1",
+      "owner": "stove0",
+      "reasons": [
+        "bounded-route-page",
+        "bounded-route-progression"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_public_interface_parity.py::test_public_read_collection_selectors_are_bounded_and_frozen",
+        "companions/stove0/tests/test_cli.py::test_stove0_bounded_pages_keep_rich_and_json_cli_parity",
+        "companions/stove0/tests/test_work_state.py::test_sql_operational_retention_scans_bounded_pages_without_parsing_all_work"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make postgres-concurrency",
+        "make compose-smoke"
+      ],
+      "id": "riverhog-upload-registration-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-upload-registration"
+      ],
+      "test_node_ids": [
+        "packages/riverhog-transform-sdk/tests/test_collection_transform_sdk.py::test_producer_streams_bounded_batches_without_limiting_collection_size",
+        "tests/integration/test_collection_upload_custody_concurrency.py::test_distinct_concurrent_registrations_preserve_both_members"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke",
+        "make provider-qualification"
+      ],
+      "id": "riverhog-upload-tag-staging-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-upload-staging-step; collection-tag-set-is-unbounded"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_incremental_collection_producer.py::test_incremental_producer_stages_unbounded_logical_tags_in_bounded_requests",
+        "packages/riverhog-protocol/tests/test_collection_tag_protocol.py::test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags",
+        "tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable"
+      ]
+    },
+    {
+      "claims": [
+        "bounded_step",
+        "forward_progress",
+        "multiple_segments",
+        "no_silent_truncation",
+        "restart"
+      ],
+      "gates": [
+        "make unit",
+        "make compose-smoke",
+        "make provider-qualification"
+      ],
+      "id": "riverhog-upload-unit-source-progression/v1",
+      "owner": "riverhog",
+      "reasons": [
+        "bounded-upload-unit-source-map"
+      ],
+      "test_node_ids": [
+        "tests/unit/test_incremental_collection_producer.py::test_many_artifact_publication_retains_only_the_unsealed_pack_window",
+        "tests/unit/test_pack_volume.py::test_pack_unit_wire_payload_is_only_concatenated_source_bytes",
+        "tests/unit/test_pack_upload.py::test_checkpoint_resumes_across_riverhog_and_adapter_restart"
+      ]
+    }
+  ],
+  "contract_canonical_sha256": "6b43ca7747f3e6942693ac2b37eeac566bf2218731b8bef84c64f8ccdc375ae9",
+  "contract_projection_sha256": "ac2fcaf1ea1fa470cdadc75fd3d29a5001e83c6b41a7cf7b75d0ec12069868af",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1935,
-    "extent_source_links": 1935,
+    "behavioral_witnesses": 12,
+    "extent_decisions": 1939,
+    "extent_source_links": 1939,
+    "segmented_behavioral_witness_links": 79,
+    "segmented_decisions": 79,
     "source_authorities": 204,
     "source_kinds": {
       "cli": 5,
@@ -2824,11 +3113,17 @@
       "source_pointer": "/external_contract/http_openapi/riverhog-ftp-adapter/paths/~1v1~1run/post/responses/200/content/application~1json/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-upload-tag-staging-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/AddCollectionUploadTagsRequest/properties/tags:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AddCollectionUploadTagsRequest/properties/tags"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/AppAccessListOut/properties/access:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AppAccessListOut/properties/access"
@@ -2839,6 +3134,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AppAccessListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/AppKeyListOut/properties/keys:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AppKeyListOut/properties/keys"
@@ -2849,6 +3147,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AppKeyListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/AppListOut/properties/apps:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/AppListOut/properties/apps"
@@ -2924,6 +3225,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArchiveCopyIssueData/properties/error"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArchiveCopyJobListOut/properties/copies:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArchiveCopyJobListOut/properties/copies"
@@ -2974,11 +3278,17 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArchiveStoreListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArchiveStoreListOut/properties/stores:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArchiveStoreListOut/properties/stores"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-work-disposition-append/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArtifactDispositionBatchDocument/properties/dispositions:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactDispositionBatchDocument/properties/dispositions"
@@ -2994,16 +3304,25 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactDispositionInputDocument/properties/archive_root_sha256"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-work-disposition-append/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArtifactDispositionOutputBatchDocument/properties/outputs:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactDispositionOutputBatchDocument/properties/outputs"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArtifactDispositionOutputPageDocument/properties/outputs:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactDispositionOutputPageDocument/properties/outputs"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ArtifactDispositionPageDocument/properties/dispositions:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ArtifactDispositionPageDocument/properties/dispositions"
@@ -3124,6 +3443,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/authorization_view_identity"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CatalogSyncChangePage/properties/changes:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncChangePage/properties/changes"
@@ -3169,6 +3491,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/changes_cursor/anyOf/0"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CatalogSyncCollectionPage/properties/collections:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CatalogSyncCollectionPage/properties/collections"
@@ -3264,6 +3589,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ClaimFenceDocument/properties/id"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionArchiveCopyListOut/properties/copies:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionArchiveCopyListOut/properties/copies"
@@ -3274,6 +3602,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionArchiveCopyListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-work-authority-append/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionArtifactBatchDocument/properties/artifacts:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionArtifactBatchDocument/properties/artifacts"
@@ -3289,6 +3620,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionArtifactIdentityDocument/properties/sha256"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionArtifactPageDocument/properties/artifacts:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionArtifactPageDocument/properties/artifacts"
@@ -3444,6 +3778,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionFinalizedData/properties/context/anyOf/0"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-work-authority-append/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionRootBatchDocument/properties/inputs:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionRootBatchDocument/properties/inputs"
@@ -3459,6 +3796,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionRootIdentityDocument/properties/content_identity"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionRootPageDocument/properties/inputs:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionRootPageDocument/properties/inputs"
@@ -3529,6 +3869,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionTagListOut/properties/tag_set_identity"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionTagListOut/properties/tags:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionTagListOut/properties/tags"
@@ -3704,6 +4047,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadRawDigestBatchDocument/properties/sha256s/items"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-raw-digest-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionUploadRawDigestBatchDocument/properties/sha256s:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadRawDigestBatchDocument/properties/sha256s"
@@ -3789,11 +4135,17 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadUnitSourceDocument/properties/offset"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-upload-unit-source-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionUploadUnitWorkDocument/properties/sources:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadUnitWorkDocument/properties/sources"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-upload-work-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CollectionUploadWorkBatchDocument/properties/work:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CollectionUploadWorkBatchDocument/properties/work"
@@ -3869,6 +4221,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CreateOrResumeCollectionUploadSessionRequest/properties/idempotency_key"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-upload-tag-staging-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/CreateOrResumeCollectionUploadSessionRequest/properties/tags:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/CreateOrResumeCollectionUploadSessionRequest/properties/tags"
@@ -3939,6 +4294,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/KeyDownloadQuotaListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/KeyDownloadQuotaListOut/properties/quotas:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/KeyDownloadQuotaListOut/properties/quotas"
@@ -3949,6 +4307,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/LifecycleEventCursor"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ListCollectionUploadSessionFilesResponse/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ListCollectionUploadSessionFilesResponse/properties/files"
@@ -3964,6 +4325,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ListCollectionUploadSessionsResponse/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ListCollectionUploadSessionsResponse/properties/uploads:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ListCollectionUploadSessionsResponse/properties/uploads"
@@ -3984,6 +4348,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ListCollectionsResponse/properties/tags"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ListProvenanceJournalAgentsResponse/properties/agents:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ListProvenanceJournalAgentsResponse/properties/agents"
@@ -4109,6 +4476,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/PortableCollectionInventoryAuthority/properties/inventory_identity"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/PortableCollectionInventoryPage/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/PortableCollectionInventoryPage/properties/files"
@@ -4224,6 +4594,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ProcessingClaimDocument/properties/work_id"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ProcessingClaimPageDocument/properties/claims:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ProcessingClaimPageDocument/properties/claims"
@@ -4304,6 +4677,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ProcessingOutcomeIdentityDocument/properties/source_claim_id"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/ProcessingOutcomePageDocument/properties/outcomes:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/ProcessingOutcomePageDocument/properties/outcomes"
@@ -4349,6 +4725,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RecipeIdentityDocument/properties/sha256"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-upload-registration-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/RegisterCollectionUploadSessionFilesRequest/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RegisterCollectionUploadSessionFilesRequest/properties/files"
@@ -4374,6 +4753,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetirementClaimReferenceDocument/properties/work_id"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/RetrievalCacheObjectListOut/properties/objects:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalCacheObjectListOut/properties/objects"
@@ -4554,6 +4936,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/etag"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/RetrievalPlanFilePageOut/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanFilePageOut/properties/files"
@@ -4579,6 +4964,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanOut/properties/file_count"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-retrieval-work-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/RetrievalPlanRequest/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RetrievalPlanRequest/properties/files"
@@ -4709,6 +5097,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RiverhogEventCause/properties/type"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/RiverhogEventPage/properties/events:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/RiverhogEventPage/properties/events"
@@ -4724,6 +5115,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/SearchFileOut/properties/sha256"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/SearchResponse/properties/files:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/SearchResponse/properties/files"
@@ -4739,6 +5133,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/TagListOut/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:components:/schemas/TagListOut/properties/tags:cardinality",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/components/schemas/TagListOut/properties/tags"
@@ -4844,6 +5241,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1files~1{path}/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:get_portable_collection_inventory:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog~1collections~1{collection_id}~1inventory/get"
@@ -4869,6 +5269,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1derivation/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_app_key_access:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1app-key-access/get"
@@ -4879,6 +5282,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1app-key-access/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_app_keys:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1apps~1{app}~1keys/get"
@@ -4889,6 +5295,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1apps~1{app}~1keys/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_apps:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1apps/get"
@@ -4899,6 +5308,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1apps/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_archive_copy_jobs:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1archive~1copies/get"
@@ -4909,6 +5321,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1archive~1copies/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_archive_stores:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1archive~1stores/get"
@@ -4919,6 +5334,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1archive~1stores/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_catalog_sync_changes:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1changes/get"
@@ -4934,6 +5352,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1changes/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_catalog_sync_collections:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1collections/get"
@@ -4949,6 +5370,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1catalog-sync~1collections/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_archive_copies:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1archive-copies/get"
@@ -4959,6 +5383,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1archive-copies/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_provenance:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1files/get"
@@ -4969,6 +5396,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1files/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_provenance_journal_agents:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1journals~1{journal_id}~1agents/get"
@@ -4979,6 +5409,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1journals~1{journal_id}~1agents/get/parameters/2/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_tags:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1tags/get"
@@ -4994,6 +5427,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1tags/get/parameters/2/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_upload_session_files:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions~1{collection_id}~1files/get"
@@ -5004,6 +5440,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions~1{collection_id}~1files/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collection_upload_sessions:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions/get"
@@ -5014,6 +5453,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-upload-sessions/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_collections:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections/get"
@@ -5029,6 +5471,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections/get/parameters/7/schema/anyOf/0"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_download_quotas:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1download-quotas/get"
@@ -5039,6 +5484,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1download-quotas/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_lifecycle_events:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1events/get"
@@ -5049,6 +5497,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1events/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claim_artifacts:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1artifacts/get"
@@ -5064,6 +5515,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1plan~1artifacts/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claim_disposition_outputs:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1derivation~1output-edges/get"
@@ -5079,6 +5533,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1derivation~1output-edges/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claim_dispositions:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1derivation~1dispositions/get"
@@ -5094,6 +5551,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1derivation~1dispositions/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claim_inputs:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1inputs/get"
@@ -5109,6 +5569,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1inputs/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claim_outcomes:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1outcomes/get"
@@ -5124,6 +5587,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1outcomes/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_processing_claims:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims/get"
@@ -5134,6 +5600,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_retrieval_cache_objects:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-cache~1objects/get"
@@ -5144,6 +5613,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-cache~1objects/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_retrieval_plan_files:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-plans~1{plan_id}~1files/get"
@@ -5159,6 +5631,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1retrieval-plans~1{plan_id}~1files/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:list_tags:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1tags/get"
@@ -5244,6 +5719,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1capabilities~1{capability_id}~1artifacts~1seal/post/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:search:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1search/get"
@@ -5269,6 +5747,9 @@
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collection-processing-claims~1{claim_id}~1outcomes~1settle/post/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-read-collection-progression/v1"
+      ],
       "id": "http:riverhog:operation:trace_collection_file_provenance:logical-result",
       "owner": "riverhog",
       "source_pointer": "/external_contract/http_openapi/riverhog/paths/~1v1~1collections~1{collection_id}~1provenance~1trace~1{path}/get"
@@ -5324,6 +5805,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/required_tags"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/AdmissionPage/properties/admissions:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/admissions"
@@ -5404,6 +5888,16 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/created_at"
     },
     {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/failure/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/failure/anyOf/0"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/next_attempt_at/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/next_attempt_at/anyOf/0"
+    },
+    {
       "id": "http:stove0:components:/schemas/AdmissionView/properties/preview_sha256/anyOf/0:length",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/preview_sha256/anyOf/0"
@@ -5434,6 +5928,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/ArtifactSelection/properties/selection_sha256"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/ArtifactSelectionPage/properties/artifacts:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/ArtifactSelectionPage/properties/artifacts"
@@ -5854,6 +6351,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/EvaluationMatrix/properties/variants"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/EvaluationPage/properties/evaluations:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/EvaluationPage/properties/evaluations"
@@ -6524,6 +7024,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/SchedulerWorkBatch/properties/progressed"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/Stove0EventPage/properties/events:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/Stove0EventPage/properties/events"
@@ -6569,6 +7072,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/TargetInputAuthority/properties/roles"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/TargetInputPage/properties/artifacts:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/TargetInputPage/properties/artifacts"
@@ -6824,6 +7330,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkPage/properties/page_size"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:components:/schemas/WorkPage/properties/work:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkPage/properties/work"
@@ -6954,16 +7463,25 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/WorkflowPreviewIn/properties/recipe_id"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:get_artifact_selection:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1artifact-selections~1{selection_sha256}/get"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:get_target_execution_inputs:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1target-executions~1{job_id}~1inputs/get"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:list_admissions:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get"
@@ -6974,6 +7492,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:list_evaluations:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1evaluations/get"
@@ -6984,6 +7505,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1evaluations/get/parameters/0/schema"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:list_events:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1events/get"
@@ -6994,6 +7518,9 @@
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1events/get/parameters/1/schema"
     },
     {
+      "behavioral_witnesses": [
+        "stove0-read-collection-progression/v1"
+      ],
       "id": "http:stove0:operation:list_work:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1work/get"
@@ -7062,6 +7589,11 @@
       "id": "protocol:generated:riverhog-storage-adapter:/schemas/CompletedWriteLookupRequest/properties/required_identity_assertions:map-cardinality",
       "owner": "riverhog-storage-adapter-protocol",
       "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/CompletedWriteLookupRequest/properties/required_identity_assertions"
+    },
+    {
+      "id": "protocol:generated:riverhog-storage-adapter:/schemas/DeleteObjectRequest/properties/expected_current_stored_sha256/anyOf/0:length",
+      "owner": "riverhog-storage-adapter-protocol",
+      "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/DeleteObjectRequest/properties/expected_current_stored_sha256/anyOf/0"
     },
     {
       "id": "protocol:generated:riverhog-storage-adapter:/schemas/DeletePrefixRequest/properties/object_prefix:length",
@@ -7167,6 +7699,11 @@
       "id": "protocol:generated:riverhog-storage-adapter:/schemas/SmallObjectWriteRequest/properties/content_type:length",
       "owner": "riverhog-storage-adapter-protocol",
       "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/SmallObjectWriteRequest/properties/content_type"
+    },
+    {
+      "id": "protocol:generated:riverhog-storage-adapter:/schemas/SmallObjectWriteRequest/properties/expected_current_stored_sha256/anyOf/0:length",
+      "owner": "riverhog-storage-adapter-protocol",
+      "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/SmallObjectWriteRequest/properties/expected_current_stored_sha256/anyOf/0"
     },
     {
       "id": "protocol:generated:riverhog-storage-adapter:/schemas/SmallObjectWriteRequest/properties/object_path:length",
@@ -9529,6 +10066,9 @@
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1collection-archive-volume-v1.schema.json/$defs/pack/properties/files"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-archive-volume-part-progression/v1"
+      ],
       "id": "protocol:https://nashspence.github.io/riverhog/v1/schemas/collection-archive-volume-v1.schema.json:/$defs/pack/properties/parts:cardinality",
       "owner": "https://nashspence.github.io/riverhog/v1/schemas/collection-archive-volume-v1.schema.json",
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1collection-archive-volume-v1.schema.json/$defs/pack/properties/parts"
@@ -9554,6 +10094,9 @@
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1collection-archive-volume-v1.schema.json/$defs/part/properties/stored_bytes"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-archive-volume-part-progression/v1"
+      ],
       "id": "protocol:https://nashspence.github.io/riverhog/v1/schemas/collection-archive-volume-v1.schema.json:/$defs/segment/properties/parts:cardinality",
       "owner": "https://nashspence.github.io/riverhog/v1/schemas/collection-archive-volume-v1.schema.json",
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1collection-archive-volume-v1.schema.json/$defs/segment/properties/parts"
@@ -9624,6 +10167,9 @@
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1riverhog-provenance-bindings-v1.schema.json/$defs/sha256"
     },
     {
+      "behavioral_witnesses": [
+        "riverhog-provenance-volume-progression/v1"
+      ],
       "id": "protocol:https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-bindings-v1.schema.json:/properties/files:cardinality",
       "owner": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-provenance-bindings-v1.schema.json",
       "source_pointer": "/external_contract/protocol_schemas/https:~1~1nashspence.github.io~1riverhog~1v1~1schemas~1riverhog-provenance-bindings-v1.schema.json/properties/files"
@@ -13311,7 +13857,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "0a079e72a8a11d4cefa441ed5983ec9f902a54d771c4eb84fb54a516bc526586"
+          "sha256": "08de3b117ab498a0d8ecccaf56ef35bcf247b9db7634095b1ca0e37daadaffa4"
         }
       ],
       "id": "state:riverhog-catalog"
@@ -13338,7 +13884,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-          "sha256": "7b48e060290ac4297cdc540ee9a8ae4238a81e6b73c4f3dfbbb7f3a81fda1e57"
+          "sha256": "c37e8350e7035ebcfbd588434498e2d0243b92ae4b216a0ac2a9bd46d62014b1"
         }
       ],
       "id": "state:stove0-control"

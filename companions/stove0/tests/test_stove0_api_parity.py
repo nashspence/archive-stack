@@ -401,6 +401,8 @@ class _LifecycleAdmission:
         return AdmissionView(
             intent=self.intent,
             state="intent",
+            attempt_count=0,
+            next_attempt_at="2026-01-01T00:00:00Z",
             created_at="2026-01-01T00:00:00Z",
             updated_at="2026-01-01T00:00:00Z",
         )

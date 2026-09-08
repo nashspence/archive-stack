@@ -82,6 +82,12 @@ class _MemoryAdapter:
             return self._immutable(request.object_path, existing)
         if existing is not None and request.mode == "create_only":
             raise StorageAdapterRejection("identity_conflict", "different identity")
+        if request.expected_current_stored_sha256 is not None and (
+            existing is None
+            or hashlib.sha256(existing.content).hexdigest()
+            != request.expected_current_stored_sha256
+        ):
+            raise StorageAdapterRejection("identity_conflict", "replacement fence differs")
         revision = f"revision-{len(self.objects) + 1}"
         stored = _Stored(
             content=content,
@@ -364,6 +370,7 @@ def test_collection_description_is_replaced_idempotently_without_readback() -> N
         archive_storage_prefix="archives/opaque",
         document=cleared.to_json_bytes(),
         passphrase_id="riverhog-dev-key-v1",
+        expected_current_stored_sha256=receipt.stored_sha256,
     )
     assert adapter.objects[path].identity["riverhog-description-revision"] == "2"
 

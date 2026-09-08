@@ -29,7 +29,7 @@ from riverhog_protocol.errors import (
     CatalogSyncViewChanged,
     Forbidden,
 )
-from sqlalchemy import delete, exists, select
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
@@ -49,6 +49,7 @@ from riverhog_core.catalog_models import (
     CollectionTagPublicationFrontierRecord,
     CollectionTagRecord,
     CollectionTagRevisionRecord,
+    CollectionTagVisibilityRecord,
     CollectionUploadTagNodeReferenceRecord,
     CollectionUploadTagPublicationFrontierRecord,
 )
@@ -509,6 +510,58 @@ def _reap_unreferenced_tag_history(session: Session, *, limit: int) -> None:
         session.delete(revision)
     if revisions:
         session.flush()
+
+    visibility_rows = list(
+        session.scalars(
+            select(CollectionTagVisibilityRecord)
+            .where(
+                or_(
+                    CollectionTagVisibilityRecord.end_revision.is_not(None),
+                    ~exists(
+                        select(1).where(
+                            CollectionRecord.id == CollectionTagVisibilityRecord.collection_id
+                        )
+                    ),
+                ),
+                ~exists(
+                    select(1).where(
+                        CatalogEventRecord.collection_id
+                        == CollectionTagVisibilityRecord.collection_id,
+                        or_(
+                            and_(
+                                CatalogEventRecord.before_tag_revision.is_not(None),
+                                CatalogEventRecord.before_tag_revision
+                                >= CollectionTagVisibilityRecord.start_revision,
+                                or_(
+                                    CollectionTagVisibilityRecord.end_revision.is_(None),
+                                    CatalogEventRecord.before_tag_revision
+                                    < CollectionTagVisibilityRecord.end_revision,
+                                ),
+                            ),
+                            and_(
+                                CatalogEventRecord.after_tag_revision.is_not(None),
+                                CatalogEventRecord.after_tag_revision
+                                >= CollectionTagVisibilityRecord.start_revision,
+                                or_(
+                                    CollectionTagVisibilityRecord.end_revision.is_(None),
+                                    CatalogEventRecord.after_tag_revision
+                                    < CollectionTagVisibilityRecord.end_revision,
+                                ),
+                            ),
+                        ),
+                    )
+                ),
+            )
+            .order_by(
+                CollectionTagVisibilityRecord.collection_id,
+                CollectionTagVisibilityRecord.tag_sha256,
+                CollectionTagVisibilityRecord.start_revision,
+            )
+            .limit(limit)
+        )
+    )
+    for visibility in visibility_rows:
+        session.delete(visibility)
 
     node_digests = list(
         session.scalars(

@@ -52,6 +52,22 @@ CREATE TABLE stove0_admission_matches (
 
 CREATE INDEX ix_stove0_admission_matches_collection ON stove0_admission_matches (collection_id, policy_id, generation);
 
+CREATE TABLE stove0_admission_observed_revisions (
+	policy_id VARCHAR(160) NOT NULL,
+	generation VARCHAR(64) NOT NULL,
+	collection_id BIGINT NOT NULL,
+	descriptor_revision VARCHAR(19) NOT NULL,
+	operation VARCHAR(8) NOT NULL,
+	authority_sha256 VARCHAR(64) NOT NULL,
+	PRIMARY KEY (policy_id, generation, collection_id),
+	CONSTRAINT ck_stove0_admission_observed_revision_collection CHECK (collection_id >= 1),
+	CONSTRAINT ck_stove0_admission_observed_revision_operation CHECK (operation IN ('upsert','delete')),
+	CONSTRAINT ck_stove0_admission_observed_revisions_generation_hex CHECK (length(generation) = 64 AND lower(generation) = generation AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(generation, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_stove0_admission_observed_revisions_authority_sha256_hex CHECK (length(authority_sha256) = 64 AND lower(authority_sha256) = authority_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(authority_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+);
+
+CREATE INDEX ix_stove0_admission_observed_revisions_collection ON stove0_admission_observed_revisions (collection_id, policy_id, generation);
+
 CREATE TABLE stove0_admission_candidates (
 	admission_id VARCHAR(64) NOT NULL,
 	policy_id VARCHAR(160) NOT NULL,
@@ -62,12 +78,17 @@ CREATE TABLE stove0_admission_candidates (
 	document_json TEXT NOT NULL,
 	preview_bytes BIGINT,
 	preview_json TEXT,
+	attempt_count INTEGER NOT NULL,
+	next_attempt_at VARCHAR(40),
+	failure TEXT,
 	created_at VARCHAR(40) NOT NULL,
 	updated_at VARCHAR(40) NOT NULL,
 	PRIMARY KEY (admission_id),
 	CONSTRAINT ck_stove0_admission_candidate_state CHECK (state IN ('intent','previewed','work_bound')),
 	CONSTRAINT ck_stove0_admission_candidate_bytes CHECK (document_bytes >= 0),
 	CONSTRAINT ck_stove0_admission_candidate_preview_bytes CHECK (preview_bytes IS NULL OR preview_bytes >= 0),
+	CONSTRAINT ck_stove0_admission_candidate_attempt_count CHECK (attempt_count >= 0),
+	CONSTRAINT ck_stove0_admission_candidate_next_attempt CHECK (state = 'work_bound' AND next_attempt_at IS NULL OR state != 'work_bound' AND next_attempt_at IS NOT NULL),
 	CONSTRAINT ck_stove0_admission_candidates_admission_id_hex CHECK (length(admission_id) = 64 AND lower(admission_id) = admission_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(admission_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_stove0_admission_candidates_preview_sha256_hex CHECK (preview_sha256 IS NULL OR length(preview_sha256) = 64 AND lower(preview_sha256) = preview_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(preview_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_stove0_admission_candidates_work_id_hex CHECK (work_id IS NULL OR length(work_id) = 64 AND lower(work_id) = work_id AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(work_id, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
@@ -75,7 +96,7 @@ CREATE TABLE stove0_admission_candidates (
 
 CREATE INDEX ix_stove0_admission_candidates_policy ON stove0_admission_candidates (policy_id, admission_id);
 
-CREATE INDEX ix_stove0_admission_candidates_state ON stove0_admission_candidates (state, admission_id);
+CREATE INDEX ix_stove0_admission_candidates_state ON stove0_admission_candidates (state, next_attempt_at, admission_id);
 
 CREATE INDEX ix_stove0_admission_candidates_work ON stove0_admission_candidates (work_id, admission_id);
 
