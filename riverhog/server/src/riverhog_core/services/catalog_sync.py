@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal, cast
 
@@ -44,9 +45,12 @@ from riverhog_core.catalog_models import (
     CatalogSyncStateRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
+    CollectionTagMutationNodeReferenceRecord,
     CollectionTagMutationRecord,
+    CollectionTagNodeEdgeRecord,
     CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
+    CollectionTagPublicationRecord,
     CollectionTagRecord,
     CollectionTagRevisionRecord,
     CollectionTagVisibilityRecord,
@@ -58,6 +62,20 @@ from riverhog_core.runtime_config import RuntimeConfig
 
 _CURSOR_DOMAIN = b"riverhog-catalog-sync-cursor/v1\x00"
 _CursorMode = Literal["catalog", "changes"]
+
+
+@dataclass(frozen=True, slots=True)
+class _TagHistoryCleanupMetrics:
+    selected_rows: int = 0
+    locked_rows: int = 0
+    changed_rows: int = 0
+    deleted_rows: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _TagHistoryCleanupAction:
+    changed_rows: int
+    deleted_rows: int
 
 
 class _CatalogSyncCursorCodec:
@@ -118,6 +136,7 @@ class SqlAlchemyCatalogSyncService:
         self._tokens = _CatalogSyncCursorCodec(config.browse_token_signing_key)
         self._bootstrap_lifetime = config.catalog_sync_bootstrap_lifetime
         self._cursor_lifetime = config.catalog_sync_cursor_lifetime
+        self._browse_token_lifetime = config.browse_token_lifetime
         self._history_retention = config.catalog_sync_history_retention
         self._page_size_max = config.catalog_sync_page_size_max
         self._history_reap_batch_size = config.catalog_sync_history_reap_batch_size
@@ -365,7 +384,10 @@ class SqlAlchemyCatalogSyncService:
         limit = self._history_reap_batch_size if limit is None else limit
         if limit < 1:
             raise ValueError("catalog synchronization reaper limit must be positive")
-        cutoff = format_utc_timestamp(utc_now() - self._history_retention)
+        now = utc_now()
+        cutoff = format_utc_timestamp(now - self._history_retention)
+        cleanup_before = format_utc_timestamp(now - self._browse_token_lifetime)
+        cleanup_started_at = format_utc_timestamp(now)
         with session_scope(self._session_factory) as session:
             state = session.scalar(
                 select(CatalogSyncStateRecord)
@@ -401,7 +423,12 @@ class SqlAlchemyCatalogSyncService:
                 )
                 state.retained_revision = int(last_revision)
                 session.flush()
-            _reap_unreferenced_tag_history(session, limit=limit)
+            _reap_unreferenced_tag_history(
+                session,
+                limit=limit - len(expired),
+                cleanup_before=cleanup_before,
+                cleanup_started_at=cleanup_started_at,
+            )
             return len(expired)
 
     def _decode_cursor(
@@ -467,155 +494,355 @@ def _state(session: Session) -> CatalogSyncStateRecord:
     return state
 
 
-def _reap_unreferenced_tag_history(session: Session, *, limit: int) -> None:
-    """Reclaim one bounded prefix of tag history outside the retained catalog log."""
+def _reap_unreferenced_tag_history(
+    session: Session,
+    *,
+    limit: int,
+    cleanup_before: str,
+    cleanup_started_at: str,
+) -> _TagHistoryCleanupMetrics:
+    """Apply at most ``limit`` durable row changes to retired tag history."""
 
-    revisions = list(
-        session.scalars(
-            select(CollectionTagRevisionRecord)
-            .join(
-                CollectionRecord, CollectionRecord.id == CollectionTagRevisionRecord.collection_id
-            )
-            .where(
-                CollectionTagRevisionRecord.revision != CollectionRecord.tag_revision,
-                ~exists(
-                    select(1).where(
-                        CatalogEventRecord.collection_id
-                        == CollectionTagRevisionRecord.collection_id,
-                        CatalogEventRecord.tag_revision == CollectionTagRevisionRecord.revision,
-                    )
-                ),
-            )
-            .order_by(
-                CollectionTagRevisionRecord.collection_id,
-                CollectionTagRevisionRecord.revision,
-            )
-            .limit(limit)
+    changed = 0
+    deleted = 0
+    while changed < max(0, limit):
+        action = _reap_unreferenced_tag_history_rows(
+            session,
+            limit=limit - changed,
+            cleanup_before=cleanup_before,
+            cleanup_started_at=cleanup_started_at,
         )
-    )
-    for revision in revisions:
-        session.execute(
-            delete(CollectionTagPublicationFrontierRecord).where(
-                CollectionTagPublicationFrontierRecord.collection_id == revision.collection_id,
-                CollectionTagPublicationFrontierRecord.head_identity == revision.head_identity,
-            )
-        )
-        session.execute(
-            delete(CollectionTagMutationRecord).where(
-                CollectionTagMutationRecord.collection_id == revision.collection_id,
-                CollectionTagMutationRecord.result_revision == revision.revision,
-                CollectionTagMutationRecord.state == "succeeded",
-            )
-        )
-        session.delete(revision)
-    if revisions:
+        if action is None:
+            break
         session.flush()
+        changed += action.changed_rows
+        deleted += action.deleted_rows
+    return _TagHistoryCleanupMetrics(
+        selected_rows=changed,
+        locked_rows=changed,
+        changed_rows=changed,
+        deleted_rows=deleted,
+    )
 
-    visibility_rows = list(
+
+def _reap_unreferenced_tag_history_rows(
+    session: Session,
+    *,
+    limit: int,
+    cleanup_before: str,
+    cleanup_started_at: str,
+) -> _TagHistoryCleanupAction | None:
+    construction = list(
         session.scalars(
-            select(CollectionTagVisibilityRecord)
-            .where(
-                or_(
-                    CollectionTagVisibilityRecord.end_revision.is_not(None),
-                    ~exists(
-                        select(1).where(
-                            CollectionRecord.id == CollectionTagVisibilityRecord.collection_id
-                        )
-                    ),
+            select(CollectionTagMutationNodeReferenceRecord)
+            .join(
+                CollectionTagMutationRecord,
+                and_(
+                    CollectionTagMutationRecord.collection_id
+                    == CollectionTagMutationNodeReferenceRecord.collection_id,
+                    CollectionTagMutationRecord.operation_id
+                    == CollectionTagMutationNodeReferenceRecord.operation_id,
                 ),
+            )
+            .where(CollectionTagMutationRecord.state == "succeeded")
+            .where(
                 ~exists(
-                    select(1).where(
-                        CatalogEventRecord.collection_id
-                        == CollectionTagVisibilityRecord.collection_id,
-                        or_(
-                            and_(
-                                CatalogEventRecord.before_tag_revision.is_not(None),
-                                CatalogEventRecord.before_tag_revision
-                                >= CollectionTagVisibilityRecord.start_revision,
-                                or_(
-                                    CollectionTagVisibilityRecord.end_revision.is_(None),
-                                    CatalogEventRecord.before_tag_revision
-                                    < CollectionTagVisibilityRecord.end_revision,
-                                ),
-                            ),
-                            and_(
-                                CatalogEventRecord.after_tag_revision.is_not(None),
-                                CatalogEventRecord.after_tag_revision
-                                >= CollectionTagVisibilityRecord.start_revision,
-                                or_(
-                                    CollectionTagVisibilityRecord.end_revision.is_(None),
-                                    CatalogEventRecord.after_tag_revision
-                                    < CollectionTagVisibilityRecord.end_revision,
-                                ),
-                            ),
+                    select(1)
+                    .select_from(CollectionTagPublicationRecord)
+                    .join(
+                        CollectionTagPublicationFrontierRecord,
+                        and_(
+                            CollectionTagPublicationFrontierRecord.collection_id
+                            == CollectionTagPublicationRecord.collection_id,
+                            CollectionTagPublicationFrontierRecord.store
+                            == CollectionTagPublicationRecord.store,
                         ),
                     )
+                    .where(
+                        CollectionTagPublicationRecord.collection_id
+                        == CollectionTagMutationRecord.collection_id,
+                        CollectionTagPublicationRecord.desired_head_identity
+                        == CollectionTagMutationRecord.result_head_identity,
+                        CollectionTagPublicationFrontierRecord.head_identity
+                        == CollectionTagMutationRecord.result_head_identity,
+                        CollectionTagPublicationFrontierRecord.expanded.is_(False),
+                    )
+                )
+            )
+            .order_by(
+                CollectionTagMutationNodeReferenceRecord.collection_id,
+                CollectionTagMutationNodeReferenceRecord.operation_id,
+                CollectionTagMutationNodeReferenceRecord.node_digest,
+            )
+            .limit(limit)
+            .with_for_update(
+                skip_locked=True,
+                of=CollectionTagMutationNodeReferenceRecord,
+            )
+        )
+    )
+    if construction:
+        for construction_reference in construction:
+            session.delete(construction_reference)
+        return _TagHistoryCleanupAction(
+            changed_rows=len(construction), deleted_rows=len(construction)
+        )
+
+    frontier = list(
+        session.scalars(
+            select(CollectionTagPublicationFrontierRecord)
+            .join(
+                CollectionTagRevisionRecord,
+                and_(
+                    CollectionTagRevisionRecord.collection_id
+                    == CollectionTagPublicationFrontierRecord.collection_id,
+                    CollectionTagRevisionRecord.head_identity
+                    == CollectionTagPublicationFrontierRecord.head_identity,
+                ),
+            )
+            .where(
+                CollectionTagRevisionRecord.cleanup_started_at.is_not(None),
+                CollectionTagRevisionRecord.cleanup_started_at < cleanup_before,
+            )
+            .order_by(
+                CollectionTagRevisionRecord.cleanup_started_at,
+                CollectionTagRevisionRecord.collection_id,
+                CollectionTagRevisionRecord.revision,
+                CollectionTagPublicationFrontierRecord.store,
+                CollectionTagPublicationFrontierRecord.node_digest,
+            )
+            .limit(limit)
+            .with_for_update(
+                skip_locked=True,
+                of=CollectionTagPublicationFrontierRecord,
+            )
+        )
+    )
+    if frontier:
+        for frontier_row in frontier:
+            session.delete(frontier_row)
+        return _TagHistoryCleanupAction(changed_rows=len(frontier), deleted_rows=len(frontier))
+
+    mutation = list(
+        session.scalars(
+            select(CollectionTagMutationRecord)
+            .join(
+                CollectionTagRevisionRecord,
+                and_(
+                    CollectionTagRevisionRecord.collection_id
+                    == CollectionTagMutationRecord.collection_id,
+                    CollectionTagRevisionRecord.revision
+                    == CollectionTagMutationRecord.result_revision,
+                ),
+            )
+            .where(
+                CollectionTagRevisionRecord.cleanup_started_at.is_not(None),
+                CollectionTagRevisionRecord.cleanup_started_at < cleanup_before,
+                CollectionTagMutationRecord.state == "succeeded",
+                ~exists(
+                    select(1).where(
+                        CollectionTagMutationNodeReferenceRecord.collection_id
+                        == CollectionTagMutationRecord.collection_id,
+                        CollectionTagMutationNodeReferenceRecord.operation_id
+                        == CollectionTagMutationRecord.operation_id,
+                    )
                 ),
             )
             .order_by(
-                CollectionTagVisibilityRecord.collection_id,
-                CollectionTagVisibilityRecord.tag_sha256,
-                CollectionTagVisibilityRecord.start_revision,
+                CollectionTagRevisionRecord.cleanup_started_at,
+                CollectionTagRevisionRecord.collection_id,
+                CollectionTagRevisionRecord.revision,
+                CollectionTagMutationRecord.operation_id,
             )
             .limit(limit)
+            .with_for_update(skip_locked=True, of=CollectionTagMutationRecord)
         )
     )
-    for visibility in visibility_rows:
+    if mutation:
+        for mutation_row in mutation:
+            session.delete(mutation_row)
+        return _TagHistoryCleanupAction(changed_rows=len(mutation), deleted_rows=len(mutation))
+
+    retiring = session.scalar(
+        select(CollectionTagRevisionRecord)
+        .where(
+            CollectionTagRevisionRecord.cleanup_started_at.is_not(None),
+            CollectionTagRevisionRecord.cleanup_started_at < cleanup_before,
+            ~exists(
+                select(1).where(
+                    CollectionTagPublicationFrontierRecord.collection_id
+                    == CollectionTagRevisionRecord.collection_id,
+                    CollectionTagPublicationFrontierRecord.head_identity
+                    == CollectionTagRevisionRecord.head_identity,
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionTagMutationRecord.collection_id
+                    == CollectionTagRevisionRecord.collection_id,
+                    CollectionTagMutationRecord.result_revision
+                    == CollectionTagRevisionRecord.revision,
+                    CollectionTagMutationRecord.state == "succeeded",
+                )
+            ),
+        )
+        .order_by(
+            CollectionTagRevisionRecord.cleanup_started_at,
+            CollectionTagRevisionRecord.collection_id,
+            CollectionTagRevisionRecord.revision,
+        )
+        .limit(1)
+        .with_for_update(skip_locked=True, of=CollectionTagRevisionRecord)
+    )
+    if retiring is not None:
+        session.delete(retiring)
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+
+    eligible = session.scalar(
+        select(CollectionTagRevisionRecord)
+        .join(CollectionRecord, CollectionRecord.id == CollectionTagRevisionRecord.collection_id)
+        .where(
+            CollectionTagRevisionRecord.cleanup_started_at.is_(None),
+            CollectionTagRevisionRecord.revision != CollectionRecord.tag_revision,
+            ~exists(
+                select(1).where(
+                    CatalogEventRecord.collection_id == CollectionTagRevisionRecord.collection_id,
+                    or_(
+                        CatalogEventRecord.tag_revision == CollectionTagRevisionRecord.revision,
+                        CatalogEventRecord.before_tag_revision
+                        == CollectionTagRevisionRecord.revision,
+                        CatalogEventRecord.after_tag_revision
+                        == CollectionTagRevisionRecord.revision,
+                    ),
+                )
+            ),
+        )
+        .order_by(
+            CollectionTagRevisionRecord.collection_id,
+            CollectionTagRevisionRecord.revision,
+        )
+        .limit(1)
+        .with_for_update(skip_locked=True, of=CollectionTagRevisionRecord)
+    )
+    if eligible is not None:
+        eligible.cleanup_started_at = cleanup_started_at
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=0)
+
+    visibility = session.scalar(
+        select(CollectionTagVisibilityRecord)
+        .where(
+            or_(
+                CollectionTagVisibilityRecord.end_revision.is_not(None),
+                ~exists(
+                    select(1).where(
+                        CollectionRecord.id == CollectionTagVisibilityRecord.collection_id
+                    )
+                ),
+            ),
+            ~exists(
+                select(1).where(
+                    CatalogEventRecord.collection_id == CollectionTagVisibilityRecord.collection_id,
+                    or_(
+                        and_(
+                            CatalogEventRecord.before_tag_revision.is_not(None),
+                            CatalogEventRecord.before_tag_revision
+                            >= CollectionTagVisibilityRecord.start_revision,
+                            or_(
+                                CollectionTagVisibilityRecord.end_revision.is_(None),
+                                CatalogEventRecord.before_tag_revision
+                                < CollectionTagVisibilityRecord.end_revision,
+                            ),
+                        ),
+                        and_(
+                            CatalogEventRecord.after_tag_revision.is_not(None),
+                            CatalogEventRecord.after_tag_revision
+                            >= CollectionTagVisibilityRecord.start_revision,
+                            or_(
+                                CollectionTagVisibilityRecord.end_revision.is_(None),
+                                CatalogEventRecord.after_tag_revision
+                                < CollectionTagVisibilityRecord.end_revision,
+                            ),
+                        ),
+                    ),
+                )
+            ),
+        )
+        .order_by(
+            CollectionTagVisibilityRecord.collection_id,
+            CollectionTagVisibilityRecord.tag_sha256,
+            CollectionTagVisibilityRecord.start_revision,
+        )
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    if visibility is not None:
         session.delete(visibility)
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
 
-    node_digests = list(
-        session.scalars(
-            select(CollectionTagNodeRecord.digest)
-            .where(
-                ~exists(
-                    select(1).where(
-                        CollectionTagPublicationFrontierRecord.node_digest
-                        == CollectionTagNodeRecord.digest
-                    )
-                ),
-                ~exists(
-                    select(1).where(
-                        CollectionUploadTagPublicationFrontierRecord.node_digest
-                        == CollectionTagNodeRecord.digest
-                    )
-                ),
-                ~exists(
-                    select(1).where(
-                        CollectionUploadTagNodeReferenceRecord.node_digest
-                        == CollectionTagNodeRecord.digest
-                    )
-                ),
-            )
-            .order_by(CollectionTagNodeRecord.digest)
-            .limit(limit)
+    node = session.scalar(
+        select(CollectionTagNodeRecord)
+        .where(
+            ~exists(
+                select(1).where(
+                    CollectionTagPublicationFrontierRecord.node_digest
+                    == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionUploadTagPublicationFrontierRecord.node_digest
+                    == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionUploadTagNodeReferenceRecord.node_digest
+                    == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionTagMutationNodeReferenceRecord.node_digest
+                    == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionTagNodeEdgeRecord.child_digest == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
+                    CollectionTagRevisionRecord.root_sha256 == CollectionTagNodeRecord.digest
+                )
+            ),
         )
+        .order_by(CollectionTagNodeRecord.digest)
+        .limit(1)
+        .with_for_update(skip_locked=True)
     )
-    if node_digests:
-        session.execute(
-            delete(CollectionTagNodeRecord).where(CollectionTagNodeRecord.digest.in_(node_digests))
-        )
+    if node is not None:
+        session.delete(node)
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
 
-    unused_tag_digests = list(
-        session.scalars(
-            select(CollectionTagRecord.tag_sha256)
-            .where(
-                CollectionTagRecord.collection_count == 0,
-                ~exists(
-                    select(1).where(
-                        CollectionTagMembershipRecord.tag_sha256 == CollectionTagRecord.tag_sha256
-                    )
-                ),
-            )
-            .order_by(CollectionTagRecord.tag_sha256)
-            .limit(limit)
+    unused_tag = session.scalar(
+        select(CollectionTagRecord)
+        .where(
+            CollectionTagRecord.collection_count == 0,
+            ~exists(
+                select(1).where(
+                    CollectionTagMembershipRecord.tag_sha256 == CollectionTagRecord.tag_sha256
+                )
+            ),
         )
+        .order_by(CollectionTagRecord.tag_sha256)
+        .limit(1)
+        .with_for_update(skip_locked=True)
     )
-    if unused_tag_digests:
-        session.execute(
-            delete(CollectionTagRecord).where(
-                CollectionTagRecord.tag_sha256.in_(unused_tag_digests)
-            )
-        )
+    if unused_tag is not None:
+        session.delete(unused_tag)
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+    return None
 
 
 def _catalog_collection_page_statement(

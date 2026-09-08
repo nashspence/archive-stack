@@ -290,6 +290,76 @@ def test_small_object_create_replace_revision_and_delete(tmp_path: Path) -> None
         )
 
 
+def test_fenced_current_removal_then_exact_reclamation_removes_payload(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "store"
+    payload = b"obsolete-tag-node"
+    request = SmallObjectWriteRequest(
+        object_path="archives/collection/tags/nodes/obsolete.age",
+        content_type="application/octet-stream",
+        required_identity_assertions={"authority": "tag-node"},
+        placement="immediate",
+        mode="create_only",
+        stored_bytes=len(payload),
+        stored_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    with _adapter(root) as adapter:
+        receipt = adapter.put_small_object(request, payload)
+        adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(object_path=receipt.object_path),
+                mode="current",
+                expected_current_stored_sha256=receipt.stored_sha256,
+            )
+        )
+        assert (
+            adapter.head_object(
+                ObjectHeadRequest(
+                    object=ObjectLocator(object_path=receipt.object_path),
+                    expected_placement="immediate",
+                )
+            )
+            is None
+        )
+        assert (
+            adapter.head_object(
+                ObjectHeadRequest(
+                    object=ObjectLocator(
+                        object_path=receipt.object_path,
+                        revision=receipt.revision,
+                    ),
+                    expected_placement="immediate",
+                )
+            )
+            is not None
+        )
+
+    with _adapter(root) as restarted:
+        restarted.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(
+                    object_path=receipt.object_path,
+                    revision=receipt.revision,
+                ),
+                mode="exact_revision",
+            )
+        )
+        assert (
+            restarted.head_object(
+                ObjectHeadRequest(
+                    object=ObjectLocator(
+                        object_path=receipt.object_path,
+                        revision=receipt.revision,
+                    ),
+                    expected_placement="immediate",
+                )
+            )
+            is None
+        )
+    assert not list((root / "objects").rglob("payload"))
+
+
 def test_delete_prefix_and_immediate_read_status(tmp_path: Path) -> None:
     with _adapter(tmp_path / "store") as adapter:
         for path in ("cache/a", "cache/b", "other/c"):

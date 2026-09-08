@@ -318,6 +318,7 @@ class StorageAdapterArchiveStore:
         archive_storage_prefix: str,
         digest: str,
         expected_current_stored_sha256: str,
+        provider_revision: str | None,
     ) -> None:
         _ = collection_id
         object_path = (
@@ -332,6 +333,26 @@ class StorageAdapterArchiveStore:
         )
         if self._head(object_path=object_path, revision=None, placement="immediate") is not None:
             raise RuntimeError("collection tag-node deletion could not be verified")
+        if provider_revision is None:
+            return
+        self._adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(
+                    object_path=object_path,
+                    revision=provider_revision,
+                ),
+                mode="exact_revision",
+            )
+        )
+        if (
+            self._head(
+                object_path=object_path,
+                revision=provider_revision,
+                placement="immediate",
+            )
+            is not None
+        ):
+            raise RuntimeError("collection tag-node provider revision was not reclaimed")
 
     def read_archive_artifact(
         self,

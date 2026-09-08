@@ -1211,6 +1211,7 @@ class MemoryArchiveStore:
         archive_storage_prefix: str,
         digest: str,
         expected_current_stored_sha256: str,
+        provider_revision: str | None,
     ) -> None:
         _ = collection_id
         object_path = f"{archive_storage_prefix}/{collection_tag_node_path(digest)}"
@@ -1220,6 +1221,8 @@ class MemoryArchiveStore:
             and hashlib.sha256(current).hexdigest() != expected_current_stored_sha256
         ):
             raise RuntimeError("collection tag-node deletion fence differs")
+        if current is not None and provider_revision not in {None, self._version(current)}:
+            raise RuntimeError("collection tag-node provider revision differs")
         self.objects.pop(object_path, None)
         self.object_metadata.pop(object_path, None)
 

@@ -257,7 +257,9 @@
       "test_node_ids": [
         "tests/unit/test_incremental_collection_producer.py::test_incremental_producer_stages_unbounded_logical_tags_in_bounded_requests",
         "packages/riverhog-protocol/tests/test_collection_tag_protocol.py::test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags",
-        "tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable"
+        "tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable",
+        "tests/unit/test_collection_tags.py::test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts",
+        "tests/integration/test_catalog_schema_postgres.py::test_postgres_tag_history_cleanup_serializes_its_row_work_budget"
       ]
     },
     {
@@ -285,8 +287,8 @@
       ]
     }
   ],
-  "contract_canonical_sha256": "d3d8eefbdd3bde47ca107378e10a2f9173c5ec92a7113ce68ef31760a6334599",
-  "contract_projection_sha256": "9cdb02d267191a44efce7dc3520a3531b2472fd1e31463cb8ba7d8f241370e03",
+  "contract_canonical_sha256": "37ced1cd7a6d82c9a5f887694211e752d404dbbe8391199d8830131f29f7ba0a",
+  "contract_projection_sha256": "47827575b646f12ef5a03a7c90b5d7eda811078d2ccf17128802fa4586ddb8c2",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
     "behavioral_witnesses": 12,
@@ -13857,7 +13859,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "08de3b117ab498a0d8ecccaf56ef35bcf247b9db7634095b1ca0e37daadaffa4"
+          "sha256": "f66c77e6ccfaad3c7d070418f3b3998a9858de97e8aa20a5d4b12a56fb545572"
         }
       ],
       "id": "state:riverhog-catalog"

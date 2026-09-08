@@ -11685,7 +11685,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "08de3b117ab498a0d8ecccaf56ef35bcf247b9db7634095b1ca0e37daadaffa4"
+            "f66c77e6ccfaad3c7d070418f3b3998a9858de97e8aa20a5d4b12a56fb545572"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",

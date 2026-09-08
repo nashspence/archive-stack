@@ -147,6 +147,22 @@ CREATE TABLE collection_tag_nodes (
 )
     """.strip(),
     """
+CREATE TABLE collection_tag_node_edges (
+	parent_digest VARCHAR(64) NOT NULL,
+	child_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (parent_digest, child_digest),
+	FOREIGN KEY(parent_digest) REFERENCES collection_tag_nodes (digest) ON DELETE CASCADE,
+	FOREIGN KEY(child_digest) REFERENCES collection_tag_nodes (digest),
+	CONSTRAINT ck_collection_tag_node_edges_parent_digest CHECK (length(parent_digest) = 64 AND lower(parent_digest) = parent_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parent_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_edges_child_digest CHECK (length(child_digest) = 64 AND lower(child_digest) = child_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(child_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_edges_parent_digest_hex CHECK (length(parent_digest) = 64 AND lower(parent_digest) = parent_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parent_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_node_edges_child_digest_hex CHECK (length(child_digest) = 64 AND lower(child_digest) = child_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(child_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_node_edges_child ON collection_tag_node_edges (child_digest, parent_digest)
+    """.strip(),
+    """
 CREATE TABLE collection_tag_visibility (
 	collection_id INTEGER NOT NULL,
 	tag_sha256 VARCHAR(64) NOT NULL,
@@ -856,6 +872,21 @@ CREATE TABLE collection_tag_mutations (
 CREATE INDEX ix_collection_tag_mutations_work ON collection_tag_mutations (state, updated_at, collection_id)
     """.strip(),
     """
+CREATE TABLE collection_tag_mutation_node_references (
+	collection_id INTEGER NOT NULL,
+	operation_id VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (collection_id, operation_id, node_digest),
+	FOREIGN KEY(collection_id, operation_id) REFERENCES collection_tag_mutations (collection_id, operation_id) ON DELETE CASCADE,
+	FOREIGN KEY(node_digest) REFERENCES collection_tag_nodes (digest),
+	CONSTRAINT ck_collection_tag_mutation_node_references_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutation_node_references_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_mutation_node_references_digest ON collection_tag_mutation_node_references (node_digest, collection_id, operation_id)
+    """.strip(),
+    """
 CREATE TABLE collection_tag_revisions (
 	collection_id INTEGER NOT NULL,
 	revision BIGINT NOT NULL,
@@ -863,6 +894,7 @@ CREATE TABLE collection_tag_revisions (
 	tag_set_identity VARCHAR(64) NOT NULL,
 	head_identity VARCHAR(64) NOT NULL,
 	created_at VARCHAR NOT NULL,
+	cleanup_started_at VARCHAR,
 	PRIMARY KEY (collection_id, revision),
 	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
 	CONSTRAINT ck_collection_tag_revisions_revision CHECK (revision >= 1 AND revision <= 9007199254740991),
@@ -873,6 +905,9 @@ CREATE TABLE collection_tag_revisions (
 	CONSTRAINT ck_collection_tag_revisions_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_tag_revisions_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_revisions_cleanup ON collection_tag_revisions (cleanup_started_at, collection_id, revision)
     """.strip(),
     """
 CREATE TABLE collection_upload_files (
@@ -2132,6 +2167,22 @@ CREATE TABLE collection_tag_nodes (
 )
     """.strip(),
     """
+CREATE TABLE collection_tag_node_edges (
+	parent_digest VARCHAR(64) NOT NULL,
+	child_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (parent_digest, child_digest),
+	FOREIGN KEY(parent_digest) REFERENCES collection_tag_nodes (digest) ON DELETE CASCADE,
+	FOREIGN KEY(child_digest) REFERENCES collection_tag_nodes (digest),
+	CONSTRAINT ck_collection_tag_node_edges_parent_digest CHECK (length(parent_digest) = 64 AND lower(parent_digest) = parent_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parent_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_edges_child_digest CHECK (length(child_digest) = 64 AND lower(child_digest) = child_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(child_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_node_edges_parent_digest_hex CHECK (length(parent_digest) = 64 AND lower(parent_digest) = parent_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(parent_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
+	CONSTRAINT ck_collection_tag_node_edges_child_digest_hex CHECK (length(child_digest) = 64 AND lower(child_digest) = child_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(child_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_node_edges_child ON collection_tag_node_edges (child_digest, parent_digest)
+    """.strip(),
+    """
 CREATE TABLE collection_tag_visibility (
 	collection_id BIGINT NOT NULL,
 	tag_sha256 VARCHAR(64) NOT NULL,
@@ -2842,6 +2893,21 @@ CREATE TABLE collection_tag_mutations (
 CREATE INDEX ix_collection_tag_mutations_work ON collection_tag_mutations (state, updated_at, collection_id)
     """.strip(),
     """
+CREATE TABLE collection_tag_mutation_node_references (
+	collection_id BIGINT NOT NULL,
+	operation_id VARCHAR NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (collection_id, operation_id, node_digest),
+	FOREIGN KEY(collection_id, operation_id) REFERENCES collection_tag_mutations (collection_id, operation_id) ON DELETE CASCADE,
+	FOREIGN KEY(node_digest) REFERENCES collection_tag_nodes (digest),
+	CONSTRAINT ck_collection_tag_mutation_node_references_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_mutation_node_references_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_mutation_node_references_digest ON collection_tag_mutation_node_references (node_digest, collection_id, operation_id)
+    """.strip(),
+    """
 CREATE TABLE collection_tag_revisions (
 	collection_id BIGINT NOT NULL,
 	revision BIGINT NOT NULL,
@@ -2849,6 +2915,7 @@ CREATE TABLE collection_tag_revisions (
 	tag_set_identity VARCHAR(64) NOT NULL,
 	head_identity VARCHAR(64) NOT NULL,
 	created_at VARCHAR NOT NULL,
+	cleanup_started_at VARCHAR,
 	PRIMARY KEY (collection_id, revision),
 	FOREIGN KEY(collection_id) REFERENCES collections (id) ON DELETE CASCADE,
 	CONSTRAINT ck_collection_tag_revisions_revision CHECK (revision >= 1 AND revision <= 9007199254740991),
@@ -2859,6 +2926,9 @@ CREATE TABLE collection_tag_revisions (
 	CONSTRAINT ck_collection_tag_revisions_tag_set_identity_hex CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
 	CONSTRAINT ck_collection_tag_revisions_head_identity_hex CHECK (length(head_identity) = 64 AND lower(head_identity) = head_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(head_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
+    """.strip(),
+    """
+CREATE INDEX ix_collection_tag_revisions_cleanup ON collection_tag_revisions (cleanup_started_at, collection_id, revision)
     """.strip(),
     """
 CREATE TABLE collection_upload_files (
