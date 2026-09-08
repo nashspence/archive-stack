@@ -103,7 +103,10 @@ CREATE TABLE stove0_admission_candidates (
 CREATE INDEX ix_stove0_admission_candidates_policy ON stove0_admission_candidates (policy_id, admission_id)
     """.strip(),
     """
-CREATE INDEX ix_stove0_admission_candidates_state ON stove0_admission_candidates (state, next_attempt_at, admission_id)
+CREATE INDEX ix_stove0_admission_candidates_state ON stove0_admission_candidates (state, admission_id)
+    """.strip(),
+    """
+CREATE INDEX ix_stove0_admission_candidates_retry ON stove0_admission_candidates (state, next_attempt_at, admission_id)
     """.strip(),
     """
 CREATE INDEX ix_stove0_admission_candidates_work ON stove0_admission_candidates (work_id, admission_id)

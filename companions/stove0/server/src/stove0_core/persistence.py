@@ -580,6 +580,11 @@ class _AdmissionCandidateRow(_Base):
         Index(
             "ix_stove0_admission_candidates_state",
             "state",
+            "admission_id",
+        ),
+        Index(
+            "ix_stove0_admission_candidates_retry",
+            "state",
             "next_attempt_at",
             "admission_id",
         ),
@@ -2492,13 +2497,21 @@ def _admission_list_statement(
         filters.append(_AdmissionCandidateRow.state == state)
     if query:
         normalized = query.strip().casefold()
-        filters.append(
-            or_(
-                _AdmissionCandidateRow.admission_id.contains(normalized),
-                _AdmissionCandidateRow.policy_id.contains(normalized),
-                _AdmissionCandidateRow.work_id.contains(normalized),
-            )
+        pattern = (
+            "%" + normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         )
+        matching_ids = union_all(
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.admission_id.like(pattern, escape="\\")
+            ),
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.policy_id.like(pattern, escape="\\")
+            ),
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.work_id.like(pattern, escape="\\")
+            ),
+        ).subquery()
+        filters.append(_AdmissionCandidateRow.admission_id.in_(select(matching_ids.c.admission_id)))
     key_columns = tuple(dict.fromkeys((columns[sort], _AdmissionCandidateRow.admission_id)))
     return filters, select(_AdmissionCandidateRow).where(*filters), key_columns
 
