@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import subprocess
@@ -41,7 +42,6 @@ from stove0_target_protocol import (
 
 from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import TargetServiceError
-from stove0_target_support.jcs import canonical_json_bytes
 
 _ACTIVE_STATES: Final = frozenset({"queued", "running", "canceling"})
 _TERMINAL_STATES: Final = frozenset({"inapplicable", "succeeded", "failed", "canceled"})
@@ -568,9 +568,17 @@ class PersistentTargetService:
         if path.is_symlink():
             raise ValueError("target state paths must not be symlinks")
         temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.part")
-        encoded = canonical_json_bytes(
-            model.model_dump(mode="json", by_alias=True, exclude_none=True)
-        )
+        # This file is restart state, not an identity-bearing protocol document.
+        # Preserve JSON scalar types exactly: RFC 8785 deliberately renders an
+        # integral float such as ``45.0`` as ``45``, while an embedded authority
+        # owned by another protocol may distinguish those values in its digest.
+        encoded = json.dumps(
+            model.model_dump(mode="json", by_alias=True, exclude_none=True),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         descriptor = os.open(
             temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),

@@ -576,6 +576,53 @@ def test_success_status_is_operation_checked_and_failure_cannot_publish() -> Non
         Draft202012Validator(TargetJobStatus.model_json_schema()).validate(running_with_failure)
 
 
+def test_persistent_status_preserves_embedded_authority_number_types(tmp_path: Path) -> None:
+    operation, target, request = _request()
+    base = _success_status(operation, request)
+    assert base.derivation is not None
+    assert base.output_collection is not None
+    original = CollectionDerivation.from_mapping(base.derivation)
+    controller_evidence = {
+        **original.controller_evidence,
+        "fixture_coordinate": 45.0,
+    }
+    derivation = CollectionDerivation(
+        execution_id=original.execution_id,
+        claim_id=original.claim_id,
+        fence=original.fence,
+        recipe=original.recipe,
+        operation=original.operation,
+        input_set_sha256=original.input_set_sha256,
+        artifact_set_sha256=original.artifact_set_sha256,
+        execution_envelope_sha256=original.execution_envelope_sha256,
+        execution_sha256=original.execution_sha256,
+        controller_evidence=controller_evidence,
+        controller_evidence_sha256=riverhog_canonical_json_sha256(controller_evidence),
+        disposition_set=original.disposition_set,
+    )
+    status = TargetJobStatus.model_validate(
+        {
+            **base.model_dump(mode="json", by_alias=True),
+            "derivation": derivation.as_dict(),
+            "output_collection": base.output_collection.model_copy(
+                update={"derivation_sha256": derivation.sha256}
+            ).model_dump(mode="json", by_alias=True),
+        }
+    )
+    state_root = tmp_path / "state"
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=lambda *_args: status,
+    )
+    try:
+        service._write_model(service._status_path(status.job_id), status)
+        assert service._load_status(status.job_id) == status
+    finally:
+        service.close()
+
+
 def test_effect_success_is_canonical_bound_and_collection_free() -> None:
     operation, target, request = _effect_request()
     first = _effect_success_status(operation, request)

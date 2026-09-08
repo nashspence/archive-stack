@@ -50,6 +50,7 @@ from riverhog_core.catalog_models import (
     CollectionTagRecord,
     CollectionTagRevisionRecord,
     CollectionUploadTagPublicationFrontierRecord,
+    CollectionUploadTagNodeReferenceRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.runtime_config import RuntimeConfig
@@ -522,6 +523,12 @@ def _reap_unreferenced_tag_history(session: Session, *, limit: int) -> None:
                 ~exists(
                     select(1).where(
                         CollectionUploadTagPublicationFrontierRecord.node_digest
+                        == CollectionTagNodeRecord.digest
+                    )
+                ),
+                ~exists(
+                    select(1).where(
+                        CollectionUploadTagNodeReferenceRecord.node_digest
                         == CollectionTagNodeRecord.digest
                     )
                 ),

@@ -992,6 +992,20 @@ CREATE TABLE collection_upload_tag_publication_frontier (
 CREATE INDEX ix_collection_upload_tag_frontier_work ON collection_upload_tag_publication_frontier (collection_id, published, expanded, node_digest)
     """.strip(),
     """
+CREATE TABLE collection_upload_tag_node_references (
+	collection_id INTEGER NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (collection_id, node_digest),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	FOREIGN KEY(node_digest) REFERENCES collection_tag_nodes (digest) ON DELETE RESTRICT,
+	CONSTRAINT ck_collection_upload_tag_node_references_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_upload_tag_node_references_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_upload_tag_node_references_digest ON collection_upload_tag_node_references (node_digest, collection_id)
+    """.strip(),
+    """
 CREATE TABLE collection_upload_tags (
 	collection_id INTEGER NOT NULL,
 	tag_sha256 VARCHAR(64) NOT NULL,
@@ -2957,6 +2971,20 @@ CREATE TABLE collection_upload_tag_publication_frontier (
     """.strip(),
     """
 CREATE INDEX ix_collection_upload_tag_frontier_work ON collection_upload_tag_publication_frontier (collection_id, published, expanded, node_digest)
+    """.strip(),
+    """
+CREATE TABLE collection_upload_tag_node_references (
+	collection_id BIGINT NOT NULL,
+	node_digest VARCHAR(64) NOT NULL,
+	PRIMARY KEY (collection_id, node_digest),
+	FOREIGN KEY(collection_id) REFERENCES collection_uploads (collection_id) ON DELETE CASCADE,
+	FOREIGN KEY(node_digest) REFERENCES collection_tag_nodes (digest) ON DELETE RESTRICT,
+	CONSTRAINT ck_collection_upload_tag_node_references_digest CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_upload_tag_node_references_node_digest_hex CHECK (length(node_digest) = 64 AND lower(node_digest) = node_digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(node_digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+)
+    """.strip(),
+    """
+CREATE INDEX ix_collection_upload_tag_node_references_digest ON collection_upload_tag_node_references (node_digest, collection_id)
     """.strip(),
     """
 CREATE TABLE collection_upload_tags (

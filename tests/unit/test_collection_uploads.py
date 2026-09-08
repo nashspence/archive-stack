@@ -12,6 +12,7 @@ from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
+    COLLECTION_TAGS_MANAGE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
     ApplicationAccess,
@@ -30,9 +31,11 @@ from riverhog_core.catalog_models import (
     CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
     CollectionRecord,
+    CollectionTagNodeRecord,
     CollectionUploadProvenanceJournalChunkRecord,
     CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
+    CollectionUploadTagNodeReferenceRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
 )
@@ -46,6 +49,7 @@ from riverhog_core.incremental_plan import (
 from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
@@ -81,6 +85,17 @@ _CREATOR = ApplicationPrincipal(
     app="uploader",
     key_id="key-1",
     access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES)}),
+)
+
+_TAGGED_CREATOR = ApplicationPrincipal(
+    app="tagged-uploader",
+    key_id="tagged-key-1",
+    access=frozenset(
+        {
+            ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES),
+            ApplicationAccess(COLLECTION_TAGS_MANAGE, ALL_RESOURCES),
+        }
+    ),
 )
 
 _DELETER = ApplicationPrincipal(
@@ -200,6 +215,45 @@ def test_upload_description_is_exact_and_bound_to_create_idempotency(tmp_path: P
             provenance_mode="omitted",
             provenance_omission_reason="fixture has no source provenance",
         )
+
+
+def test_open_upload_retains_tag_nodes_until_publication_can_finish(tmp_path: Path) -> None:
+    service, config = _service(tmp_path)
+    opened = service.create_or_resume(
+        idempotency_key="tag-node-retention",
+        ingest_source="fixture",
+        tags=("stove0/conformance", "source/camera"),
+        archive_store=None,
+        initiator=_TAGGED_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+    collection_id = int(opened["collection_id"])
+    factory = make_session_factory(config.database_url)
+
+    with session_scope(factory) as session:
+        retained = set(
+            session.scalars(
+                select(CollectionUploadTagNodeReferenceRecord.node_digest).where(
+                    CollectionUploadTagNodeReferenceRecord.collection_id == collection_id
+                )
+            )
+        )
+        assert retained
+        assert set(session.scalars(select(CollectionTagNodeRecord.digest))) == retained
+
+    sync = SqlAlchemyCatalogSyncService(config, session_factory=factory)
+    assert sync.reap_expired_history(limit=10_000) == 0
+    with session_scope(factory) as session:
+        assert set(session.scalars(select(CollectionTagNodeRecord.digest))) == retained
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        session.delete(upload)
+
+    assert sync.reap_expired_history(limit=10_000) == 0
+    with session_scope(factory) as session:
+        assert list(session.scalars(select(CollectionTagNodeRecord.digest))) == []
 
 
 def _process_until(

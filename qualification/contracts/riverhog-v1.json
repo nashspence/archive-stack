@@ -11685,7 +11685,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "fe537b3c8b6cbf98ad347fd79d234aa0fe6f6be9ac48cb47b0b5045cfd6df02a"
+            "0a079e72a8a11d4cefa441ed5983ec9f902a54d771c4eb84fb54a516bc526586"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -105792,7 +105792,7 @@
               },
               "plan_retrieval": {
                 "kind": "method",
-                "signature": "(self, files: 'Sequence[tuple[CollectionId, str]]', *, lease_seconds: 'int | None' = None, restore_policy: 'RetrievalPolicy' = 'available-only') -> 'dict[str, Any]'"
+                "signature": "(self, files: 'Sequence[tuple[CollectionId, str]]', *, lease_seconds: 'int | None' = None, restore_policy: 'RiverhogRestorePolicy' = 'never') -> 'dict[str, Any]'"
               },
               "renew_retrieval_job": {
                 "kind": "method",

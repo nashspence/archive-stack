@@ -466,6 +466,7 @@ class SqlAlchemyCollectionUploadService:
                 session,
                 root_sha256=None,
                 tags=canonical_tags,
+                retain_for_collection_id=upload.collection_id,
             )
             upload.tag_staging_root_sha256 = staged_set.root.root_sha256
             upload.tag_staging_set_identity = staged_set.identity
@@ -550,6 +551,7 @@ class SqlAlchemyCollectionUploadService:
                     session,
                     root_sha256=upload.tag_staging_root_sha256,
                     tags=new_tags,
+                    retain_for_collection_id=normalized,
                 )
                 upload.tag_staging_root_sha256 = staged_set.root.root_sha256
                 upload.tag_staging_set_identity = staged_set.identity

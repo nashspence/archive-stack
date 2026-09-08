@@ -54,6 +54,7 @@ from riverhog_core.catalog_models import (
     CollectionTagPublishedNodeRecord,
     CollectionTagRecord,
     CollectionTagRevisionRecord,
+    CollectionUploadTagNodeReferenceRecord,
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
@@ -78,6 +79,7 @@ def advance_collection_tag_set(
     *,
     root_sha256: str | None,
     tags: Iterable[str],
+    retain_for_collection_id: int | None = None,
 ) -> CollectionTagSet:
     """Apply one caller-bounded tag batch to an existing authenticated set."""
 
@@ -85,6 +87,21 @@ def advance_collection_tag_set(
     result = CollectionTagSet(store, CollectionTagSetRoot.seal(root_sha256))
     for tag in tags:
         result = result.insert(tag)
+    if retain_for_collection_id is not None:
+        for digest in store.touched_digests:
+            if (
+                session.get(
+                    CollectionUploadTagNodeReferenceRecord,
+                    (retain_for_collection_id, digest),
+                )
+                is None
+            ):
+                session.add(
+                    CollectionUploadTagNodeReferenceRecord(
+                        collection_id=retain_for_collection_id,
+                        node_digest=digest,
+                    )
+                )
     return result
 
 
@@ -93,6 +110,7 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
         self._session = session
         self._pending: dict[str, bytes] = {}
         self.put_digests: set[str] = set()
+        self.touched_digests: set[str] = set()
 
     def get(self, digest: str) -> bytes:
         pending = self._pending.get(digest)
@@ -115,6 +133,7 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
             existing = None if record is None else record.encoded
         if existing is not None and existing != payload:
             raise RuntimeError("immutable catalog tag node differs")
+        self.touched_digests.add(digest)
         if existing is None:
             self._session.add(
                 CollectionTagNodeRecord(

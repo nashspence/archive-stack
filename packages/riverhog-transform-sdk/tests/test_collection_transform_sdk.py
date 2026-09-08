@@ -50,6 +50,7 @@ from riverhog_provenance import (
 )
 from riverhog_transform_sdk import (
     ClaimedCollectionReader,
+    ClaimedCollectionRuntime,
     CollectionTransformRuntime,
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
@@ -338,7 +339,7 @@ def test_claimed_reader_verifies_roots_filters_control_and_reads_ranges(tmp_path
 
     assert api.acknowledged == ["retrieval-1"]
     assert not api.canceled
-    assert api.restore_policies == ["available-only"]
+    assert api.restore_policies == ["never"]
 
 
 def test_claimed_reader_fails_closed_when_root_changed() -> None:
@@ -1392,6 +1393,32 @@ def test_capability_client_refreshes_workers_without_closing_active_delegate() -
     root.close()
     assert first.closed
     assert second.closed
+
+
+@pytest.mark.parametrize("runtime_type", [ClaimedCollectionRuntime, CollectionTransformRuntime])
+def test_capability_refresh_does_not_mutate_collection_liveness(runtime_type: type[Any]) -> None:
+    class Current:
+        base_url = "https://riverhog.invalid"
+        allow_insecure_http = False
+        host_header = None
+        http2 = True
+        timeout_seconds = 30.0
+        upload_timeout_seconds = 60.0
+
+    class Facade:
+        current = Current()
+        replacement: Any = None
+
+        def replace(self, client: Any, *, owns_client: bool) -> None:
+            assert owns_client
+            self.replacement = client
+
+    runtime = runtime_type.__new__(runtime_type)
+    runtime.api = Facade()
+
+    runtime.refresh_capability("replacement-secret")
+
+    assert runtime.api.replacement.token == "replacement-secret"
 
 
 def test_runtime_registry_applies_refresh_arriving_before_target_start() -> None:

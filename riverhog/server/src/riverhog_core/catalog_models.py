@@ -2464,6 +2464,33 @@ class CollectionUploadTagPublicationFrontierRecord(Base):
     )
 
 
+class CollectionUploadTagNodeReferenceRecord(Base):
+    """Keep immutable staging nodes available until upload publication settles."""
+
+    __tablename__ = "collection_upload_tag_node_references"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id"], ["collection_uploads.collection_id"], ondelete="CASCADE"
+        ),
+        ForeignKeyConstraint(
+            ["node_digest"], ["collection_tag_nodes.digest"], ondelete="RESTRICT"
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_upload_tag_node_references_digest",
+        ),
+        Index(
+            "ix_collection_upload_tag_node_references_digest",
+            "node_digest",
+            "collection_id",
+        ),
+    )
+
+
 class CollectionUploadFileRecord(Base):
     __tablename__ = "collection_upload_files"
 
