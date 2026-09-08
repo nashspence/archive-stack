@@ -1,15 +1,15 @@
 {
-  "contract_canonical_sha256": "5b23500d6714523ab192630f056a9a6af251a76e5f0e7a645526e27574cf07d9",
-  "contract_projection_sha256": "f5b2830a6f5fff128eb87fcd0ec1cbc5e71c667bb4f573d8ddc2420b02fce80d",
+  "contract_canonical_sha256": "f6643e7cff053a099927858e7170c2d3f64ff9f3eb632c32d658a61a49580828",
+  "contract_projection_sha256": "ea73bd2bd3eb93677ffb372fd99d91eff8a39134c7984e2db2c61fddb849a842",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
-    "extent_decisions": 1885,
-    "extent_source_links": 1885,
-    "source_authorities": 203,
+    "extent_decisions": 1935,
+    "extent_source_links": 1935,
+    "source_authorities": 204,
     "source_kinds": {
       "cli": 5,
       "configuration": 6,
-      "configuration-environment": 120,
+      "configuration-environment": 121,
       "openapi": 3,
       "protocol": 35,
       "python": 25,
@@ -1864,6 +1864,61 @@
       "source_pointer": "/external_contract/cli/riverhog/commands/tag/commands/list/parameters/2"
     },
     {
+      "id": "cli:stove0:stove0:admission:list:parameter:order:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/6"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:page_size:value",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/0"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:page_size:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/0"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:page_token:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/1"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:policy_id:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/2"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:query:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/4"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:sort:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/5"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:list:parameter:state_filter:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/3"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:policy:backfill:parameter:policy_id:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/policy/commands/backfill/parameters/0"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:policy:rebaseline:parameter:policy_id:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/policy/commands/rebaseline/parameters/0"
+    },
+    {
+      "id": "cli:stove0:stove0:admission:show:parameter:admission_id:values-per-occurrence",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/show/parameters/0"
+    },
+    {
       "id": "cli:stove0:stove0:evaluation:cancel:parameter:evaluation_id:values-per-occurrence",
       "owner": "stove0",
       "source_pointer": "/external_contract/cli/stove0/commands/evaluation/commands/cancel/parameters/0"
@@ -2351,42 +2406,42 @@
     {
       "id": "configuration-environment:STOVE0_BROWSE_TOKEN_LIFETIME_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/83"
+      "source_pointer": "/external_contract/configuration_environment/84"
     },
     {
       "id": "configuration-environment:STOVE0_CAPABILITY_TTL_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/85"
+      "source_pointer": "/external_contract/configuration_environment/86"
     },
     {
       "id": "configuration-environment:STOVE0_CLAIM_LEASE_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/86"
+      "source_pointer": "/external_contract/configuration_environment/87"
     },
     {
       "id": "configuration-environment:STOVE0_HTTP_TIMEOUT_SECONDS:value",
       "owner": "stove0-api-client",
-      "source_pointer": "/external_contract/configuration_environment/106"
+      "source_pointer": "/external_contract/configuration_environment/107"
     },
     {
       "id": "configuration-environment:STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/109"
+      "source_pointer": "/external_contract/configuration_environment/110"
     },
     {
       "id": "configuration-environment:STOVE0_SCHEDULER_INTERVAL_SECONDS:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/111"
+      "source_pointer": "/external_contract/configuration_environment/112"
     },
     {
       "id": "configuration-environment:STOVE0_TARGET_AUTHORITY_BATCH_SIZE:value",
       "owner": "stove0-server",
-      "source_pointer": "/external_contract/configuration_environment/113"
+      "source_pointer": "/external_contract/configuration_environment/114"
     },
     {
       "id": "configuration-environment:STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:value",
       "owner": "stove0-target-support",
-      "source_pointer": "/external_contract/configuration_environment/117"
+      "source_pointer": "/external_contract/configuration_environment/118"
     },
     {
       "id": "configuration-pattern:RIVERHOG_ARCHIVE_STORE_{store}_{setting}:ADAPTER_MAX_CONNECTIONS:value",
@@ -5234,6 +5289,136 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AcceptedTargetJob/properties/request_sha256"
     },
     {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/admission_id:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/admission_id"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/effective_intent:map-cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/effective_intent"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/policy_id:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/policy_id"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/policy_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/policy_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/recipe_id:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/recipe_id"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/recipe_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/recipe_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionIntent/properties/required_tags:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/required_tags"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPage/properties/admissions:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/admissions"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPage/properties/filters:map-cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/filters"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPage/properties/page_size:value",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/page_size"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/effective_intent:map-cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/effective_intent"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/recipe_id:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/recipe_id"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/recipe_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/recipe_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/required_tags:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/required_tags"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyCatalogView/properties/catalog_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyCatalogView/properties/catalog_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyCatalogView/properties/policies:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyCatalogView/properties/policies"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/authorization_view_identity/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/authorization_view_identity/anyOf/0"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/policy_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/policy_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/source_identity/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/source_identity/anyOf/0"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/updated_at:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/updated_at"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionRun/properties/failures:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionRun/properties/failures"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionRun/properties/progressed:cardinality",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionRun/properties/progressed"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/created_at:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/created_at"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/preview_sha256/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/preview_sha256/anyOf/0"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/updated_at:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/updated_at"
+    },
+    {
+      "id": "http:stove0:components:/schemas/AdmissionView/properties/work_id/anyOf/0:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/work_id/anyOf/0"
+    },
+    {
       "id": "http:stove0:components:/schemas/ArtifactAssociation/properties/associated_roles:cardinality",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/ArtifactAssociation/properties/associated_roles"
@@ -5459,6 +5644,51 @@
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/BrowseQuery"
     },
     {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/archive_root_sha256:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/archive_root_sha256"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/content_identity:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/content_identity"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/description_identity:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/description_identity"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/description_revision:value",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/description_revision"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/revision:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/revision"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/tag_revision:value",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/tag_revision"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/tag_set_identity:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/tag_set_identity"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CollectionDescription:encoded-bytes",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionDescription"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CollectionDescription:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionDescription"
+    },
+    {
       "id": "http:stove0:components:/schemas/CollectionRootRef/properties/archive_root_sha256:length",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionRootRef/properties/archive_root_sha256"
@@ -5467,6 +5697,16 @@
       "id": "http:stove0:components:/schemas/CollectionRootRef/properties/content_identity:length",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionRootRef/properties/content_identity"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CollectionTag:encoded-bytes",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionTag"
+    },
+    {
+      "id": "http:stove0:components:/schemas/CollectionTag:length",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionTag"
     },
     {
       "id": "http:stove0:components:/schemas/ControllerEvidence/properties/controller_evidence_sha256:length",
@@ -6722,6 +6962,16 @@
       "id": "http:stove0:operation:get_target_execution_inputs:logical-result",
       "owner": "stove0",
       "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1target-executions~1{job_id}~1inputs/get"
+    },
+    {
+      "id": "http:stove0:operation:list_admissions:logical-result",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get"
+    },
+    {
+      "id": "http:stove0:operation:list_admissions:parameter:query:page_size:/:value",
+      "owner": "stove0",
+      "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get/parameters/0/schema"
     },
     {
       "id": "http:stove0:operation:list_evaluations:logical-result",
@@ -10825,6 +11075,66 @@
           "methods": [
             "GET"
           ],
+          "operation_id": "list_admission_policies",
+          "path": "/v1/admission-policies",
+          "source": {
+            "module": "stove0_api.app",
+            "path": "companions/stove0/server/src/stove0_api/app.py",
+            "symbol": "create_app.<locals>.list_admission_policies"
+          }
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "operation_id": "backfill_admission_policy",
+          "path": "/v1/admission-policies/{policy_id}:backfill",
+          "source": {
+            "module": "stove0_api.app",
+            "path": "companions/stove0/server/src/stove0_api/app.py",
+            "symbol": "create_app.<locals>.backfill_admission_policy"
+          }
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "operation_id": "rebaseline_admission_policy",
+          "path": "/v1/admission-policies/{policy_id}:rebaseline",
+          "source": {
+            "module": "stove0_api.app",
+            "path": "companions/stove0/server/src/stove0_api/app.py",
+            "symbol": "create_app.<locals>.rebaseline_admission_policy"
+          }
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "operation_id": "list_admissions",
+          "path": "/v1/admissions",
+          "source": {
+            "module": "stove0_api.app",
+            "path": "companions/stove0/server/src/stove0_api/app.py",
+            "symbol": "create_app.<locals>.list_admissions"
+          }
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "operation_id": "get_admission",
+          "path": "/v1/admissions/{admission_id}",
+          "source": {
+            "module": "stove0_api.app",
+            "path": "companions/stove0/server/src/stove0_api/app.py",
+            "symbol": "create_app.<locals>.get_admission"
+          }
+        },
+        {
+          "methods": [
+            "GET"
+          ],
           "operation_id": "get_artifact_selection",
           "path": "/v1/artifact-selections/{selection_sha256}",
           "source": {
@@ -12137,6 +12447,16 @@
     {
       "bindings": [
         {
+          "consumer": "stove0-server",
+          "expression": "values.get('STOVE0_ADMISSIONS_PATH', '')",
+          "path": "companions/stove0/server/src/stove0_core/runtime_config.py"
+        }
+      ],
+      "id": "configuration-environment:STOVE0_ADMISSIONS_PATH"
+    },
+    {
+      "bindings": [
+        {
           "consumer": "stove0-api-client",
           "expression": "_boolean_env('STOVE0_ALLOW_INSECURE_HTTP', False)",
           "path": "packages/stove0-api-client/src/stove0_api_client/client.py"
@@ -12991,7 +13311,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "847e9f1f5e05f16ce67b1123e561f732eb0406fd5a7125abf9b0188f4cad651e"
+          "sha256": "fe537b3c8b6cbf98ad347fd79d234aa0fe6f6be9ac48cb47b0b5045cfd6df02a"
         }
       ],
       "id": "state:riverhog-catalog"
@@ -13018,7 +13338,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-          "sha256": "1d958b73fe147ea02aca17695b851b00a15f187593f73c7375199a6770975ea9"
+          "sha256": "7b48e060290ac4297cdc540ee9a8ae4238a81e6b73c4f3dfbbb7f3a81fda1e57"
         }
       ],
       "id": "state:stove0-control"

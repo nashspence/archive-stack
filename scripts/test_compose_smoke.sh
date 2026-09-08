@@ -44,6 +44,7 @@ adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
 adapter_compose_file="${ROOT_DIR}/reference/riverhog/ingress/ftp/compose.yaml"
 export STOVE0_RECIPES_HOST_PATH="${ROOT_DIR}/qualification/fixtures/stove0/recipes.yaml"
+export STOVE0_ADMISSIONS_HOST_PATH="${ROOT_DIR}/qualification/fixtures/stove0/admissions.json"
 
 stove0_compose() {
   docker compose --project-name "${stove0_project}" --file "${stove0_compose_file}" "$@"

@@ -10,6 +10,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from riverhog_api_client import ApiClient
+from riverhog_protocol import CatalogSyncDescriptor
 from riverhog_protocol.collection_workflows import ArtifactDispositionSetIdentity
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -32,6 +33,12 @@ from stove0_core import (
     WorkRecord,
 )
 from stove0_operator_contracts import (
+    AdmissionCatalog,
+    AdmissionIntent,
+    AdmissionPolicy,
+    AdmissionPolicyCatalogView,
+    AdmissionPolicyStatus,
+    AdmissionView,
     EvaluationReviewIn,
     SchedulerRunIn,
     Stove0EventPage,
@@ -342,6 +349,75 @@ class _LifecycleScheduler:
         }
 
 
+class _LifecycleAdmission:
+    def __init__(self) -> None:
+        self.policy = AdmissionPolicy(
+            id="fixture-camera",
+            revision=1,
+            required_tags=("camera",),
+            recipe_id="stove0.conformance-media/v1",
+            recipe_revision=1,
+            recipe_sha256="3" * 64,
+        )
+        self.intent = AdmissionIntent.seal(
+            policy=self.policy,
+            collection=CatalogSyncDescriptor(
+                collection_id=1,
+                archive_root_sha256="1" * 64,
+                content_identity="2" * 64,
+                description=None,
+                description_revision=0,
+                description_identity="4" * 64,
+                tag_revision=1,
+                tag_set_identity="5" * 64,
+                revision="1",
+            ),
+        )
+
+    def policies(self) -> AdmissionPolicyCatalogView:
+        return AdmissionPolicyCatalogView(
+            catalog_sha256=AdmissionCatalog(policies=(self.policy,)).catalog_sha256,
+            policies=(self._status(),),
+        )
+
+    def rebaseline(self, policy_id: str, **_kwargs: object) -> AdmissionPolicyStatus:
+        assert policy_id == self.policy.id
+        return self._status()
+
+    def list_admissions(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "page_size": 25,
+            "_next_position": None,
+            "sort": "created_at",
+            "order": "desc",
+            "filters": {},
+            "policy_id": None,
+            "state": None,
+            "admissions": (self.get_admission(self.intent.admission_id),),
+        }
+
+    def get_admission(self, admission_id: str) -> AdmissionView:
+        assert admission_id == self.intent.admission_id
+        return AdmissionView(
+            intent=self.intent,
+            state="intent",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+
+    def _status(self) -> AdmissionPolicyStatus:
+        return AdmissionPolicyStatus(
+            policy=self.policy,
+            policy_sha256=self.policy.policy_sha256,
+            phase="baseline",
+            source_identity="6" * 64,
+            authorization_view_identity="7" * 64,
+            baseline_mode="observe",
+            through_revision="0",
+            updated_at="2026-01-01T00:00:00Z",
+        )
+
+
 def _lifecycle_composition() -> Stove0Composition:
     state = _LifecycleState()
     fixture_path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
@@ -373,6 +449,7 @@ def _lifecycle_composition() -> Stove0Composition:
         preview=cast(WorkflowPreviewService, _LifecyclePreview()),
         evaluations=cast(EvaluationService, _LifecycleEvaluations(state)),
         scheduler=cast(Stove0Scheduler, _LifecycleScheduler()),
+        admission=cast(Any, _LifecycleAdmission()),
     )
 
 
@@ -700,6 +777,12 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert recipe_page.catalog_sha256
         assert recipe_page.recipes[0].sha256
         assert client.get_recipe("stove0.conformance-media/v1").sha256
+        assert client.list_admission_policies().policies[0].policy.id == "fixture-camera"
+        assert client.rebaseline_admission_policy("fixture-camera").phase == "baseline"
+        assert client.backfill_admission_policy("fixture-camera").phase == "baseline"
+        admissions = client.list_admissions()
+        assert len(admissions.admissions) == 1
+        assert client.get_admission(admissions.admissions[0].intent.admission_id).state == "intent"
         assert client.list_work().work == ()
         preview = client.preview_workflow("stove0.conformance-media/v1", [_collection_root()])
         created = client.create_work(
@@ -755,7 +838,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
 
 def test_every_stove0_api_operation_has_one_current_official_client_method() -> None:
     operations = _operator_operations()
-    assert len(operations) == 21
+    assert len(operations) == 26
     assert {
         operation_id
         for operation_id in operations

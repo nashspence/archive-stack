@@ -53,12 +53,13 @@ from riverhog_protocol import (
 from sqlalchemy import text
 from sqlalchemy.engine import Engine, make_url
 from stove0_core.persistence import (
+    _admission_list_statement,
     _evaluation_list_statement,
     _work_list_statement,
     stove0_state_schema,
 )
 from stove0_core.persistence import _keyset_statement as _stove0_keyset_statement
-from stove0_operator_contracts import EvaluationSort, WorkSort
+from stove0_operator_contracts import AdmissionSort, EvaluationSort, WorkSort
 from time_formats import parse_utc_timestamp
 
 from scripts.operation_qualification import (
@@ -125,6 +126,7 @@ _DATABASE_PLAN_OPERATIONS = {
     ("riverhog", "search"): "search",
     ("riverhog", "list_tags"): "tags",
     ("stove0", "list_evaluations"): "stove0-evaluations",
+    ("stove0", "list_admissions"): "stove0-admissions",
     ("stove0", "list_work"): "stove0-work",
 }
 _DATABASE_FILTER_SELECTORS = {
@@ -149,6 +151,7 @@ _DATABASE_FILTER_SELECTORS = {
     "search": {"collection", "q"},
     "tags": {"q"},
     "stove0-evaluations": {"phase", "q"},
+    "stove0-admissions": {"policy_id", "q", "state"},
     "stove0-work": {"phase", "q"},
     "uploads": {"q", "state"},
 }
@@ -541,6 +544,28 @@ def _seed_stove0_selector_relations(engine: Engine, *, rows: int) -> None:
             SELECT repeat(md5('stove-evaluation-' || g), 2), 1,
                    CASE WHEN g % 2 = 0 THEN 'planning' ELSE 'complete' END,
                    {timestamp}, 2, '{{}}'
+            FROM generate_series(1, {rows}) AS g
+            """
+            )
+        )
+        connection.execute(
+            text(
+                f"""
+            INSERT INTO stove0_admission_candidates (
+                admission_id, policy_id, state, preview_sha256, work_id,
+                document_bytes, document_json, preview_bytes, preview_json,
+                created_at, updated_at
+            )
+            SELECT repeat(md5('stove-admission-' || g), 2),
+                   'policy-' || lpad((g % 32)::text, 2, '0'),
+                   CASE WHEN g % 3 = 0 THEN 'intent'
+                        WHEN g % 3 = 1 THEN 'previewed'
+                        ELSE 'work_bound' END,
+                   CASE WHEN g % 3 IN (1, 2) THEN repeat(md5('preview-' || g), 2)
+                        ELSE NULL END,
+                   CASE WHEN g % 3 = 2 THEN repeat(md5('work-' || g), 2)
+                        ELSE NULL END,
+                   2, '{{}}', NULL, NULL, {timestamp}, {timestamp}
             FROM generate_series(1, {rows}) AS g
             """
             )
@@ -1350,6 +1375,88 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     order="asc",
                 ),
                 frozenset({"ix_stove0_work_records_phase_work_id"}),
+                database="stove0",
+            ),
+        )
+    )
+
+    admission_indexes = {
+        "admission_id": "stove0_admission_candidates_pkey",
+        "created_at": "ix_stove0_admission_candidates_created",
+        "updated_at": "ix_stove0_admission_candidates_updated",
+        "state": "ix_stove0_admission_candidates_state",
+    }
+    for sort in sorted(closed_literal_values(AdmissionSort)):
+        for order in ("asc", "desc"):
+            statement = _stove0_plan_statement(
+                _admission_list_statement(
+                    policy_id=None,
+                    state=None,
+                    query=None,
+                    sort=sort,
+                    order=order,
+                ),
+                order=order,
+            )
+            cases.append(
+                _PlanCase(
+                    f"stove0-admissions.sort.{sort}.{order}",
+                    statement,
+                    frozenset({admission_indexes[sort]}),
+                    database="stove0",
+                )
+            )
+    cases.extend(
+        (
+            _PlanCase(
+                "stove0-admissions.filter.q",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id=None,
+                        state=None,
+                        query="19c611b455303958a1ca8f4c6c382fd4",
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset(
+                    {
+                        "ix_stove0_admission_candidates_id_trgm",
+                        "ix_stove0_admission_candidates_policy_trgm",
+                        "ix_stove0_admission_candidates_work_trgm",
+                    }
+                ),
+                database="stove0",
+            ),
+            _PlanCase(
+                "stove0-admissions.filter.policy_id",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id="policy-00",
+                        state=None,
+                        query=None,
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset({"ix_stove0_admission_candidates_policy"}),
+                database="stove0",
+            ),
+            _PlanCase(
+                "stove0-admissions.filter.state",
+                _stove0_plan_statement(
+                    _admission_list_statement(
+                        policy_id=None,
+                        state="intent",
+                        query=None,
+                        sort="admission_id",
+                        order="asc",
+                    ),
+                    order="asc",
+                ),
+                frozenset({"ix_stove0_admission_candidates_state"}),
                 database="stove0",
             ),
         )

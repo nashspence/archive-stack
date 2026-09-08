@@ -93,6 +93,8 @@ from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
 from stove0_api_client import HealthResponse as Stove0HealthResponse
 from stove0_api_client import Stove0ApiClient
 from stove0_operator_contracts import (
+    AdmissionSort,
+    AdmissionState,
     EvaluationPhase,
     EvaluationSort,
     WorkPhase,
@@ -410,6 +412,7 @@ READ_COLLECTION_OPERATIONS = {
     },
     "stove0": {
         "mutable-browse": {
+            "list_admissions",
             "list_evaluations",
             "list_work",
         },
@@ -535,6 +538,15 @@ PUBLIC_QUERY_SELECTORS = {
         "get_artifact_selection": {"continuation"},
         "get_target_execution_inputs": {"continuation"},
         "get_recipe": {"revision"},
+        "list_admissions": {
+            "order",
+            "page_size",
+            "page_token",
+            "policy_id",
+            "q",
+            "sort",
+            "state",
+        },
         "list_evaluations": {"order", "page_size", "page_token", "phase", "q", "sort"},
         "list_events": {"after", "limit"},
         "list_work": {"order", "page_size", "page_token", "phase", "q", "sort"},
@@ -570,6 +582,9 @@ INLINE_ENUM_QUERY_SELECTOR_TYPES = {
     ("stove0", "list_work", "phase"): WorkPhase,
     ("stove0", "list_work", "sort"): WorkSort,
     ("stove0", "list_work", "order"): Stove0SortOrder,
+    ("stove0", "list_admissions", "state"): AdmissionState,
+    ("stove0", "list_admissions", "sort"): AdmissionSort,
+    ("stove0", "list_admissions", "order"): Stove0SortOrder,
     ("stove0", "list_evaluations", "phase"): EvaluationPhase,
     ("stove0", "list_evaluations", "sort"): EvaluationSort,
     ("stove0", "list_evaluations", "order"): Stove0SortOrder,

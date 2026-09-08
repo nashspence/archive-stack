@@ -30,6 +30,15 @@ def test_scheduler_configuration_does_not_require_operator_api_secret(
 
 def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Path) -> None:
     environment = _environment(tmp_path / "recipes.yaml")
+    admissions = tmp_path / "admissions.json"
+    admissions.write_text(
+        '{"format":"stove0-admissions/v1","policies":[{'
+        '"id":"camera","revision":1,"required_tags":["camera"],'
+        '"recipe_id":"fixture/v1","recipe_revision":1,'
+        '"recipe_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"effective_intent":{}}]}',
+        encoding="utf-8",
+    )
     environment.update(
         {
             "STOVE0_API_TOKEN": "operator-token",
@@ -52,6 +61,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP": "true",
             "STOVE0_TARGET_CALLBACK_SIGNING_KEY": "target-callback-signing-key",
             "STOVE0_TARGET_AUTHORITY_BATCH_SIZE": "17",
+            "STOVE0_ADMISSIONS_PATH": str(admissions),
         }
     )
 
@@ -61,6 +71,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.riverhog_base_url == "https://riverhog.invalid"
     assert config.riverhog_allow_insecure_http is True
     assert config.recipes_path == (tmp_path / "recipes.yaml").resolve()
+    assert config.admissions.policies[0].id == "camera"
     assert config.observers["probe"].base_url == "http://probe:8080"
     assert config.observers["probe"].allow_insecure_http is True
     assert config.observers["probe"].semantic_validator_providers == ("fixture",)

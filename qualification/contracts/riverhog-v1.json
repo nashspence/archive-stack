@@ -284,6 +284,7 @@
         "dependencies": [
           "http-api-contracts",
           "lifecycle-events",
+          "riverhog-protocol",
           "stove0-observer-protocol",
           "stove0-protocol",
           "stove0-recipe-config",
@@ -8205,6 +8206,222 @@
       },
       "stove0": {
         "commands": {
+          "admission": {
+            "commands": {
+              "list": {
+                "name": "list",
+                "parameters": [
+                  {
+                    "count": false,
+                    "default": 25,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "page_size",
+                    "nargs": 1,
+                    "options": [
+                      "--page-size"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.IntRange",
+                      "maximum": 100,
+                      "minimum": 1,
+                      "name": "integer range"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "page_token",
+                    "nargs": 1,
+                    "options": [
+                      "--page-token"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "policy_id",
+                    "nargs": 1,
+                    "options": [
+                      "--policy-id"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "state_filter",
+                    "nargs": 1,
+                    "options": [
+                      "--state"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "query",
+                    "nargs": 1,
+                    "options": [
+                      "--query",
+                      "-q"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": "created_at",
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "sort",
+                    "nargs": 1,
+                    "options": [
+                      "--sort"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  },
+                  {
+                    "count": false,
+                    "default": "desc",
+                    "envvar": null,
+                    "is_flag": false,
+                    "kind": "TyperOption",
+                    "multiple": false,
+                    "name": "order",
+                    "nargs": 1,
+                    "options": [
+                      "--order"
+                    ],
+                    "required": false,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  }
+                ]
+              },
+              "policy": {
+                "commands": {
+                  "backfill": {
+                    "name": "backfill",
+                    "parameters": [
+                      {
+                        "envvar": null,
+                        "kind": "TyperArgument",
+                        "multiple": false,
+                        "name": "policy_id",
+                        "nargs": 1,
+                        "options": [
+                          "policy_id"
+                        ],
+                        "required": true,
+                        "secondary_options": [],
+                        "type": {
+                          "class": "typer._click.types.StringParamType",
+                          "name": "text"
+                        }
+                      }
+                    ]
+                  },
+                  "list": {
+                    "name": "list",
+                    "parameters": []
+                  },
+                  "rebaseline": {
+                    "name": "rebaseline",
+                    "parameters": [
+                      {
+                        "envvar": null,
+                        "kind": "TyperArgument",
+                        "multiple": false,
+                        "name": "policy_id",
+                        "nargs": 1,
+                        "options": [
+                          "policy_id"
+                        ],
+                        "required": true,
+                        "secondary_options": [],
+                        "type": {
+                          "class": "typer._click.types.StringParamType",
+                          "name": "text"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "name": "policy",
+                "parameters": []
+              },
+              "show": {
+                "name": "show",
+                "parameters": [
+                  {
+                    "envvar": null,
+                    "kind": "TyperArgument",
+                    "multiple": false,
+                    "name": "admission_id",
+                    "nargs": 1,
+                    "options": [
+                      "admission_id"
+                    ],
+                    "required": true,
+                    "secondary_options": [],
+                    "type": {
+                      "class": "typer._click.types.StringParamType",
+                      "name": "text"
+                    }
+                  }
+                ]
+              }
+            },
+            "name": "admission",
+            "parameters": []
+          },
           "evaluation": {
             "commands": {
               "cancel": {
@@ -11194,6 +11411,12 @@
       },
       {
         "consumers": [
+          "stove0-server"
+        ],
+        "name": "STOVE0_ADMISSIONS_PATH"
+      },
+      {
+        "consumers": [
           "stove0-api-client"
         ],
         "name": "STOVE0_ALLOW_INSECURE_HTTP"
@@ -11462,7 +11685,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "847e9f1f5e05f16ce67b1123e561f732eb0406fd5a7125abf9b0188f4cad651e"
+            "fe537b3c8b6cbf98ad347fd79d234aa0fe6f6be9ac48cb47b0b5045cfd6df02a"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11489,7 +11712,7 @@
         {
           "distribution": "stove0-server",
           "fixture_sha256s": [
-            "1d958b73fe147ea02aca17695b851b00a15f187593f73c7375199a6770975ea9"
+            "7b48e060290ac4297cdc540ee9a8ae4238a81e6b73c4f3dfbbb7f3a81fda1e57"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11540,8 +11763,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1885,
-        "discovered": 1885,
+        "classified": 1935,
+        "discovered": 1935,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11585,7 +11808,7 @@
           "riverhog-recover": 3,
           "riverhog-server": 34,
           "riverhog-storage-adapter-protocol": 61,
-          "stove0": 361,
+          "stove0": 411,
           "stove0-api-client": 1,
           "stove0-observer-protocol": 76,
           "stove0-recipes": 39,
@@ -11597,11 +11820,11 @@
           "stove0-target-support": 1
         },
         "policies": {
-          "contract_max": 408,
+          "contract_max": 425,
           "extension_owned": 55,
-          "fixed": 870,
-          "operational_policy": 475,
-          "segmented_no_total_max": 77
+          "fixed": 894,
+          "operational_policy": 482,
+          "segmented_no_total_max": 79
         },
         "stale": 0,
         "undecided": 0
@@ -17148,6 +17371,171 @@
         },
         {
           "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:order:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/6",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "value",
+          "id": "cli:stove0:stove0:admission:list:parameter:page_size:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "type.maximum"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/0",
+          "unit": "cli-value"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:page_size:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:page_token:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/1",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:policy_id:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/2",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:query:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/4",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:sort:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/5",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:list:parameter:state_filter:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/list/parameters/3",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:policy:backfill:parameter:policy_id:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/policy/commands/backfill/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:policy:rebaseline:parameter:policy_id:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/policy/commands/rebaseline/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "cli:stove0:stove0:admission:show:parameter:admission_id:values-per-occurrence",
+          "maximum": 1,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-command-argument-arity",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "nargs"
+          },
+          "source_pointer": "/external_contract/cli/stove0/commands/admission/commands/show/parameters/0",
+          "unit": "values-per-occurrence"
+        },
+        {
+          "dimension": "cardinality",
           "id": "cli:stove0:stove0:evaluation:cancel:parameter:evaluation_id:values-per-occurrence",
           "maximum": 1,
           "minimum": 1,
@@ -18487,7 +18875,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/83",
+          "source_pointer": "/external_contract/configuration_environment/84",
           "unit": "configured-value"
         },
         {
@@ -18499,7 +18887,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/85",
+          "source_pointer": "/external_contract/configuration_environment/86",
           "unit": "configured-value"
         },
         {
@@ -18511,7 +18899,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/86",
+          "source_pointer": "/external_contract/configuration_environment/87",
           "unit": "configured-value"
         },
         {
@@ -18523,7 +18911,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/106",
+          "source_pointer": "/external_contract/configuration_environment/107",
           "unit": "configured-value"
         },
         {
@@ -18535,7 +18923,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/109",
+          "source_pointer": "/external_contract/configuration_environment/110",
           "unit": "configured-value"
         },
         {
@@ -18547,7 +18935,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/111",
+          "source_pointer": "/external_contract/configuration_environment/112",
           "unit": "configured-value"
         },
         {
@@ -18559,7 +18947,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/113",
+          "source_pointer": "/external_contract/configuration_environment/114",
           "unit": "configured-value"
         },
         {
@@ -18571,7 +18959,7 @@
           "policy": "operational_policy",
           "reason": "operator-configured-capacity",
           "rule": "configured-capacity/v1",
-          "source_pointer": "/external_contract/configuration_environment/117",
+          "source_pointer": "/external_contract/configuration_environment/118",
           "unit": "configured-value"
         },
         {
@@ -26784,6 +27172,382 @@
           "unit": "characters"
         },
         {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/admission_id:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/admission_id",
+          "unit": "characters"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/effective_intent:map-cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/effective_intent",
+          "unit": "entries"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/policy_id:length",
+          "maximum": 160,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/policy_id",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/policy_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/policy_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/recipe_id:length",
+          "maximum": 160,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/recipe_id",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/recipe_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/recipe_sha256",
+          "unit": "characters"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionIntent/properties/required_tags:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionIntent/properties/required_tags",
+          "unit": "items"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionPage/properties/admissions:cardinality",
+          "owner": "stove0",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "default_page_size": 25,
+            "kind": "mutable-browse",
+            "maximum_page_size": 100,
+            "next_page_token_field": "next_page_token",
+            "page_size_parameter": "page_size",
+            "page_token_parameter": "page_token"
+          },
+          "reason": "bounded-route-page",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/admissions",
+          "unit": "items"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionPage/properties/filters:map-cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/filters",
+          "unit": "entries"
+        },
+        {
+          "dimension": "value",
+          "id": "http:stove0:components:/schemas/AdmissionPage/properties/page_size:value",
+          "maximum": 100.0,
+          "minimum": 1.0,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPage/properties/page_size",
+          "unit": "schema-value"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/effective_intent:map-cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/effective_intent",
+          "unit": "entries"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/recipe_id:length",
+          "maximum": 160,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/recipe_id",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/recipe_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/recipe_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionPolicy/properties/required_tags:cardinality",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "bounded-exact-classification-admission-predicate",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicy/properties/required_tags",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyCatalogView/properties/catalog_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyCatalogView/properties/catalog_sha256",
+          "unit": "characters"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyCatalogView/properties/policies:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyCatalogView/properties/policies",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/authorization_view_identity/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/authorization_view_identity/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/policy_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/policy_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/source_identity/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/source_identity/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionPolicyStatus/properties/updated_at:length",
+          "maximum": 40,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionPolicyStatus/properties/updated_at",
+          "unit": "characters"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionRun/properties/failures:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionRun/properties/failures",
+          "unit": "items"
+        },
+        {
+          "capacity_authority": {
+            "declared_maximum": null,
+            "hidden_maximum": "forbidden",
+            "owner": "stove0"
+          },
+          "dimension": "cardinality",
+          "id": "http:stove0:components:/schemas/AdmissionRun/properties/progressed:cardinality",
+          "maximum": null,
+          "owner": "stove0",
+          "policy": "operational_policy",
+          "reason": "no-declared-semantic-maximum",
+          "rule": "no-semantic-maximum/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionRun/properties/progressed",
+          "unit": "items"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/created_at:length",
+          "maximum": 40,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/created_at",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/preview_sha256/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/preview_sha256/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/updated_at:length",
+          "maximum": 40,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/updated_at",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/work_id/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/work_id/anyOf/0",
+          "unit": "characters"
+        },
+        {
           "capacity_authority": {
             "declared_maximum": null,
             "hidden_maximum": "forbidden",
@@ -27465,6 +28229,116 @@
         },
         {
           "dimension": "length",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/archive_root_sha256:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/archive_root_sha256",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/content_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/content_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/description_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/description_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "value",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/description_revision:value",
+          "maximum": 9007199254740991.0,
+          "minimum": 0.0,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/description_revision",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/revision:length",
+          "maximum": 19,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/revision",
+          "unit": "characters"
+        },
+        {
+          "dimension": "value",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/tag_revision:value",
+          "maximum": 9007199254740991.0,
+          "minimum": 1.0,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/tag_revision",
+          "unit": "schema-value"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CatalogSyncDescriptor/properties/tag_set_identity:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "stove0",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CatalogSyncDescriptor/properties/tag_set_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "encoded-size",
+          "id": "http:stove0:components:/schemas/CollectionDescription:encoded-bytes",
+          "maximum": 32768,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "bounded-human-authored-catalog-description",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "x-riverhog-encoded-bytes-max"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionDescription",
+          "unit": "bytes"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CollectionDescription:length",
+          "maximum": 32768,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionDescription",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
           "id": "http:stove0:components:/schemas/CollectionRootRef/properties/archive_root_sha256:length",
           "maximum": 64,
           "minimum": 64,
@@ -27491,6 +28365,32 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionRootRef/properties/content_identity",
+          "unit": "characters"
+        },
+        {
+          "dimension": "encoded-size",
+          "id": "http:stove0:components:/schemas/CollectionTag:encoded-bytes",
+          "maximum": 65536,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "bounded-human-authored-collection-tag",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "field": "x-riverhog-encoded-bytes-max"
+          },
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionTag",
+          "unit": "bytes"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/CollectionTag:length",
+          "maximum": 65536,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/CollectionTag",
           "unit": "characters"
         },
         {
@@ -31237,6 +32137,36 @@
           "rule": "route-progression/v1",
           "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1target-executions~1{job_id}~1inputs/get",
           "unit": "items"
+        },
+        {
+          "dimension": "logical-result-cardinality",
+          "id": "http:stove0:operation:list_admissions:logical-result",
+          "owner": "stove0",
+          "policy": "segmented_no_total_max",
+          "progression": {
+            "default_page_size": 25,
+            "kind": "mutable-browse",
+            "maximum_page_size": 100,
+            "next_page_token_field": "next_page_token",
+            "page_size_parameter": "page_size",
+            "page_token_parameter": "page_token"
+          },
+          "reason": "bounded-route-progression",
+          "rule": "route-progression/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get",
+          "unit": "items"
+        },
+        {
+          "dimension": "value",
+          "id": "http:stove0:operation:list_admissions:parameter:query:page_size:/:value",
+          "maximum": 100,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/paths/~1v1~1admissions/get/parameters/0/schema",
+          "unit": "schema-value"
         },
         {
           "dimension": "logical-result-cardinality",
@@ -39014,7 +39944,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "69bfef992343f76ff4057094b8c08d87066246cbcaf623d41163a524955c4e70"
+      "sha256": "ed517eb2da011a352a8a0b847e4739773ea2f0de322b7e07989ec0fbdf89a919"
     },
     "http_openapi": {
       "riverhog": {
@@ -67943,6 +68873,436 @@
               "title": "AcceptedTargetJob",
               "type": "object"
             },
+            "AdmissionIntent": {
+              "additionalProperties": false,
+              "properties": {
+                "admission_id": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Admission Id",
+                  "type": "string"
+                },
+                "collection": {
+                  "$ref": "#/components/schemas/CatalogSyncDescriptor"
+                },
+                "effective_intent": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/JsonValue"
+                  },
+                  "title": "Effective Intent",
+                  "type": "object"
+                },
+                "format": {
+                  "const": "stove0-admission-intent/v1",
+                  "default": "stove0-admission-intent/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "policy_id": {
+                  "maxLength": 160,
+                  "minLength": 1,
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "policy_revision": {
+                  "minimum": 1.0,
+                  "title": "Policy Revision",
+                  "type": "integer"
+                },
+                "policy_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Policy Sha256",
+                  "type": "string"
+                },
+                "recipe_id": {
+                  "maxLength": 160,
+                  "minLength": 1,
+                  "title": "Recipe Id",
+                  "type": "string"
+                },
+                "recipe_revision": {
+                  "minimum": 1.0,
+                  "title": "Recipe Revision",
+                  "type": "integer"
+                },
+                "recipe_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Recipe Sha256",
+                  "type": "string"
+                },
+                "required_tags": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionTag"
+                  },
+                  "title": "Required Tags",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "admission_id",
+                "policy_id",
+                "policy_revision",
+                "policy_sha256",
+                "required_tags",
+                "collection",
+                "recipe_id",
+                "recipe_revision",
+                "recipe_sha256",
+                "effective_intent"
+              ],
+              "title": "AdmissionIntent",
+              "type": "object"
+            },
+            "AdmissionPage": {
+              "additionalProperties": false,
+              "properties": {
+                "admissions": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdmissionView"
+                  },
+                  "title": "Admissions",
+                  "type": "array"
+                },
+                "filters": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/JsonValue"
+                  },
+                  "title": "Filters",
+                  "type": "object"
+                },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BrowsePageToken"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "order": {
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ],
+                  "title": "Order",
+                  "type": "string"
+                },
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
+                  "type": "integer"
+                },
+                "policy_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Policy Id"
+                },
+                "sort": {
+                  "enum": [
+                    "created_at",
+                    "updated_at",
+                    "state",
+                    "admission_id"
+                  ],
+                  "title": "Sort",
+                  "type": "string"
+                },
+                "state": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "intent",
+                        "previewed",
+                        "work_bound"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "State"
+                }
+              },
+              "required": [
+                "page_size",
+                "next_page_token",
+                "sort",
+                "order",
+                "filters",
+                "policy_id",
+                "state",
+                "admissions"
+              ],
+              "title": "AdmissionPage",
+              "type": "object"
+            },
+            "AdmissionPolicy": {
+              "additionalProperties": false,
+              "description": "One bounded, exact all-of classification admission rule.",
+              "properties": {
+                "automatic_preview": {
+                  "const": "accept-ready",
+                  "default": "accept-ready",
+                  "title": "Automatic Preview",
+                  "type": "string"
+                },
+                "effective_intent": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/JsonValue"
+                  },
+                  "title": "Effective Intent",
+                  "type": "object"
+                },
+                "format": {
+                  "const": "stove0-admission-policy/v1",
+                  "default": "stove0-admission-policy/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "id": {
+                  "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$",
+                  "title": "Id",
+                  "type": "string"
+                },
+                "recipe_id": {
+                  "maxLength": 160,
+                  "minLength": 1,
+                  "title": "Recipe Id",
+                  "type": "string"
+                },
+                "recipe_revision": {
+                  "minimum": 1.0,
+                  "title": "Recipe Revision",
+                  "type": "integer"
+                },
+                "recipe_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Recipe Sha256",
+                  "type": "string"
+                },
+                "required_tags": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionTag"
+                  },
+                  "maxItems": 100,
+                  "minItems": 1,
+                  "title": "Required Tags",
+                  "type": "array",
+                  "x-riverhog-extent": {
+                    "policy": "contract_max",
+                    "reason": "bounded-exact-classification-admission-predicate"
+                  }
+                },
+                "revision": {
+                  "minimum": 1.0,
+                  "title": "Revision",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "revision",
+                "required_tags",
+                "recipe_id",
+                "recipe_revision",
+                "recipe_sha256"
+              ],
+              "title": "AdmissionPolicy",
+              "type": "object"
+            },
+            "AdmissionPolicyCatalogView": {
+              "additionalProperties": false,
+              "properties": {
+                "catalog_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Catalog Sha256",
+                  "type": "string"
+                },
+                "policies": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdmissionPolicyStatus"
+                  },
+                  "title": "Policies",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "catalog_sha256",
+                "policies"
+              ],
+              "title": "AdmissionPolicyCatalogView",
+              "type": "object"
+            },
+            "AdmissionPolicyStatus": {
+              "additionalProperties": false,
+              "properties": {
+                "authorization_view_identity": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Authorization View Identity"
+                },
+                "baseline_mode": {
+                  "enum": [
+                    "observe",
+                    "backfill"
+                  ],
+                  "title": "Baseline Mode",
+                  "type": "string"
+                },
+                "phase": {
+                  "enum": [
+                    "new",
+                    "baseline",
+                    "following",
+                    "reset_required"
+                  ],
+                  "title": "Phase",
+                  "type": "string"
+                },
+                "policy": {
+                  "$ref": "#/components/schemas/AdmissionPolicy"
+                },
+                "policy_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Policy Sha256",
+                  "type": "string"
+                },
+                "source_identity": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Identity"
+                },
+                "through_revision": {
+                  "pattern": "^(?:0|[1-9][0-9]*)$",
+                  "title": "Through Revision",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "title": "Updated At",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy",
+                "policy_sha256",
+                "phase",
+                "baseline_mode",
+                "through_revision",
+                "updated_at"
+              ],
+              "title": "AdmissionPolicyStatus",
+              "type": "object"
+            },
+            "AdmissionRun": {
+              "additionalProperties": false,
+              "properties": {
+                "failures": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/components/schemas/SchedulerFailure"
+                  },
+                  "title": "Failures",
+                  "type": "array"
+                },
+                "progressed": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Progressed",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "progressed"
+              ],
+              "title": "AdmissionRun",
+              "type": "object"
+            },
+            "AdmissionView": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "title": "Created At",
+                  "type": "string"
+                },
+                "intent": {
+                  "$ref": "#/components/schemas/AdmissionIntent"
+                },
+                "preview_sha256": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Preview Sha256"
+                },
+                "state": {
+                  "enum": [
+                    "intent",
+                    "previewed",
+                    "work_bound"
+                  ],
+                  "title": "State",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "title": "Updated At",
+                  "type": "string"
+                },
+                "work_id": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Work Id"
+                }
+              },
+              "required": [
+                "intent",
+                "state",
+                "created_at",
+                "updated_at"
+              ],
+              "title": "AdmissionView",
+              "type": "object"
+            },
             "ArtifactAssociation": {
               "additionalProperties": false,
               "description": "Associate classified artifacts without assigning device meaning to Stove0.",
@@ -68810,6 +70170,95 @@
               "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
               "type": "string"
             },
+            "CatalogSyncDescriptor": {
+              "additionalProperties": false,
+              "properties": {
+                "archive_root_sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Archive Root Sha256",
+                  "type": "string"
+                },
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "content_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Content Identity",
+                  "type": "string"
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/CollectionDescription"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Description Identity",
+                  "type": "string"
+                },
+                "description_revision": {
+                  "maximum": 9007199254740991.0,
+                  "minimum": 0.0,
+                  "title": "Description Revision",
+                  "type": "integer"
+                },
+                "revision": {
+                  "maxLength": 19,
+                  "minLength": 1,
+                  "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18})$",
+                  "title": "Revision",
+                  "type": "string"
+                },
+                "tag_revision": {
+                  "maximum": 9007199254740991.0,
+                  "minimum": 1.0,
+                  "title": "Tag Revision",
+                  "type": "integer"
+                },
+                "tag_set_identity": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Tag Set Identity",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection_id",
+                "archive_root_sha256",
+                "content_identity",
+                "description",
+                "description_revision",
+                "description_identity",
+                "tag_revision",
+                "tag_set_identity",
+                "revision"
+              ],
+              "title": "CatalogSyncDescriptor",
+              "type": "object"
+            },
+            "CollectionDescription": {
+              "maxLength": 32768,
+              "minLength": 1,
+              "type": "string",
+              "x-riverhog-encoded-bytes-max": 32768,
+              "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-human-authored-catalog-description"
+              },
+              "x-unicode-normalization": "NFC"
+            },
             "CollectionId": {
               "minimum": 1.0,
               "type": "integer"
@@ -68838,6 +70287,17 @@
               ],
               "title": "CollectionRootRef",
               "type": "object"
+            },
+            "CollectionTag": {
+              "maxLength": 65536,
+              "minLength": 1,
+              "type": "string",
+              "x-riverhog-encoded-bytes-max": 65536,
+              "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-human-authored-collection-tag"
+              },
+              "x-unicode-normalization": "NFC"
             },
             "ControllerEvidence": {
               "additionalProperties": false,
@@ -71742,6 +73202,16 @@
             "SchedulerRun": {
               "additionalProperties": false,
               "properties": {
+                "admission": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AdmissionRun"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "pruning": {
                   "anyOf": [
                     {
@@ -74018,6 +75488,525 @@
               "summary": "Run Scheduler Once",
               "tags": [
                 "scheduler"
+              ]
+            }
+          },
+          "/v1/admission-policies": {
+            "get": {
+              "operationId": "list_admission_policies",
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AdmissionPolicyCatalogView"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "List Admission Policies",
+              "tags": [
+                "admissions"
+              ]
+            }
+          },
+          "/v1/admission-policies/{policy_id}:backfill": {
+            "post": {
+              "operationId": "backfill_admission_policy",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "policy_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Policy Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AdmissionPolicyStatus"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Backfill Admission Policy",
+              "tags": [
+                "admissions"
+              ]
+            }
+          },
+          "/v1/admission-policies/{policy_id}:rebaseline": {
+            "post": {
+              "operationId": "rebaseline_admission_policy",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "policy_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Policy Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AdmissionPolicyStatus"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Rebaseline Admission Policy",
+              "tags": [
+                "admissions"
+              ]
+            }
+          },
+          "/v1/admissions": {
+            "get": {
+              "operationId": "list_admissions",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "page_size",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Page Size",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/BrowsePageToken"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "policy_id",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Policy Id"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "state",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "intent",
+                          "previewed",
+                          "work_bound"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "State"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/BrowseQuery"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "default": "created_at",
+                    "enum": [
+                      "created_at",
+                      "updated_at",
+                      "state",
+                      "admission_id"
+                    ],
+                    "title": "Sort",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "default": "desc",
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ],
+                    "title": "Order",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AdmissionPage"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "List Admissions",
+              "tags": [
+                "admissions"
+              ],
+              "x-riverhog-read-collection": {
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
+              }
+            }
+          },
+          "/v1/admissions/{admission_id}": {
+            "get": {
+              "operationId": "get_admission",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "admission_id",
+                  "required": true,
+                  "schema": {
+                    "title": "Admission Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/AdmissionView"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Get Admission",
+              "tags": [
+                "admissions"
               ]
             }
           },
@@ -78495,6 +80484,83 @@
         "method": "POST",
         "operation_id": "run_scheduler",
         "path": "/v1/admin/scheduler/run",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "admission policy list"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "list_admission_policies",
+        "path": "/v1/admission-policies",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "admission policy backfill"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "POST",
+        "operation_id": "backfill_admission_policy",
+        "path": "/v1/admission-policies/{policy_id}:backfill",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "admission policy rebaseline"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "POST",
+        "operation_id": "rebaseline_admission_policy",
+        "path": "/v1/admission-policies/{policy_id}:rebaseline",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "admission list"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "list_admissions",
+        "path": "/v1/admissions",
+        "provider_evidence": null,
+        "read_collection": {
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
+        },
+        "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "admission show"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "get_admission",
+        "path": "/v1/admissions/{admission_id}",
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "operator-projection"
@@ -104055,6 +106121,10 @@
           "Stove0ApiClient": {
             "kind": "class",
             "members": {
+              "backfill_admission_policy": {
+                "kind": "method",
+                "signature": "(self, policy_id: 'str') -> 'AdmissionPolicyStatus'"
+              },
               "cancel_evaluation": {
                 "kind": "method",
                 "signature": "(self, evaluation_id: 'str') -> 'EvaluationView'"
@@ -104074,6 +106144,10 @@
               "create_work": {
                 "kind": "method",
                 "signature": "(self, recipe_id: 'str', inputs: 'Sequence[CollectionRootRef]', *, preview_sha256: 'str', recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkView'"
+              },
+              "get_admission": {
+                "kind": "method",
+                "signature": "(self, admission_id: 'str') -> 'AdmissionView'"
               },
               "get_artifact_selection": {
                 "kind": "method",
@@ -104103,6 +106177,14 @@
                 "kind": "method",
                 "signature": "(self, work_id: 'str') -> 'BranchSetEvaluation'"
               },
+              "list_admission_policies": {
+                "kind": "method",
+                "signature": "(self) -> 'AdmissionPolicyCatalogView'"
+              },
+              "list_admissions": {
+                "kind": "method",
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, policy_id: 'str | None' = None, state: 'AdmissionState | None' = None, query: 'str | None' = None, sort: 'AdmissionSort' = 'created_at', order: 'SortOrder' = 'desc') -> 'AdmissionPage'"
+              },
               "list_evaluations": {
                 "kind": "method",
                 "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: 'EvaluationSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'EvaluationPage'"
@@ -104122,6 +106204,10 @@
               "preview_workflow": {
                 "kind": "method",
                 "signature": "(self, recipe_id: 'str', inputs: 'Sequence[CollectionRootRef]', *, recipe_revision: 'int | None' = None, effective_intent: 'Mapping[str, Any] | None' = None) -> 'WorkflowPreview'"
+              },
+              "rebaseline_admission_policy": {
+                "kind": "method",
+                "signature": "(self, policy_id: 'str') -> 'AdmissionPolicyStatus'"
               },
               "retry_evaluation_variant": {
                 "kind": "method",
@@ -104755,6 +106841,104 @@
       {
         "distribution": "stove0-operator-contracts",
         "exports": {
+          "ADMISSION_POLICY_COUNT_MAX": {
+            "kind": "constant",
+            "value": 100
+          },
+          "AdmissionCatalog": {
+            "kind": "class",
+            "members": {
+              "canonical_policies": {
+                "kind": "classmethod",
+                "signature": "(cls, value: 'tuple[AdmissionPolicy, ...]') -> 'tuple[AdmissionPolicy, ...]'"
+              },
+              "catalog_sha256": {
+                "kind": "property",
+                "signature": "(self) -> 'str'"
+              }
+            },
+            "schema_sha256": "00ecac8a3c71b27fc2027d9df838959cdfe480be931fd7518ea0f785f84b01c0",
+            "signature": "(*, format: Literal['stove0-admissions/v1'] = 'stove0-admissions/v1', policies: Annotated[tuple[stove0_operator_contracts.AdmissionPolicy, ...], MaxLen(max_length=100)] = ()) -> None"
+          },
+          "AdmissionIntent": {
+            "kind": "class",
+            "members": {
+              "exact_identity": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              },
+              "seal": {
+                "kind": "classmethod",
+                "signature": "(cls, *, policy: 'AdmissionPolicy', collection: 'CatalogSyncDescriptor') -> 'AdmissionIntent'"
+              }
+            },
+            "schema_sha256": "7a441cd9649c0ef9f6bb98d6e3d7ad782e0452a42d48382efff22f61ca6a3078",
+            "signature": "(*, format: Literal['stove0-admission-intent/v1'] = 'stove0-admission-intent/v1', admission_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], policy_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], policy_revision: Annotated[int, Ge(ge=1)], policy_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], required_tags: tuple[CollectionTag, ...], collection: riverhog_protocol.catalog_sync.CatalogSyncDescriptor, recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int, Ge(ge=1)], recipe_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], effective_intent: dict[str, JsonValue]) -> None"
+          },
+          "AdmissionPage": {
+            "kind": "class",
+            "schema_sha256": "243710480b17d211cb8752d0ba63cf28aaa4dc64ace63d1585fb7e5f9ea83146",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: Literal['created_at', 'updated_at', 'state', 'admission_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], policy_id: str | None, state: Optional[Literal['intent', 'previewed', 'work_bound']], admissions: tuple[stove0_operator_contracts.AdmissionView, ...]) -> None"
+          },
+          "AdmissionPhase": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "AdmissionPolicy": {
+            "kind": "class",
+            "members": {
+              "canonical_required_tags": {
+                "kind": "classmethod",
+                "signature": "(cls, value: 'tuple[CollectionTag, ...]') -> 'tuple[CollectionTag, ...]'"
+              },
+              "policy_sha256": {
+                "kind": "property",
+                "signature": "(self) -> 'str'"
+              }
+            },
+            "schema_sha256": "5751b77c2fcfd5f1f89e28c406af3c3c97713360ffb17dbcfaa02a2c2f414907",
+            "signature": "(*, format: Literal['stove0-admission-policy/v1'] = 'stove0-admission-policy/v1', id: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$')], revision: Annotated[int, Ge(ge=1)], required_tags: Annotated[tuple[CollectionTag, ...], MinLen(min_length=1), MaxLen(max_length=100)], recipe_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], recipe_revision: Annotated[int, Ge(ge=1)], recipe_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], effective_intent: dict[str, JsonValue] = <factory>, automatic_preview: Literal['accept-ready'] = 'accept-ready') -> None"
+          },
+          "AdmissionPolicyCatalogView": {
+            "kind": "class",
+            "schema_sha256": "ec3d8568a5b10756746eae442f63e658e3f9aff83a690be9759d4d7ef30748d3",
+            "signature": "(*, catalog_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], policies: tuple[stove0_operator_contracts.AdmissionPolicyStatus, ...]) -> None"
+          },
+          "AdmissionPolicyStatus": {
+            "kind": "class",
+            "members": {
+              "exact_policy": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "5f0c6158276ff3ee0f2695bf26ec3c7aa12e1b9341146ab950503d5efdf49ada",
+            "signature": "(*, policy: stove0_operator_contracts.AdmissionPolicy, policy_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], phase: Literal['new', 'baseline', 'following', 'reset_required'], source_identity: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, authorization_view_identity: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, baseline_mode: Literal['observe', 'backfill'], through_revision: Annotated[str, _PydanticGeneralMetadata(pattern='^(?:0|[1-9][0-9]*)$')], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)]) -> None"
+          },
+          "AdmissionRun": {
+            "kind": "class",
+            "schema_sha256": "6025bbb477e8e9a478cc47dd8e7d4a3d3ff478a918d32d17a35ba24e2a32a9e8",
+            "signature": "(*, progressed: tuple[str, ...], failures: tuple[stove0_operator_contracts.SchedulerFailure, ...] = ()) -> None"
+          },
+          "AdmissionSort": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "AdmissionState": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "AdmissionView": {
+            "kind": "class",
+            "members": {
+              "exact_stage": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "48c068ce3561df3435f428633b6654b77c172778b495883b3bbadec016db29a4",
+            "signature": "(*, intent: stove0_operator_contracts.AdmissionIntent, state: Literal['intent', 'previewed', 'work_bound'], preview_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, work_id: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, created_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)]) -> None"
+          },
           "ArtifactSelectionPage": {
             "kind": "class",
             "members": {
@@ -104946,8 +107130,8 @@
           },
           "SchedulerRun": {
             "kind": "class",
-            "schema_sha256": "2dc7f56485db2e9ef9ca0e2d3cc07726cdc00b8a1f076903dcff19dad96b56a3",
-            "signature": "(*, pruning: stove0_operator_contracts.SchedulerPruning | None, work: stove0_operator_contracts.SchedulerWorkBatch) -> None"
+            "schema_sha256": "fee1ffcab5fa9cfca8ccd9dbcdb1291b4545b6a161c886b5f6b8402be1501bb2",
+            "signature": "(*, pruning: stove0_operator_contracts.SchedulerPruning | None, admission: stove0_operator_contracts.AdmissionRun | None = None, work: stove0_operator_contracts.SchedulerWorkBatch) -> None"
           },
           "SchedulerRunIn": {
             "kind": "class",

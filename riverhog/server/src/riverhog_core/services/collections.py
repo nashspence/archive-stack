@@ -14,7 +14,7 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, text_search_key
-from sqlalchemy import asc, desc, exists, func, or_, select
+from sqlalchemy import asc, desc, exists, func, select, union_all
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
@@ -386,31 +386,24 @@ def _collection_list_filters(
     ]
     if q is not None:
         pattern = _like_pattern(text_search_key(q))
-        matching_ids = select(CollectionRecord.id).where(
-            or_(
-                CollectionRecord.search_text.like(pattern, escape="\\"),
-                CollectionRecord.description_search.like(pattern, escape="\\"),
-                exists(
-                    select(1)
-                    .select_from(CollectionTagMembershipRecord)
-                    .join(
-                        CollectionTagRecord,
-                        CollectionTagRecord.tag_sha256 == CollectionTagMembershipRecord.tag_sha256,
-                    )
-                    .where(
-                        CollectionTagMembershipRecord.collection_id == CollectionRecord.id,
-                        CollectionTagRecord.search_text.like(pattern, escape="\\"),
-                    )
-                ),
-                exists(
-                    select(1).where(
-                        CollectionFileRecord.collection_id == CollectionRecord.id,
-                        CollectionFileRecord.path_search_text.like(pattern, escape="\\"),
-                    )
-                ),
+        matching_ids = union_all(
+            select(CollectionRecord.id.label("collection_id")).where(
+                CollectionRecord.search_text.like(pattern, escape="\\")
+            ),
+            select(CollectionRecord.id.label("collection_id")).where(
+                CollectionRecord.description_search.like(pattern, escape="\\")
+            ),
+            select(CollectionTagMembershipRecord.collection_id.label("collection_id"))
+            .join(
+                CollectionTagRecord,
+                CollectionTagRecord.tag_sha256 == CollectionTagMembershipRecord.tag_sha256,
             )
-        )
-        filters.append(CollectionRecord.id.in_(matching_ids))
+            .where(CollectionTagRecord.search_text.like(pattern, escape="\\")),
+            select(CollectionFileRecord.collection_id.label("collection_id")).where(
+                CollectionFileRecord.path_search_text.like(pattern, escape="\\")
+            ),
+        ).subquery()
+        filters.append(CollectionRecord.id.in_(select(matching_ids.c.collection_id)))
     if normalized_format is not None:
         filters.append(CollectionRecord.encryption_format == normalized_format)
     if normalized_passphrase_id is not None:

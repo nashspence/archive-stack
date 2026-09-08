@@ -24,12 +24,16 @@ evaluation_app = typer.Typer(help="Materialized trials and evaluations.")
 event_app = typer.Typer(help="Lifecycle events.")
 scheduler_app = typer.Typer(help="Scheduler status and execution.")
 selection_app = typer.Typer(help="Exact content-addressed artifact selections.")
+admission_app = typer.Typer(help="Classification admission decisions.")
+admission_policy_app = typer.Typer(help="Configured classification admission policies.")
 app.add_typer(work_app, name="work")
 app.add_typer(recipe_app, name="recipe")
 app.add_typer(evaluation_app, name="evaluation")
 app.add_typer(event_app, name="event")
 app.add_typer(scheduler_app, name="scheduler")
 app.add_typer(selection_app, name="selection")
+app.add_typer(admission_app, name="admission")
+admission_app.add_typer(admission_policy_app, name="policy")
 console = Console()
 
 
@@ -98,6 +102,61 @@ def show_recipe(
 ) -> None:
     state = _context(context)
     _call(state, lambda: state.client.get_recipe(recipe_id, revision=revision))
+
+
+@admission_policy_app.command("list")
+def list_admission_policies(context: typer.Context) -> None:
+    state = _context(context)
+    _call(
+        state,
+        state.client.list_admission_policies,
+        table=("policies", ("id", "revision", "phase", "required_tags", "recipe_id")),
+    )
+
+
+@admission_policy_app.command("rebaseline")
+def rebaseline_admission_policy(context: typer.Context, policy_id: str) -> None:
+    state = _context(context)
+    _call(state, lambda: state.client.rebaseline_admission_policy(policy_id))
+
+
+@admission_policy_app.command("backfill")
+def backfill_admission_policy(context: typer.Context, policy_id: str) -> None:
+    state = _context(context)
+    _call(state, lambda: state.client.backfill_admission_policy(policy_id))
+
+
+@admission_app.command("list")
+def list_admissions(
+    context: typer.Context,
+    page_size: int = typer.Option(25, min=1, max=100),
+    page_token: str | None = typer.Option(None),
+    policy_id: str | None = typer.Option(None),
+    state_filter: str | None = typer.Option(None, "--state"),
+    query: str | None = typer.Option(None, "--query", "-q"),
+    sort: str = typer.Option("created_at"),
+    order: str = typer.Option("desc"),
+) -> None:
+    state = _context(context)
+    _call(
+        state,
+        lambda: state.client.list_admissions(
+            page_size=page_size,
+            page_token=page_token,
+            policy_id=policy_id,
+            state=cast(Any, state_filter),
+            query=query,
+            sort=cast(Any, sort),
+            order=cast(Any, order),
+        ),
+        table=("admissions", ("admission_id", "policy_id", "collection_id", "state", "work_id")),
+    )
+
+
+@admission_app.command("show")
+def show_admission(context: typer.Context, admission_id: str) -> None:
+    state = _context(context)
+    _call(state, lambda: state.client.get_admission(admission_id))
 
 
 @recipe_app.command("validate")
@@ -443,6 +502,21 @@ def _table_value(item: dict[str, Any], column: str) -> str:
     definition = item.get("definition")
     if isinstance(definition, dict) and column in {"id", "revision"}:
         return str(definition.get(column, ""))
+    policy = item.get("policy")
+    if isinstance(policy, dict) and column in {
+        "id",
+        "revision",
+        "required_tags",
+        "recipe_id",
+    }:
+        return str(policy.get(column, ""))
+    intent = item.get("intent")
+    if isinstance(intent, dict) and column in {"admission_id", "policy_id"}:
+        return str(intent.get(column, ""))
+    if isinstance(intent, dict) and column == "collection_id":
+        collection = intent.get("collection")
+        if isinstance(collection, dict):
+            return str(collection.get("collection_id", ""))
     status = item.get("target_status")
     workflow = item.get("workflow_plan")
     branch_set = item.get("branch_set_plan")

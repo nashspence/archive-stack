@@ -414,8 +414,8 @@ class CollectionTagMutationRecord(Base):
             name="ck_collection_tag_mutations_expected_revision",
         ),
         CheckConstraint(
-            "(changed AND result_revision = expected_revision + 1) OR "
-            "(NOT changed AND result_revision = expected_revision)",
+            "changed AND result_revision = expected_revision + 1 OR "
+            "NOT changed AND result_revision = expected_revision",
             name="ck_collection_tag_mutations_result_revision",
         ),
         CheckConstraint(

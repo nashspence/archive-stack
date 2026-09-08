@@ -110,7 +110,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "riverhog-ftp-adapter",
         "stove0",
     }
-    assert len(external["operations"]) == 142
+    assert len(external["operations"]) == 147
     assert any(
         operation["operation_id"] == "replace_collection_description"
         and operation["classification"] == "human-cli+json"
@@ -131,7 +131,7 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
     assert trace["coverage"]["source_kinds"] == {
         "cli": 5,
         "configuration": 6,
-        "configuration-environment": 120,
+        "configuration-environment": 121,
         "openapi": 3,
         "protocol": 35,
         "python": 25,

@@ -11,6 +11,7 @@ x-stove0-environment: &stove0-environment
   TZ: ${TZ:-UTC}
   STOVE0_DATABASE_URL_FILE: /run/secrets/stove0_database_url
   STOVE0_RECIPES_PATH: /etc/stove0/recipes.yaml
+  STOVE0_ADMISSIONS_PATH: /etc/stove0/admissions.json
   STOVE0_WORKSPACE_ASSURANCE: ephemeral
   STOVE0_CLAIM_LEASE_SECONDS: ${STOVE0_CLAIM_LEASE_SECONDS:-1800}
   STOVE0_CAPABILITY_TTL_SECONDS: ${STOVE0_CAPABILITY_TTL_SECONDS:-900}
@@ -46,6 +47,10 @@ x-stove0-common: &stove0-common
     - type: bind
       source: ${STOVE0_RECIPES_HOST_PATH:?STOVE0_RECIPES_HOST_PATH is required}
       target: /etc/stove0/recipes.yaml
+      read_only: true
+    - type: bind
+      source: ${STOVE0_ADMISSIONS_HOST_PATH:?STOVE0_ADMISSIONS_HOST_PATH is required}
+      target: /etc/stove0/admissions.json
       read_only: true
   tmpfs:
     - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532

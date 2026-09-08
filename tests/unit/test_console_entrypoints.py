@@ -54,12 +54,14 @@ PAGED_LIST_COMMANDS = (
     ("riverhog", "local", "list", "--help"),
     ("stove0", "work", "list", "--help"),
     ("stove0", "evaluation", "list", "--help"),
+    ("stove0", "admission", "list", "--help"),
 )
 
 BOUNDED_LIST_COMMANDS = (
     ("riverhog", "collection", "tag", "list", "--help"),
     ("riverhog", "local", "provenance-observer", "list", "--help"),
     ("stove0", "recipe", "list", "--help"),
+    ("stove0", "admission", "policy", "list", "--help"),
 )
 
 QUERY_PAGED_LIST_COMMANDS = (("riverhog", "tag", "list", "--help"),)

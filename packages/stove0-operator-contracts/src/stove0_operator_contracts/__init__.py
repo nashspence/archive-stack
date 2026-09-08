@@ -16,6 +16,11 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from riverhog_protocol import (
+    COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+    CatalogSyncDescriptor,
+    CollectionTag,
+)
 from stove0_observer_protocol import ObservationRequest, ObservationResult
 from stove0_protocol import (
     ArtifactSelectionPage,
@@ -29,6 +34,7 @@ from stove0_protocol import (
     Sha256,
     WorkflowPlan,
     WorkIdentity,
+    canonical_json_sha256,
 )
 from stove0_recipe_config import RecipeDefinition
 from stove0_target_protocol import (
@@ -78,6 +84,209 @@ SortOrder = Literal["asc", "desc"]
 WorkSort = Literal["updated_at", "phase", "work_id"]
 EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
 SchedulerRole = Literal["controller", "worker", "combined"]
+AdmissionPhase = Literal["new", "baseline", "following", "reset_required"]
+AdmissionState = Literal["intent", "previewed", "work_bound"]
+AdmissionSort = Literal["created_at", "updated_at", "state", "admission_id"]
+ADMISSION_POLICY_COUNT_MAX = 100
+
+
+class OperatorModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class AdmissionPolicy(OperatorModel):
+    """One bounded, exact all-of classification admission rule."""
+
+    format: Literal["stove0-admission-policy/v1"] = "stove0-admission-policy/v1"
+    id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$")
+    revision: int = Field(ge=1)
+    required_tags: tuple[CollectionTag, ...] = Field(
+        min_length=1,
+        max_length=COLLECTION_TAG_REQUEST_MEMBERS_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-exact-classification-admission-predicate",
+            }
+        },
+    )
+    recipe_id: str = Field(min_length=1, max_length=160)
+    recipe_revision: int = Field(ge=1)
+    recipe_sha256: Sha256
+    effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
+    automatic_preview: Literal["accept-ready"] = "accept-ready"
+
+    @field_validator("required_tags")
+    @classmethod
+    def canonical_required_tags(cls, value: tuple[CollectionTag, ...]) -> tuple[CollectionTag, ...]:
+        ordered = tuple(sorted(value, key=lambda tag: tag.encode("utf-8")))
+        if value != ordered or len(value) != len(set(value)):
+            raise ValueError("required admission tags must be unique and canonically ordered")
+        return value
+
+    @property
+    def policy_sha256(self) -> str:
+        return canonical_json_sha256(self.model_dump(mode="json"))
+
+
+class AdmissionCatalog(OperatorModel):
+    format: Literal["stove0-admissions/v1"] = "stove0-admissions/v1"
+    policies: tuple[AdmissionPolicy, ...] = Field(
+        default=(),
+        max_length=ADMISSION_POLICY_COUNT_MAX,
+        json_schema_extra={
+            "x-riverhog-extent": {
+                "policy": "contract_max",
+                "reason": "bounded-deployment-admission-catalog",
+            }
+        },
+    )
+
+    @field_validator("policies")
+    @classmethod
+    def canonical_policies(cls, value: tuple[AdmissionPolicy, ...]) -> tuple[AdmissionPolicy, ...]:
+        if value != tuple(sorted(value, key=lambda policy: policy.id)):
+            raise ValueError("admission policies must be ordered by ID")
+        if len(value) != len({policy.id for policy in value}):
+            raise ValueError("admission policy IDs must be unique")
+        return value
+
+    @property
+    def catalog_sha256(self) -> str:
+        return canonical_json_sha256(self.model_dump(mode="json"))
+
+
+class AdmissionPolicyStatus(OperatorModel):
+    policy: AdmissionPolicy
+    policy_sha256: Sha256
+    phase: AdmissionPhase
+    source_identity: Sha256 | None = None
+    authorization_view_identity: Sha256 | None = None
+    baseline_mode: Literal["observe", "backfill"]
+    through_revision: str = Field(pattern=r"^(?:0|[1-9][0-9]*)$")
+    updated_at: str = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def exact_policy(self) -> Self:
+        if self.policy_sha256 != self.policy.policy_sha256:
+            raise ValueError("admission status differs from its policy identity")
+        return self
+
+
+class AdmissionPolicyCatalogView(OperatorModel):
+    catalog_sha256: Sha256
+    policies: tuple[AdmissionPolicyStatus, ...]
+
+
+class AdmissionIntent(OperatorModel):
+    format: Literal["stove0-admission-intent/v1"] = "stove0-admission-intent/v1"
+    admission_id: Sha256
+    policy_id: str = Field(min_length=1, max_length=160)
+    policy_revision: int = Field(ge=1)
+    policy_sha256: Sha256
+    required_tags: tuple[CollectionTag, ...]
+    collection: CatalogSyncDescriptor
+    recipe_id: str = Field(min_length=1, max_length=160)
+    recipe_revision: int = Field(ge=1)
+    recipe_sha256: Sha256
+    effective_intent: dict[str, JsonValue]
+
+    @classmethod
+    def seal(
+        cls,
+        *,
+        policy: AdmissionPolicy,
+        collection: CatalogSyncDescriptor,
+    ) -> AdmissionIntent:
+        canonical_collection = CatalogSyncDescriptor.model_validate(
+            collection.model_dump(
+                mode="json",
+                include=set(CatalogSyncDescriptor.model_fields),
+            )
+        )
+        payload = {
+            "format": "stove0-admission-intent/v1",
+            "policy_id": policy.id,
+            "policy_revision": policy.revision,
+            "policy_sha256": policy.policy_sha256,
+            "required_tags": list(policy.required_tags),
+            "collection": canonical_collection.model_dump(mode="json"),
+            "recipe_id": policy.recipe_id,
+            "recipe_revision": policy.recipe_revision,
+            "recipe_sha256": policy.recipe_sha256,
+            "effective_intent": policy.effective_intent,
+        }
+        identity = canonical_json_sha256(payload)
+        return cls(
+            admission_id=identity,
+            policy_id=policy.id,
+            policy_revision=policy.revision,
+            policy_sha256=policy.policy_sha256,
+            required_tags=policy.required_tags,
+            collection=canonical_collection,
+            recipe_id=policy.recipe_id,
+            recipe_revision=policy.recipe_revision,
+            recipe_sha256=policy.recipe_sha256,
+            effective_intent=policy.effective_intent,
+        )
+
+    @model_validator(mode="after")
+    def exact_identity(self) -> Self:
+        policy = AdmissionPolicy(
+            id=self.policy_id,
+            revision=self.policy_revision,
+            required_tags=self.required_tags,
+            recipe_id=self.recipe_id,
+            recipe_revision=self.recipe_revision,
+            recipe_sha256=self.recipe_sha256,
+            effective_intent=self.effective_intent,
+        )
+        payload = {
+            "format": self.format,
+            "policy_id": self.policy_id,
+            "policy_revision": self.policy_revision,
+            "policy_sha256": self.policy_sha256,
+            "required_tags": list(self.required_tags),
+            "collection": self.collection.model_dump(mode="json"),
+            "recipe_id": self.recipe_id,
+            "recipe_revision": self.recipe_revision,
+            "recipe_sha256": self.recipe_sha256,
+            "effective_intent": self.effective_intent,
+        }
+        expected_id = canonical_json_sha256(payload)
+        if expected_id != self.admission_id or policy.policy_sha256 != self.policy_sha256:
+            raise ValueError("admission intent identity is not canonical")
+        return self
+
+
+class AdmissionView(OperatorModel):
+    intent: AdmissionIntent
+    state: AdmissionState
+    preview_sha256: Sha256 | None = None
+    work_id: Sha256 | None = None
+    created_at: str = Field(min_length=1, max_length=40)
+    updated_at: str = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def exact_stage(self) -> Self:
+        if self.state == "intent" and (self.preview_sha256 is not None or self.work_id is not None):
+            raise ValueError("unpreviewed admission cannot contain later-stage identities")
+        if self.state == "previewed" and (self.preview_sha256 is None or self.work_id is not None):
+            raise ValueError("previewed admission has invalid stage identities")
+        if self.state == "work_bound" and (self.preview_sha256 is None or self.work_id is None):
+            raise ValueError("work-bound admission requires preview and work identities")
+        return self
+
+
+class AdmissionPage(OperatorModel):
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: BrowsePageToken | None
+    sort: AdmissionSort
+    order: SortOrder
+    filters: dict[str, JsonValue]
+    policy_id: str | None
+    state: AdmissionState | None
+    admissions: tuple[AdmissionView, ...]
 
 
 def validate_work_state_shape(
@@ -215,10 +424,6 @@ def validate_evaluation_state_shape(
         raise ValueError("evaluation reviews must be unique and ordered by variant ID")
     if not set(review_ids).issubset({item.variant_id for item in children}):  # type: ignore[attr-defined]
         raise ValueError("evaluation review names an unknown variant")
-
-
-class OperatorModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class WorkflowPreviewIn(OperatorModel):
@@ -661,6 +866,11 @@ class SchedulerFailure(OperatorModel):
         return self
 
 
+class AdmissionRun(OperatorModel):
+    progressed: tuple[str, ...]
+    failures: tuple[SchedulerFailure, ...] = ()
+
+
 class SchedulerWorkBatch(OperatorModel):
     role: SchedulerRole
     cursor: str
@@ -682,6 +892,7 @@ class SchedulerPruning(OperatorModel):
 
 class SchedulerRun(OperatorModel):
     pruning: SchedulerPruning | None
+    admission: AdmissionRun | None = None
     work: SchedulerWorkBatch
 
 
@@ -692,6 +903,18 @@ def _payload(value: BaseModel | Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "ADMISSION_POLICY_COUNT_MAX",
+    "AdmissionCatalog",
+    "AdmissionIntent",
+    "AdmissionPage",
+    "AdmissionPhase",
+    "AdmissionPolicy",
+    "AdmissionPolicyCatalogView",
+    "AdmissionPolicyStatus",
+    "AdmissionRun",
+    "AdmissionSort",
+    "AdmissionState",
+    "AdmissionView",
     "ArtifactSelectionPage",
     "BRANCH_SET_ADMITTED",
     "BranchSetAdmittedEvent",

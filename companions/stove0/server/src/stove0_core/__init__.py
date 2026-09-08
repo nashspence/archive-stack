@@ -1,3 +1,4 @@
+from stove0_core.admission import ClassificationAdmissionService
 from stove0_core.coordination import CoordinationProjection, project_coordination
 from stove0_core.coordinator import (
     HttpObserverPort,
@@ -58,6 +59,7 @@ from stove0_core.work_state import (
 __all__ = [
     "AbandonOutcome",
     "ClaimBinding",
+    "ClassificationAdmissionService",
     "ConcurrentEvaluationUpdate",
     "ConcurrentWorkUpdate",
     "CoordinationProjection",
