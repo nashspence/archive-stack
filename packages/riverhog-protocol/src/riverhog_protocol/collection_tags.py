@@ -516,11 +516,11 @@ class CollectionTagSet:
             current = edge.digest
             expected_label = label
 
-    def iter_tags(self, *, start_after: str | None = None) -> Iterator[str]:
+    def iter_tags(self, *, start_after_sha256: str | None = None) -> Iterator[str]:
         start = None
-        if start_after is not None:
-            start_tag = validate_collection_tag(start_after).encode("utf-8")
-            start = (hashlib.sha256(start_tag).digest(), start_tag)
+        if start_after_sha256 is not None:
+            _validate_sha256(start_after_sha256, label="tag page position")
+            start = bytes.fromhex(start_after_sha256)
         if self.root.root_sha256 is None:
             return
         stack: list[tuple[bool, str, bytes, int | None]] = [
@@ -541,8 +541,18 @@ class CollectionTagSet:
             full = base + node.prefix
             if len(full) > hashlib.sha256().digest_size:
                 raise CollectionTagIntegrityError("tag tree path exceeds SHA-256")
+            if start is not None and full < start[: len(full)]:
+                active.remove(digest)
+                continue
             stack.append((False, digest, base, expected_label))
             for child in reversed(node.children):
+                if (
+                    start is not None
+                    and full == start[: len(full)]
+                    and len(full) < len(start)
+                    and child.label < start[len(full)]
+                ):
+                    continue
                 stack.append((True, child.digest, full, child.label))
             if node.tag is not None:
                 if len(full) != hashlib.sha256().digest_size:
@@ -557,7 +567,7 @@ class CollectionTagSet:
                     raise CollectionTagIntegrityError("tag bytes are not canonical") from exc
                 if hashlib.sha256(node.tag).digest() != full:
                     raise CollectionTagIntegrityError("tag value differs from its SHA-256 path")
-                if start is None or (full, node.tag) > start:
+                if start is None or full > start:
                     yield tag
 
 

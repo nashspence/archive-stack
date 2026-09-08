@@ -66,6 +66,8 @@ CREATE TABLE catalog_events (
 	description_identity VARCHAR(64) NOT NULL,
 	tag_revision BIGINT NOT NULL,
 	tag_set_identity VARCHAR(64) NOT NULL,
+	before_tag_revision BIGINT,
+	after_tag_revision BIGINT,
 	committed_at VARCHAR,
 	published BOOLEAN DEFAULT true NOT NULL,
 	PRIMARY KEY (sequence),
@@ -73,6 +75,8 @@ CREATE TABLE catalog_events (
 	CONSTRAINT ck_catalog_events_description_bytes CHECK (description IS NULL OR octet_length(description) <= 32768),
 	CONSTRAINT ck_catalog_events_description_revision CHECK (description_revision >= 0 AND description_revision <= 9007199254740991),
 	CONSTRAINT ck_catalog_events_tag_revision CHECK (tag_revision >= 1 AND tag_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_before_tag_revision CHECK (before_tag_revision IS NULL OR before_tag_revision >= 1 AND before_tag_revision <= 9007199254740991),
+	CONSTRAINT ck_catalog_events_after_tag_revision CHECK (after_tag_revision IS NULL OR after_tag_revision >= 1 AND after_tag_revision <= 9007199254740991),
 	CONSTRAINT ck_catalog_events_tag_set_identity CHECK (length(tag_set_identity) = 64 AND lower(tag_set_identity) = tag_set_identity AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_set_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
 	UNIQUE (revision),
 	CONSTRAINT ck_catalog_events_inventory_identity_hex CHECK (length(inventory_identity) = 64 AND lower(inventory_identity) = inventory_identity AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(inventory_identity, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = ''),
@@ -122,6 +126,20 @@ CREATE TABLE collection_tag_nodes (
 	CONSTRAINT ck_collection_tag_nodes_bytes CHECK (length(encoded) > 0 AND length(encoded) <= 131072),
 	CONSTRAINT ck_collection_tag_nodes_digest_hex CHECK (length(digest) = 64 AND lower(digest) = digest AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(digest, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 );
+
+CREATE TABLE collection_tag_visibility (
+	collection_id BIGINT NOT NULL,
+	tag_sha256 VARCHAR(64) NOT NULL,
+	start_revision BIGINT NOT NULL,
+	end_revision BIGINT,
+	PRIMARY KEY (collection_id, tag_sha256, start_revision),
+	CONSTRAINT ck_collection_tag_visibility_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
+	CONSTRAINT ck_collection_tag_visibility_start CHECK (start_revision >= 1 AND start_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_visibility_end CHECK (end_revision IS NULL OR end_revision > start_revision AND end_revision <= 9007199254740991),
+	CONSTRAINT ck_collection_tag_visibility_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+);
+
+CREATE INDEX ix_collection_tag_visibility_lookup ON collection_tag_visibility (collection_id, tag_sha256, start_revision, end_revision);
 
 CREATE TABLE collection_tags (
 	tag_sha256 VARCHAR(64) NOT NULL,
@@ -478,19 +496,6 @@ CREATE TABLE archive_download_reservations (
 );
 
 CREATE INDEX ix_archive_download_reservations_expiry ON archive_download_reservations (store, expires_at);
-
-CREATE TABLE catalog_event_tags (
-	sequence BIGINT NOT NULL,
-	phase VARCHAR NOT NULL,
-	tag_sha256 VARCHAR(64) NOT NULL,
-	PRIMARY KEY (sequence, phase, tag_sha256),
-	FOREIGN KEY(sequence) REFERENCES catalog_events (sequence) ON DELETE CASCADE,
-	CONSTRAINT ck_catalog_event_tags_phase CHECK (phase IN ('before', 'after')),
-	CONSTRAINT ck_catalog_event_tags_sha256 CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND length(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '')) = 0),
-	CONSTRAINT ck_catalog_event_tags_tag_sha256_hex CHECK (length(tag_sha256) = 64 AND lower(tag_sha256) = tag_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(tag_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
-);
-
-CREATE INDEX ix_catalog_event_tags_visibility ON catalog_event_tags (phase, tag_sha256, sequence);
 
 CREATE TABLE collection_archive_copies (
 	collection_id BIGINT NOT NULL,

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Any, Literal, cast
 
 from riverhog_api_client import ApiClient
@@ -35,7 +37,7 @@ from stove0_operator_contracts import (
     SortOrder,
 )
 from stove0_protocol import CollectionRootRef, WorkflowPreview
-from time_formats import utc_timestamp_now
+from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
 from stove0_core.coordinator import Stove0Coordinator
 from stove0_core.persistence import (
@@ -43,6 +45,7 @@ from stove0_core.persistence import (
     _admission_list_statement,
     _AdmissionCandidateRow,
     _AdmissionMatchRow,
+    _AdmissionObservedRevisionRow,
     _AdmissionPolicyRow,
     _keyset_statement,
 )
@@ -50,6 +53,7 @@ from stove0_core.preview import WorkflowPreviewService
 from stove0_core.recipes import RecipePlanner
 
 _POLICY_SCAN_CURSOR = "stove0:classification-admission-policy-scan/v1"
+_ADMISSION_LANE_CURSOR = "stove0:classification-admission-lane/v1"
 _RESET_ERRORS = frozenset(
     {
         "catalog_sync_cursor_expired",
@@ -95,54 +99,86 @@ class ClassificationAdmissionService:
             raise ValueError("classification admission limit is outside the v1 bound")
         progressed: list[str] = []
         failures: list[SchedulerFailure] = []
-        remaining = limit
-
-        candidates = self._pending_candidates(limit=remaining)
-        for admission_id in candidates:
-            try:
-                self._advance_candidate(admission_id)
-                progressed.append(f"admission:{admission_id}")
-            except Exception as exc:
-                failures.append(
-                    SchedulerFailure(
-                        event_id=f"admission:{admission_id}",
-                        error=f"{type(exc).__name__}: {exc}"[:1000],
+        saved_lane = self.state.load_cursor(_ADMISSION_LANE_CURSOR)
+        lane, lane_revision = saved_lane if saved_lane is not None else ("candidate", None)
+        if lane not in {"candidate", "policy"}:
+            raise RuntimeError("classification admission lane cursor is invalid")
+        for _ in range(limit):
+            preferred = lane
+            fallback = "policy" if preferred == "candidate" else "candidate"
+            performed = False
+            for selected_lane in (preferred, fallback):
+                if selected_lane == "candidate":
+                    candidates = self._pending_candidates(limit=1)
+                    if not candidates:
+                        continue
+                    admission_id = candidates[0]
+                    try:
+                        self._advance_candidate(admission_id)
+                        progressed.append(f"admission:{admission_id}")
+                    except Exception as exc:
+                        self._record_candidate_failure(admission_id, exc)
+                        failures.append(
+                            SchedulerFailure(
+                                event_id=f"admission:{admission_id}",
+                                error=f"{type(exc).__name__}: {exc}"[:1000],
+                            )
+                        )
+                    performed = True
+                    lane = "policy"
+                    break
+                selected, _cursor, cursor_revision = self._policy_slice(limit=1)
+                if not selected:
+                    continue
+                policy = selected[0]
+                try:
+                    advanced = self._advance_policy(policy)
+                    if advanced:
+                        progressed.append(f"policy:{policy.id}")
+                except Exception as exc:
+                    failures.append(
+                        SchedulerFailure(
+                            event_id=f"admission-policy:{policy.id}",
+                            error=f"{type(exc).__name__}: {exc}"[:1000],
+                        )
                     )
-                )
-            remaining -= 1
-        if remaining == 0 or not self._policies:
-            return AdmissionRun(progressed=tuple(progressed), failures=tuple(failures))
-
-        selected, cursor, cursor_revision = self._policy_slice(limit=remaining)
-        for policy in selected:
-            try:
-                if self._advance_policy(policy):
-                    progressed.append(f"policy:{policy.id}")
-            except Exception as exc:
-                failures.append(
-                    SchedulerFailure(
-                        event_id=f"admission-policy:{policy.id}",
-                        error=f"{type(exc).__name__}: {exc}"[:1000],
-                    )
-                )
-        if selected:
-            try:
-                self.state.compare_and_swap_cursor(
+                    advanced = True
+                self._store_cursor(
                     _POLICY_SCAN_CURSOR,
                     expected_revision=cursor_revision,
-                    cursor=selected[-1].id,
+                    value=policy.id,
                 )
-            except Exception:
-                current = self.state.load_cursor(_POLICY_SCAN_CURSOR)
-                if current is None or current[0] != selected[-1].id:
-                    raise
-        elif cursor:
-            self.state.compare_and_swap_cursor(
-                _POLICY_SCAN_CURSOR,
-                expected_revision=cursor_revision,
-                cursor="",
-            )
+                if not advanced:
+                    continue
+                performed = True
+                lane = "candidate"
+                break
+            if not performed:
+                break
+        self._store_cursor(
+            _ADMISSION_LANE_CURSOR,
+            expected_revision=lane_revision,
+            value=lane,
+        )
         return AdmissionRun(progressed=tuple(progressed), failures=tuple(failures))
+
+    def _store_cursor(
+        self,
+        stream: str,
+        *,
+        expected_revision: int | None,
+        value: str,
+    ) -> None:
+        try:
+            self.state.compare_and_swap_cursor(
+                stream,
+                expected_revision=expected_revision,
+                cursor=value,
+            )
+        except Exception:
+            current = self.state.load_cursor(stream)
+            if current is None or current[0] != value:
+                raise
 
     def policies(self) -> AdmissionPolicyCatalogView:
         with self.state.sessions() as session:
@@ -396,8 +432,8 @@ class ClassificationAdmissionService:
             self._require_page_authority(row, policy, cursor, page)
             assert row is not None
             for descriptor, matched in matches:
-                self._record_match(session, row, descriptor, matched)
-                if matched and row.baseline_mode == "backfill":
+                recorded = self._record_match(session, row, descriptor, matched)
+                if recorded == "applied" and matched and row.baseline_mode == "backfill":
                     self._record_intent(session, policy, descriptor)
             row.cursor = next_cursor
             row.phase = next_phase
@@ -435,14 +471,16 @@ class ClassificationAdmissionService:
                     (policy.id, row.generation, change.collection_id),
                 )
                 if isinstance(change, CatalogSyncDelete):
-                    if prior is not None:
+                    recorded = self._observe_revision(session, row, change)
+                    if recorded == "applied" and prior is not None:
                         session.delete(prior)
                 else:
                     if evaluated is None or evaluated[0] != change:
                         raise RuntimeError("admission change was not evaluated exactly")
                     matched = evaluated[1]
-                    eligible = matched and (prior is None or not prior.matched)
-                    self._record_match(session, row, change, matched)
+                    prior_matched = prior is not None and prior.matched
+                    recorded = self._record_match(session, row, change, matched)
+                    eligible = recorded == "applied" and matched and not prior_matched
                     if eligible:
                         self._record_intent(session, policy, change)
             row.cursor = page.next_cursor
@@ -456,7 +494,10 @@ class ClassificationAdmissionService:
         policy_row: _AdmissionPolicyRow,
         descriptor: CatalogSyncDescriptor,
         matched: bool,
-    ) -> None:
+    ) -> Literal["applied", "duplicate", "stale"]:
+        observed = self._observe_revision(session, policy_row, descriptor)
+        if observed != "applied":
+            return observed
         encoded = json.dumps(
             descriptor.model_dump(mode="json"),
             sort_keys=True,
@@ -480,13 +521,52 @@ class ClassificationAdmissionService:
                     document_json=encoded,
                 )
             )
-            return
+            return "applied"
         row.matched = matched
         row.descriptor_revision = descriptor.revision
         row.tag_revision = descriptor.tag_revision
         row.tag_set_identity = descriptor.tag_set_identity
         row.document_bytes = len(encoded.encode("utf-8"))
         row.document_json = encoded
+        return "applied"
+
+    def _observe_revision(
+        self,
+        session: Any,
+        policy_row: _AdmissionPolicyRow,
+        change: CatalogSyncDescriptor | CatalogSyncDelete,
+    ) -> Literal["applied", "duplicate", "stale"]:
+        operation = "delete" if isinstance(change, CatalogSyncDelete) else "upsert"
+        payload = {"operation": operation, **change.model_dump(mode="json")}
+        authority_sha256 = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        key = (policy_row.policy_id, policy_row.generation, change.collection_id)
+        observed = session.get(_AdmissionObservedRevisionRow, key)
+        revision = int(change.revision)
+        if observed is not None:
+            prior_revision = int(observed.descriptor_revision)
+            if revision < prior_revision:
+                return "stale"
+            if revision == prior_revision:
+                if observed.operation != operation or observed.authority_sha256 != authority_sha256:
+                    raise RuntimeError("Riverhog catalog revision changed its exact authority")
+                return "duplicate"
+            observed.descriptor_revision = change.revision
+            observed.operation = operation
+            observed.authority_sha256 = authority_sha256
+            return "applied"
+        session.add(
+            _AdmissionObservedRevisionRow(
+                policy_id=policy_row.policy_id,
+                generation=policy_row.generation,
+                collection_id=change.collection_id,
+                descriptor_revision=change.revision,
+                operation=operation,
+                authority_sha256=authority_sha256,
+            )
+        )
+        return "applied"
 
     def _record_intent(
         self,
@@ -515,6 +595,9 @@ class ClassificationAdmissionService:
                 document_json=encoded,
                 preview_bytes=None,
                 preview_json=None,
+                attempt_count=0,
+                next_attempt_at=now,
+                failure=None,
                 created_at=now,
                 updated_at=now,
             )
@@ -527,8 +610,14 @@ class ClassificationAdmissionService:
             return tuple(
                 session.scalars(
                     select(_AdmissionCandidateRow.admission_id)
-                    .where(_AdmissionCandidateRow.state.in_(("intent", "previewed")))
-                    .order_by(_AdmissionCandidateRow.admission_id)
+                    .where(
+                        _AdmissionCandidateRow.state.in_(("intent", "previewed")),
+                        _AdmissionCandidateRow.next_attempt_at <= utc_timestamp_now(),
+                    )
+                    .order_by(
+                        _AdmissionCandidateRow.next_attempt_at,
+                        _AdmissionCandidateRow.admission_id,
+                    )
                     .limit(limit)
                 )
             )
@@ -584,6 +673,9 @@ class ClassificationAdmissionService:
                 current.preview_sha256 = preview.preview_sha256
                 current.preview_bytes = len(encoded.encode("utf-8"))
                 current.preview_json = encoded
+                current.attempt_count = 0
+                current.next_attempt_at = utc_timestamp_now()
+                current.failure = None
                 current.updated_at = utc_timestamp_now()
             return
         if state != "previewed" or preview_json is None:
@@ -620,6 +712,20 @@ class ClassificationAdmissionService:
             row.state = "work_bound"
             row.preview_sha256 = preview_sha256
             row.work_id = work_id
+            row.attempt_count = 0
+            row.next_attempt_at = None
+            row.failure = None
+            row.updated_at = utc_timestamp_now()
+
+    def _record_candidate_failure(self, admission_id: str, exc: Exception) -> None:
+        with self.state.sessions() as session, session.begin():
+            row = session.get(_AdmissionCandidateRow, admission_id, with_for_update=True)
+            if row is None or row.state == "work_bound":
+                return
+            row.attempt_count += 1
+            delay = min(3600, 2 ** min(row.attempt_count, 10))
+            row.next_attempt_at = format_utc_timestamp(utc_now() + timedelta(seconds=delay))
+            row.failure = f"{type(exc).__name__}: {exc}"[:1000]
             row.updated_at = utc_timestamp_now()
 
     def _require_page_authority(
@@ -689,6 +795,9 @@ def _admission_view(row: _AdmissionCandidateRow) -> AdmissionView:
         state=cast(Any, row.state),
         preview_sha256=row.preview_sha256,
         work_id=row.work_id,
+        attempt_count=row.attempt_count,
+        next_attempt_at=row.next_attempt_at,
+        failure=row.failure,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

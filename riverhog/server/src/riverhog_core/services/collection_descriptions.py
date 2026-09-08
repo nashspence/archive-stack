@@ -27,7 +27,6 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_events import (
     begin_catalog_event,
     publish_catalog_event,
-    snapshot_catalog_event_collection_tags,
 )
 from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
@@ -247,6 +246,13 @@ class SqlAlchemyCollectionDescriptionService:
             if candidate is None:
                 raise ServiceUnavailable("no retained archive copy can accept the description")
             store, prefix = candidate
+            publication = session.get(
+                CollectionDescriptionPublicationRecord,
+                (collection_id, store),
+            )
+            expected_current_stored_sha256 = (
+                None if publication is None else publication.stored_sha256
+            )
             revision = collection.pending_description_revision
             identity = collection.pending_description_identity
             description = collection.pending_description
@@ -266,6 +272,7 @@ class SqlAlchemyCollectionDescriptionService:
             archive_storage_prefix=prefix,
             document=document,
             passphrase_id=passphrase_id,
+            expected_current_stored_sha256=expected_current_stored_sha256,
         )
         now = utc_timestamp_now()
         with session_scope(self._session_factory) as session:
@@ -309,18 +316,8 @@ class SqlAlchemyCollectionDescriptionService:
                 collection_id=collection_id,
                 occurred_at=now,
                 inventory_identity=collection.inventory_identity,
-            )
-            snapshot_catalog_event_collection_tags(
-                session,
-                event=event,
-                phase="before",
-                collection_id=collection_id,
-            )
-            snapshot_catalog_event_collection_tags(
-                session,
-                event=event,
-                phase="after",
-                collection_id=collection_id,
+                before_tag_revision=collection.tag_revision,
+                after_tag_revision=collection.tag_revision,
             )
             publish_catalog_event(session, event=event)
 
@@ -401,6 +398,7 @@ class SqlAlchemyCollectionDescriptionService:
                 or collection.description_identity != identity
             ):
                 raise Conflict("description replica authority changed before publication")
+            expected_current_stored_sha256: str | None = None
             if revision == 0:
                 receipt = None
             else:
@@ -412,12 +410,14 @@ class SqlAlchemyCollectionDescriptionService:
                 ).to_json_bytes()
                 prefix = copy.archive_storage_prefix
                 passphrase_id = collection.passphrase_id
+                expected_current_stored_sha256 = publication.stored_sha256
         if revision > 0:
             receipt = self._archive_stores.require(store).store.publish_collection_description(
                 collection_id=collection_id,
                 archive_storage_prefix=prefix,
                 document=document,
                 passphrase_id=passphrase_id,
+                expected_current_stored_sha256=expected_current_stored_sha256,
             )
         with session_scope(self._session_factory) as session:
             publication = session.get(
@@ -425,6 +425,8 @@ class SqlAlchemyCollectionDescriptionService:
                 (collection_id, store),
             )
             if publication is None:
+                return
+            if receipt is not None and publication.stored_sha256 != expected_current_stored_sha256:
                 return
             publication.published_revision = revision
             publication.published_identity = identity
@@ -453,6 +455,12 @@ class SqlAlchemyCollectionDescriptionService:
                 (collection_id, store),
             )
             if publication is None:
+                return
+            if (
+                publication.state == "published"
+                and publication.desired_revision == publication.published_revision
+                and publication.desired_identity == publication.published_identity
+            ):
                 return
             delay = min(3600, 2 ** min(publication.attempt_count, 10))
             publication.state = "retry_wait"

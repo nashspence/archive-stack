@@ -118,6 +118,8 @@ def _delete(factory: object, collection_id: int) -> None:
             collection_id=collection_id,
             occurred_at=NOW,
             inventory_identity=collection.inventory_identity,
+            before_tag_revision=collection.tag_revision,
+            after_tag_revision=None,
         )
         publish_catalog_event(session, event=event)
         session.delete(collection)
@@ -176,6 +178,8 @@ def test_catalog_sync_bootstrap_and_follow_are_exact_bounded_authorities(
             collection_id=2,
             occurred_at=NOW,
             inventory_identity=collection.inventory_identity,
+            before_tag_revision=collection.tag_revision,
+            after_tag_revision=None,
         )
         publish_catalog_event(session, event=event)
         session.delete(collection)

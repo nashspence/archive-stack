@@ -216,9 +216,36 @@ def test_small_object_create_replace_revision_and_delete(tmp_path: Path) -> None
             adapter.put_small_object(different_create, b"second")
         assert rejected.value.code == "identity_conflict"
 
-        second_request = different_create.model_copy(update={"mode": "replace_current"})
+        second_request = different_create.model_copy(
+            update={
+                "mode": "replace_current",
+                "expected_current_stored_sha256": first.stored_sha256,
+            }
+        )
         second = adapter.put_small_object(second_request, b"second")
         assert second.revision != first.revision
+
+        with pytest.raises(StorageAdapterRejection) as stale_write:
+            adapter.put_small_object(
+                second_request.model_copy(
+                    update={
+                        "required_identity_assertions": {"authority": "stale"},
+                        "stored_bytes": 5,
+                        "stored_sha256": hashlib.sha256(b"stale").hexdigest(),
+                    }
+                ),
+                b"stale",
+            )
+        assert stale_write.value.code == "identity_conflict"
+        with pytest.raises(StorageAdapterRejection) as stale_delete:
+            adapter.delete_object(
+                DeleteObjectRequest(
+                    object=ObjectLocator(object_path=second.object_path),
+                    mode="current",
+                    expected_current_stored_sha256=first.stored_sha256,
+                )
+            )
+        assert stale_delete.value.code == "identity_conflict"
 
         old = adapter.head_object(
             ObjectHeadRequest(

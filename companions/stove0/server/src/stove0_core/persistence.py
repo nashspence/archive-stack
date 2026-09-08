@@ -514,6 +514,35 @@ class _AdmissionMatchRow(_Base):
     )
 
 
+class _AdmissionObservedRevisionRow(_Base):
+    """Highest exact Riverhog change observed for one policy collection."""
+
+    __tablename__ = "stove0_admission_observed_revisions"
+
+    policy_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    generation: Mapped[str] = mapped_column(String(64), primary_key=True)
+    collection_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    descriptor_revision: Mapped[str] = mapped_column(String(19), nullable=False)
+    operation: Mapped[str] = mapped_column(String(8), nullable=False)
+    authority_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "collection_id >= 1", name="ck_stove0_admission_observed_revision_collection"
+        ),
+        CheckConstraint(
+            "operation IN ('upsert','delete')",
+            name="ck_stove0_admission_observed_revision_operation",
+        ),
+        Index(
+            "ix_stove0_admission_observed_revisions_collection",
+            "collection_id",
+            "policy_id",
+            "generation",
+        ),
+    )
+
+
 class _AdmissionCandidateRow(_Base):
     __tablename__ = "stove0_admission_candidates"
 
@@ -526,6 +555,9 @@ class _AdmissionCandidateRow(_Base):
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
     preview_bytes: Mapped[int | None] = mapped_column(BigInteger)
     preview_json: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[str | None] = mapped_column(String(40))
+    failure: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
@@ -539,7 +571,23 @@ class _AdmissionCandidateRow(_Base):
             "preview_bytes IS NULL OR preview_bytes >= 0",
             name="ck_stove0_admission_candidate_preview_bytes",
         ),
-        Index("ix_stove0_admission_candidates_state", "state", "admission_id"),
+        CheckConstraint("attempt_count >= 0", name="ck_stove0_admission_candidate_attempt_count"),
+        CheckConstraint(
+            "state = 'work_bound' AND next_attempt_at IS NULL OR "
+            "state != 'work_bound' AND next_attempt_at IS NOT NULL",
+            name="ck_stove0_admission_candidate_next_attempt",
+        ),
+        Index(
+            "ix_stove0_admission_candidates_state",
+            "state",
+            "admission_id",
+        ),
+        Index(
+            "ix_stove0_admission_candidates_retry",
+            "state",
+            "next_attempt_at",
+            "admission_id",
+        ),
         Index("ix_stove0_admission_candidates_policy", "policy_id", "admission_id"),
         Index("ix_stove0_admission_candidates_work", "work_id", "admission_id"),
         Index("ix_stove0_admission_candidates_created", "created_at", "admission_id"),
@@ -2449,13 +2497,21 @@ def _admission_list_statement(
         filters.append(_AdmissionCandidateRow.state == state)
     if query:
         normalized = query.strip().casefold()
-        filters.append(
-            or_(
-                _AdmissionCandidateRow.admission_id.contains(normalized),
-                _AdmissionCandidateRow.policy_id.contains(normalized),
-                _AdmissionCandidateRow.work_id.contains(normalized),
-            )
+        pattern = (
+            "%" + normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         )
+        matching_ids = union_all(
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.admission_id.like(pattern, escape="\\")
+            ),
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.policy_id.like(pattern, escape="\\")
+            ),
+            select(_AdmissionCandidateRow.admission_id).where(
+                _AdmissionCandidateRow.work_id.like(pattern, escape="\\")
+            ),
+        ).subquery()
+        filters.append(_AdmissionCandidateRow.admission_id.in_(select(matching_ids.c.admission_id)))
     key_columns = tuple(dict.fromkeys((columns[sort], _AdmissionCandidateRow.admission_id)))
     return filters, select(_AdmissionCandidateRow).where(*filters), key_columns
 

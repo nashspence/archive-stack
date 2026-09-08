@@ -377,6 +377,7 @@ class S3StorageAdapter:
             expected_sha256=request.stored_sha256,
         )
         existing = self._head(request.object_path)
+        expected_entity_token: str | None = None
         if existing is not None:
             recovered = self._matching_small_receipt(request, existing)
             if recovered is not None:
@@ -387,6 +388,21 @@ class S3StorageAdapter:
                     "identity_conflict",
                     "object already exists with a different identity",
                 )
+            if request.expected_current_stored_sha256 is not None:
+                current_sha256 = _normalized_metadata(existing).get(_STORED_SHA256_METADATA, "")
+                if current_sha256 != request.expected_current_stored_sha256:
+                    raise StorageAdapterRejection(
+                        "identity_conflict",
+                        "current object differs from the replacement fence",
+                    )
+                expected_entity_token = _provider_entity_token(existing)
+                if expected_entity_token is None:
+                    raise RuntimeError("S3 current object is missing its entity token")
+        elif request.expected_current_stored_sha256 is not None:
+            raise StorageAdapterRejection(
+                "identity_conflict",
+                "current object required by the replacement fence is absent",
+            )
         metadata = self._stored_metadata(
             request.required_identity_assertions,
             placement=request.placement,
@@ -406,6 +422,7 @@ class S3StorageAdapter:
             self._put_small_multipart(
                 provider_request,
                 create_only=request.mode == "create_only",
+                expected_entity_token=expected_entity_token,
             )
         except ClientError as exc:
             status, code = _client_error_identity(exc)
@@ -490,7 +507,33 @@ class S3StorageAdapter:
         provider_request: dict[str, Any] = {"Bucket": self._config.bucket, "Key": key}
         if request.mode == "exact_revision":
             provider_request["VersionId"] = request.object.revision
-        self._client.delete_object(**provider_request)
+        elif request.expected_current_stored_sha256 is not None:
+            current = self._head(request.object.object_path)
+            if current is None:
+                return
+            current_sha256 = _normalized_metadata(current).get(_STORED_SHA256_METADATA, "")
+            if current_sha256 != request.expected_current_stored_sha256:
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "current object differs from the deletion fence",
+                )
+            entity_token = _provider_entity_token(current)
+            if entity_token is None:
+                raise RuntimeError("S3 current object is missing its entity token")
+            provider_request["IfMatch"] = entity_token
+        try:
+            self._client.delete_object(**provider_request)
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status in {409, 412} or code in {
+                "ConditionalRequestConflict",
+                "PreconditionFailed",
+            }:
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "current object changed before deletion",
+                ) from exc
+            raise
 
     def delete_prefix(self, request: DeletePrefixRequest) -> int:
         return _delete_prefix_all_versions(
@@ -626,6 +669,7 @@ class S3StorageAdapter:
         request: dict[str, Any],
         *,
         create_only: bool,
+        expected_entity_token: str | None,
     ) -> None:
         create_request = {
             key: request[key]
@@ -664,6 +708,8 @@ class S3StorageAdapter:
             }
             if create_only:
                 completion_request["IfNoneMatch"] = "*"
+            elif expected_entity_token is not None:
+                completion_request["IfMatch"] = expected_entity_token
             self._client.complete_multipart_upload(**completion_request)
         except Exception:
             try:

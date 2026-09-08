@@ -3,18 +3,21 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from riverhog_api_client import ApiClient
 from riverhog_protocol import (
     CatalogSyncChangePage,
     CatalogSyncCheckpoint,
     CatalogSyncCollectionPage,
+    CatalogSyncDelete,
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
 )
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from stove0_core import ClassificationAdmissionService, SqlAlchemyStateStore
-from stove0_operator_contracts import AdmissionCatalog, AdmissionPolicy
+from stove0_core.persistence import _AdmissionPolicyRow
+from stove0_operator_contracts import AdmissionCatalog, AdmissionIntent, AdmissionPolicy
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -35,9 +38,15 @@ from stove0_protocol import (
 )
 
 
-def _descriptor(*, tag_revision: int, tag_identity: str, revision: str) -> CatalogSyncDescriptor:
+def _descriptor(
+    *,
+    tag_revision: int,
+    tag_identity: str,
+    revision: str,
+    collection_id: int = 7,
+) -> CatalogSyncDescriptor:
     return CatalogSyncDescriptor(
-        collection_id=7,
+        collection_id=collection_id,
         archive_root_sha256="1" * 64,
         content_identity="2" * 64,
         description=None,
@@ -244,6 +253,16 @@ class _Preview:
         return _ready_preview(work)
 
 
+class _SelectivePreview:
+    def __init__(self, failing_collection_id: int) -> None:
+        self.failing_collection_id = failing_collection_id
+
+    def preview(self, work: WorkIdentity) -> WorkflowPreview:
+        if work.inputs[0].collection_id == self.failing_collection_id:
+            raise RuntimeError("permanent candidate failure")
+        return _ready_preview(work)
+
+
 class _Coordinator:
     def __init__(self) -> None:
         self.calls: list[tuple[WorkIdentity, WorkflowPreview]] = []
@@ -343,6 +362,153 @@ def test_still_matching_update_does_not_create_implicit_work() -> None:
         )["admissions"]
         == ()
     )
+
+
+def test_stale_upsert_cannot_resurrect_a_deleted_catalog_revision() -> None:
+    state = _state()
+    initial = _descriptor(tag_revision=1, tag_identity="6" * 64, revision="1")
+    api = _CatalogApi(initial, {"camera", "workflow/archive"})
+    policy = _policy()
+    service = _service(state=state, api=api, policy=policy)
+    service.advance(limit=1)
+    service.advance(limit=1)
+
+    deleted = CatalogSyncDelete(collection_id=7, revision="3")
+    delete_page = CatalogSyncChangePage(
+        source_identity=api.source_identity,
+        authorization_view_identity=api.view_identity,
+        changes=[deleted],
+        next_cursor="after-delete",
+        caught_up=False,
+        through_revision="3",
+    )
+    assert service._commit_change_page(  # noqa: SLF001 - exact replay regression proof
+        policy,
+        cursor="following",
+        page=delete_page,
+        evaluated=None,
+    )
+
+    restarted = _service(state=state, api=api, policy=policy)
+    stale_descriptor = _descriptor(
+        tag_revision=2,
+        tag_identity="7" * 64,
+        revision="2",
+    )
+    api.tags_by_identity[stale_descriptor.tag_set_identity] = {
+        "camera",
+        "workflow/archive",
+    }
+    stale = CatalogSyncUpsert(**stale_descriptor.model_dump())
+    stale_page = CatalogSyncChangePage(
+        source_identity=api.source_identity,
+        authorization_view_identity=api.view_identity,
+        changes=[stale],
+        next_cursor="after-stale",
+        caught_up=True,
+        through_revision="3",
+    )
+    assert restarted._commit_change_page(  # noqa: SLF001 - exact replay regression proof
+        policy,
+        cursor="after-delete",
+        page=stale_page,
+        evaluated=(stale, True),
+    )
+
+    assert (
+        restarted.list_admissions(
+            page_size=25,
+            position=None,
+            policy_id=None,
+            state=None,
+            query=None,
+            sort="created_at",
+            order="desc",
+        )["admissions"]
+        == ()
+    )
+
+
+def test_equal_catalog_revision_with_different_authority_fails_closed() -> None:
+    state = _state()
+    initial = _descriptor(tag_revision=1, tag_identity="6" * 64, revision="1")
+    api = _CatalogApi(initial, {"camera"})
+    policy = _policy()
+    service = _service(state=state, api=api, policy=policy)
+    service.advance(limit=1)
+    service.advance(limit=1)
+
+    conflicting_descriptor = _descriptor(
+        tag_revision=2,
+        tag_identity="7" * 64,
+        revision="1",
+    )
+    conflict = CatalogSyncUpsert(**conflicting_descriptor.model_dump())
+    page = CatalogSyncChangePage(
+        source_identity=api.source_identity,
+        authorization_view_identity=api.view_identity,
+        changes=[conflict],
+        next_cursor="after-conflict",
+        caught_up=True,
+        through_revision="1",
+    )
+
+    with pytest.raises(RuntimeError, match="changed its exact authority"):
+        service._commit_change_page(  # noqa: SLF001 - exact replay regression proof
+            policy,
+            cursor="following",
+            page=page,
+            evaluated=(conflict, False),
+        )
+    assert service.policies().policies[0].through_revision == "0"
+
+
+def test_failed_lowest_candidate_is_delayed_and_does_not_starve_the_next() -> None:
+    state = _state()
+    initial = _descriptor(tag_revision=1, tag_identity="6" * 64, revision="1")
+    api = _CatalogApi(initial, {"camera", "workflow/archive"})
+    policy = _policy()
+    descriptors = (
+        initial,
+        _descriptor(
+            collection_id=8,
+            tag_revision=1,
+            tag_identity="7" * 64,
+            revision="2",
+        ),
+    )
+    intents = tuple(AdmissionIntent.seal(policy=policy, collection=item) for item in descriptors)
+    failing = min(intents, key=lambda item: item.admission_id)
+    succeeding = max(intents, key=lambda item: item.admission_id)
+    service = _service(
+        state=state,
+        api=api,
+        policy=policy,
+        preview=_SelectivePreview(failing.collection.collection_id),
+    )
+    with state.sessions() as session, session.begin():
+        policy_row = session.get(_AdmissionPolicyRow, policy.id)
+        assert policy_row is not None
+        policy_row.phase = "reset_required"
+        for descriptor in descriptors:
+            service._record_intent(session, policy, descriptor)  # noqa: SLF001
+
+    first = service.advance(limit=1)
+    assert [failure.event_id for failure in first.failures] == [f"admission:{failing.admission_id}"]
+    delayed = service.get_admission(failing.admission_id)
+    assert delayed.attempt_count == 1
+    assert delayed.next_attempt_at is not None
+    assert delayed.failure == "RuntimeError: permanent candidate failure"
+
+    restarted = _service(
+        state=state,
+        api=api,
+        policy=policy,
+        preview=_SelectivePreview(failing.collection.collection_id),
+    )
+    assert restarted.advance(limit=1).failures == ()
+    assert restarted.get_admission(succeeding.admission_id).state == "previewed"
+    assert restarted.get_admission(failing.admission_id).attempt_count == 1
 
 
 def test_explicit_backfill_advances_through_restart_safe_preview_and_work_binding() -> None:

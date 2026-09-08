@@ -10,13 +10,13 @@ from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
-    CatalogEventTagRecord,
     CatalogSyncStateRecord,
     CollectionArchiveObjectRecord,
     CollectionFileRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagRecord,
+    CollectionTagVisibilityRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
     RetrievalCacheStoreAccountingRecord,
@@ -150,7 +150,7 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
         assert session.get(CollectionRecord, COLLECTION_ID) is None
         event = session.query(CatalogEventRecord).one()
         assert event.change == "deleted" and event.collection_id == COLLECTION_ID
-        assert session.query(CatalogEventTagRecord).count() == 0
+        assert session.query(CollectionTagVisibilityRecord).count() == 0
 
 
 def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
@@ -300,7 +300,7 @@ def test_catalog_teardown_is_bounded_and_event_publishes_only_when_complete(
         event = session.query(CatalogEventRecord).one()
         assert event.published is True
         event_revision = event.revision
-        assert session.query(CatalogEventTagRecord).count() == 205
+        assert session.query(CollectionTagVisibilityRecord).count() == 0
     changes = catalog_sync.changes(cursor=initial.next_cursor, limit=100, principal=READER)
     assert changes.caught_up is True
     assert changes.through_revision == str(event_revision)

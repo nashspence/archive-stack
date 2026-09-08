@@ -122,6 +122,22 @@ compose run --rm \
   --env RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 \
   --entrypoint python \
   test -m pytest -q tests/integration/test_garage_encrypted_archive_store.py
+# Keep ambiguous external effects and catalog replay behind deterministic
+# barriers in the installed test image. Ordinary completed-stage restarts below
+# complement these exact interleavings; they do not substitute for them.
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --entrypoint python test -m pytest -q \
+  packages/riverhog-protocol/tests/test_collection_tag_protocol.py::test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags \
+  tests/unit/test_collection_descriptions.py::test_delayed_primary_description_writer_cannot_overwrite_newer_authority \
+  tests/unit/test_collection_descriptions.py::test_delayed_description_replica_cannot_overwrite_newer_authority \
+  tests/unit/test_collection_tags.py::test_maximum_length_tag_is_a_nonfinal_browse_page \
+  tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable \
+  tests/unit/test_collection_tags.py::test_committed_tag_head_reconciles_after_its_response_is_lost \
+  tests/unit/test_collection_tags.py::test_delayed_old_head_writer_cannot_overwrite_newer_acknowledged_authority \
+  tests/unit/test_collection_tags.py::test_delayed_gc_cannot_delete_a_node_republished_by_a_newer_authority \
+  companions/stove0/tests/test_classification_admission.py::test_stale_upsert_cannot_resurrect_a_deleted_catalog_revision \
+  companions/stove0/tests/test_classification_admission.py::test_equal_catalog_revision_with_different_authority_fails_closed \
+  companions/stove0/tests/test_classification_admission.py::test_failed_lowest_candidate_is_delayed_and_does_not_starve_the_next
 ensure_compose_image app
 compose up --detach --wait app
 compose exec -T app sh -c \
@@ -414,19 +430,42 @@ compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --env "EXPECTED_DESCRIPTION=Classified FTP compose qualification" \
   --entrypoint python test -c "${classification_code}"
 
-scheduler_step_code="import json, urllib.request
-request = urllib.request.Request(
-    'http://127.0.0.1:8080/v1/admin/scheduler/run',
-    data=json.dumps({'role': 'controller', 'work_limit': 1}).encode(),
-    headers={
-        'Authorization': 'Bearer stove0-compose-smoke-token',
-        'Content-Type': 'application/json',
-    },
-    method='POST',
-)
-result = json.load(urllib.request.urlopen(request, timeout=30))
-assert result['admission'] is not None, result
-assert result['admission']['failures'] == [], result"
+scheduler_step_code="import json, os, urllib.request
+collection_id = int(os.environ['INPUT_COLLECTION_ID'])
+expected = os.environ['RIVERHOG_SMOKE_SCHEDULER_STEP']
+state_order = {'intent': 0, 'previewed': 1, 'work_bound': 2}
+for _ in range(4):
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/admin/scheduler/run',
+        data=json.dumps({'role': 'controller', 'work_limit': 1}).encode(),
+        headers={
+            'Authorization': 'Bearer stove0-compose-smoke-token',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    result = json.load(urllib.request.urlopen(request, timeout=30))
+    assert result['admission'] is not None, result
+    assert result['admission']['failures'] == [], result
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/admissions?page_size=100&sort=admission_id&order=asc',
+        headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
+    )
+    payload = json.load(urllib.request.urlopen(request, timeout=5))
+    matches = [
+        row for row in payload['admissions']
+        if row['intent']['collection']['collection_id'] == collection_id
+    ]
+    if not matches:
+        assert expected == 'intent'
+        continue
+    assert len(matches) == 1, matches
+    current = matches[0]['state']
+    if current == expected:
+        break
+    assert state_order[current] < state_order[expected], matches[0]
+else:
+    raise AssertionError({'expected': expected, 'matches': matches})"
 admission_state_code="import json, os, urllib.request
 collection_id = int(os.environ['INPUT_COLLECTION_ID'])
 request = urllib.request.Request(
@@ -446,6 +485,7 @@ assert matches[0]['state'] == os.environ['EXPECTED_ADMISSION_STATE'], matches[0]
 # offline, so no stage can race ahead of the proof.
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=intent \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \
@@ -455,6 +495,7 @@ stove0_compose restart api
 stove0_compose up --detach --wait api
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=previewed \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \
@@ -464,6 +505,7 @@ stove0_compose restart api
 stove0_compose up --detach --wait api
 stove0_compose exec -T \
   --env RIVERHOG_SMOKE_SCHEDULER_STEP=work_bound \
+  --env "INPUT_COLLECTION_ID=${input_collection_id}" \
   api python -c "${scheduler_step_code}"
 stove0_compose exec -T \
   --env "INPUT_COLLECTION_ID=${input_collection_id}" \

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import islice
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -84,6 +85,24 @@ def test_single_mutation_reads_only_the_changed_path() -> None:
     store.get_count = 0
     changed = current.insert("camera/00001000/derived")
     assert changed.contains("camera/00001000/derived")
+    assert store.get_count < 40
+
+
+def test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags() -> None:
+    store = MemoryCollectionTagNodeStore()
+    current = CollectionTagSet(store)
+    for index in range(2_000):
+        current = current.insert(f"camera/{index:08d}")
+    ordered = sorted(
+        (f"camera/{index:08d}" for index in range(2_000)),
+        key=lambda tag: hashlib.sha256(tag.encode("utf-8")).digest(),
+    )
+    cursor = hashlib.sha256(ordered[-3].encode("utf-8")).hexdigest()
+
+    store.get_count = 0
+    page = tuple(islice(current.iter_tags(start_after_sha256=cursor), 2))
+
+    assert page == tuple(ordered[-2:])
     assert store.get_count < 40
 
 

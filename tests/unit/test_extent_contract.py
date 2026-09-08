@@ -362,6 +362,28 @@ def test_trace_index_covers_every_extent_and_only_current_source_paths() -> None
     assert trace["contract_projection_sha256"] == hashlib.sha256(ARTIFACT.read_bytes()).hexdigest()
     assert {link["id"] for link in links} == {decision["id"] for decision in decisions}
     assert len(links) == len(decisions)
+    witnesses = {item["id"]: item for item in trace["behavioral_witnesses"]}
+    segmented = [
+        decision for decision in decisions if decision["policy"] == "segmented_no_total_max"
+    ]
+    linked_segmented = [link for link in links if "behavioral_witnesses" in link]
+    assert {link["id"] for link in linked_segmented} == {decision["id"] for decision in segmented}
+    assert all(link["behavioral_witnesses"] for link in linked_segmented)
+    assert {
+        witness_id for link in linked_segmented for witness_id in link["behavioral_witnesses"]
+    } == set(witnesses)
+    for witness in witnesses.values():
+        assert set(witness["claims"]) == {
+            "bounded_step",
+            "forward_progress",
+            "multiple_segments",
+            "no_silent_truncation",
+            "restart",
+        }
+        assert witness["gates"]
+        assert witness["test_node_ids"]
+        for node_id in witness["test_node_ids"]:
+            assert (REPO_ROOT / node_id.split("::", 1)[0]).is_file()
     assert len({source["id"] for source in trace["sources"]}) == len(trace["sources"])
     for source in trace["sources"]:
         direct = source.get("source", {})

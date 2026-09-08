@@ -11685,7 +11685,7 @@
         {
           "distribution": "riverhog-server",
           "fixture_sha256s": [
-            "0a079e72a8a11d4cefa441ed5983ec9f902a54d771c4eb84fb54a516bc526586"
+            "08de3b117ab498a0d8ecccaf56ef35bcf247b9db7634095b1ca0e37daadaffa4"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11712,7 +11712,7 @@
         {
           "distribution": "stove0-server",
           "fixture_sha256s": [
-            "7b48e060290ac4297cdc540ee9a8ae4238a81e6b73c4f3dfbbb7f3a81fda1e57"
+            "6fec3eecfca50325cdc0823fd9d2b301fbbbd3cf272abd5fe58ac3fb8dca7a29"
           ],
           "format": "state-schema/postgresql",
           "head": "v1_0001",
@@ -11763,8 +11763,8 @@
     },
     "extents": {
       "coverage": {
-        "classified": 1935,
-        "discovered": 1935,
+        "classified": 1939,
+        "discovered": 1939,
         "duplicate": 0,
         "missing": 0,
         "owners": {
@@ -11807,8 +11807,8 @@
           "riverhog-ftp-adapter-api-client": 1,
           "riverhog-recover": 3,
           "riverhog-server": 34,
-          "riverhog-storage-adapter-protocol": 61,
-          "stove0": 411,
+          "riverhog-storage-adapter-protocol": 63,
+          "stove0": 413,
           "stove0-api-client": 1,
           "stove0-observer-protocol": 76,
           "stove0-recipes": 39,
@@ -11820,9 +11820,9 @@
           "stove0-target-support": 1
         },
         "policies": {
-          "contract_max": 425,
+          "contract_max": 427,
           "extension_owned": 55,
-          "fixed": 894,
+          "fixed": 896,
           "operational_policy": 482,
           "segmented_no_total_max": 79
         },
@@ -27507,6 +27507,30 @@
         },
         {
           "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/failure/anyOf/0:length",
+          "maximum": 1000,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/failure/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "http:stove0:components:/schemas/AdmissionView/properties/next_attempt_at/anyOf/0:length",
+          "maximum": 40,
+          "minimum": 1,
+          "owner": "stove0",
+          "policy": "contract_max",
+          "reason": "schema-maximum",
+          "rule": "schema-bound/v1",
+          "source_pointer": "/external_contract/http_openapi/stove0/components/schemas/AdmissionView/properties/next_attempt_at/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
           "id": "http:stove0:components:/schemas/AdmissionView/properties/preview_sha256/anyOf/0:length",
           "maximum": 64,
           "minimum": 64,
@@ -32403,6 +32427,21 @@
         },
         {
           "dimension": "length",
+          "id": "protocol:generated:riverhog-storage-adapter:/schemas/DeleteObjectRequest/properties/expected_current_stored_sha256/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog-storage-adapter-protocol",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/DeleteObjectRequest/properties/expected_current_stored_sha256/anyOf/0",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
           "id": "protocol:generated:riverhog-storage-adapter:/schemas/DeletePrefixRequest/properties/object_prefix:length",
           "maximum": 4096,
           "minimum": 1,
@@ -32671,6 +32710,21 @@
           "reason": "schema-maximum",
           "rule": "schema-bound/v1",
           "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/SmallObjectWriteRequest/properties/content_type",
+          "unit": "characters"
+        },
+        {
+          "dimension": "length",
+          "id": "protocol:generated:riverhog-storage-adapter:/schemas/SmallObjectWriteRequest/properties/expected_current_stored_sha256/anyOf/0:length",
+          "maximum": 64,
+          "minimum": 64,
+          "owner": "riverhog-storage-adapter-protocol",
+          "policy": "fixed",
+          "reason": "fixed-public-representation",
+          "rule": "schema-bound/v1",
+          "source_constraint": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pointer": "/external_contract/protocol_schemas/generated:riverhog-storage-adapter/schemas/SmallObjectWriteRequest/properties/expected_current_stored_sha256/anyOf/0",
           "unit": "characters"
         },
         {
@@ -39944,7 +39998,7 @@
         }
       },
       "schema": "riverhog-extent-contract/v1",
-      "sha256": "ed517eb2da011a352a8a0b847e4739773ea2f0de322b7e07989ec0fbdf89a919"
+      "sha256": "0f720314232ee5007e418f9212c538affea80a214e823c2c6360c31750aefc79"
     },
     "http_openapi": {
       "riverhog": {
@@ -69245,14 +69299,45 @@
             "AdmissionView": {
               "additionalProperties": false,
               "properties": {
+                "attempt_count": {
+                  "minimum": 0.0,
+                  "title": "Attempt Count",
+                  "type": "integer"
+                },
                 "created_at": {
                   "maxLength": 40,
                   "minLength": 1,
                   "title": "Created At",
                   "type": "string"
                 },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure"
+                },
                 "intent": {
                   "$ref": "#/components/schemas/AdmissionIntent"
+                },
+                "next_attempt_at": {
+                  "anyOf": [
+                    {
+                      "maxLength": 40,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Attempt At"
                 },
                 "preview_sha256": {
                   "anyOf": [
@@ -69297,6 +69382,7 @@
               "required": [
                 "intent",
                 "state",
+                "attempt_count",
                 "created_at",
                 "updated_at"
               ],
@@ -80928,7 +81014,7 @@
           "semantic_acceptance": "semantic_acceptance",
           "structural_models": "schemas"
         },
-        "bundle_sha256": "4f12f53ed8982d8fd0523a30aacbc1b5e39aad1b61b477f3258bd63e20cc471e",
+        "bundle_sha256": "74ec369887452c4403f66d6ecd85efdc9c10f32df7e56110e76545fa19a65394",
         "compatibility": {
           "provider_ontology": "private",
           "unknown_fields": "reject"
@@ -81999,6 +82085,19 @@
             },
             "additionalProperties": false,
             "properties": {
+              "expected_current_stored_sha256": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Expected Current Stored Sha256"
+              },
               "mode": {
                 "enum": [
                   "current",
@@ -82651,6 +82750,19 @@
                 "minLength": 1,
                 "title": "Content Type",
                 "type": "string"
+              },
+              "expected_current_stored_sha256": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Expected Current Stored Sha256"
               },
               "mode": {
                 "enum": [
@@ -102699,7 +102811,7 @@
               },
               "iter_tags": {
                 "kind": "method",
-                "signature": "(self, *, start_after: 'str | None' = None) -> 'Iterator[str]'"
+                "signature": "(self, *, start_after_sha256: 'str | None' = None) -> 'Iterator[str]'"
               }
             },
             "signature": "(store: 'CollectionTagNodeStore', root: 'CollectionTagSetRoot | None' = None) -> 'None'"
@@ -105005,8 +105117,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "1e7160959a6b96e837c85e70448edf80a9cf117eb682e2de7648180d66998d77",
-            "signature": "(*, object: riverhog_storage_adapter_protocol.protocol.ObjectLocator, mode: Literal['current', 'exact_revision', 'all_versions']) -> None"
+            "schema_sha256": "46f15404c356f50e3a381b04f209d8f64b9114cce82ef9e8c42967f06b59fad8",
+            "signature": "(*, object: riverhog_storage_adapter_protocol.protocol.ObjectLocator, mode: Literal['current', 'exact_revision', 'all_versions'], expected_current_stored_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None) -> None"
           },
           "DeletePrefixRequest": {
             "kind": "class",
@@ -105197,10 +105309,14 @@
               "canonical_path": {
                 "kind": "classmethod",
                 "signature": "(cls, value: 'str') -> 'str'"
+              },
+              "validate_replacement_fence": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "039e777eb7cdabbe455afa83b6873ddd44b6b4f05914d4cd491245b44b2aa380",
-            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: Annotated[dict[str, str], MaxLen(max_length=64)], placement: Literal['archive', 'immediate'], mode: Literal['create_only', 'replace_current'], stored_bytes: Annotated[int, Ge(ge=0)], stored_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
+            "schema_sha256": "80a724477b2bedfe5fa69bfd96c571cd25a684c741a0e8d5a715c15bfc25c270",
+            "signature": "(*, object_path: Annotated[str, MinLen(min_length=1), MaxLen(max_length=4096)], content_type: Annotated[str, MinLen(min_length=1), MaxLen(max_length=255)], required_identity_assertions: Annotated[dict[str, str], MaxLen(max_length=64)], placement: Literal['archive', 'immediate'], mode: Literal['create_only', 'replace_current'], expected_current_stored_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, stored_bytes: Annotated[int, Ge(ge=0)], stored_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
           },
           "StorageAdapterError": {
             "kind": "class",
@@ -106877,7 +106993,7 @@
           },
           "AdmissionPage": {
             "kind": "class",
-            "schema_sha256": "243710480b17d211cb8752d0ba63cf28aaa4dc64ace63d1585fb7e5f9ea83146",
+            "schema_sha256": "1c999fdfd073ab6da2b05a6189166ce2f7dbff29a64c6e8e32695cff71e09607",
             "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: BrowsePageToken | None, sort: Literal['created_at', 'updated_at', 'state', 'admission_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], policy_id: str | None, state: Optional[Literal['intent', 'previewed', 'work_bound']], admissions: tuple[stove0_operator_contracts.AdmissionView, ...]) -> None"
           },
           "AdmissionPhase": {
@@ -106936,8 +107052,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "48c068ce3561df3435f428633b6654b77c172778b495883b3bbadec016db29a4",
-            "signature": "(*, intent: stove0_operator_contracts.AdmissionIntent, state: Literal['intent', 'previewed', 'work_bound'], preview_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, work_id: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, created_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)]) -> None"
+            "schema_sha256": "242e77047ed695bde61d11c1d145155b17b1c639bbfac0c8ad71f70f34d53339",
+            "signature": "(*, intent: stove0_operator_contracts.AdmissionIntent, state: Literal['intent', 'previewed', 'work_bound'], preview_sha256: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, work_id: Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]] = None, attempt_count: Annotated[int, Ge(ge=0)], next_attempt_at: Annotated[str | None, MinLen(min_length=1), MaxLen(max_length=40)] = None, failure: Annotated[str | None, MinLen(min_length=1), MaxLen(max_length=1000)] = None, created_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)]) -> None"
           },
           "ArtifactSelectionPage": {
             "kind": "class",

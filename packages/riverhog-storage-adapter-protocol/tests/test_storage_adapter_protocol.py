@@ -425,6 +425,23 @@ def test_revision_and_deletion_modes_preserve_versioned_and_unversioned_targets(
         DeleteObjectRequest(object=current, mode="exact_revision")
     with pytest.raises(ValidationError, match="must not name a revision"):
         DeleteObjectRequest(object=versioned, mode="all_versions")
+    with pytest.raises(ValidationError, match="create-only"):
+        SmallObjectWriteRequest(
+            object_path="metadata/head",
+            content_type="application/octet-stream",
+            required_identity_assertions={"identity": "exact"},
+            placement="immediate",
+            mode="create_only",
+            expected_current_stored_sha256="a" * 64,
+            stored_bytes=1,
+            stored_sha256="b" * 64,
+        )
+    with pytest.raises(ValidationError, match="only current-object"):
+        DeleteObjectRequest(
+            object=versioned,
+            mode="exact_revision",
+            expected_current_stored_sha256="a" * 64,
+        )
 
 
 def test_prefix_deletion_is_explicitly_version_aware() -> None:

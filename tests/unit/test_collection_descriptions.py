@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,7 @@ class FailingDescriptionStore(MemoryArchiveStore):
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionDescriptionReceipt:
         if self.fail:
             raise OSError("simulated unavailable description store")
@@ -87,6 +90,36 @@ class FailingDescriptionStore(MemoryArchiveStore):
             archive_storage_prefix=archive_storage_prefix,
             document=document,
             passphrase_id=passphrase_id,
+            expected_current_stored_sha256=expected_current_stored_sha256,
+        )
+
+
+class DelayedDescriptionStore(MemoryArchiveStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.delay_next_description = False
+        self.started = threading.Event()
+        self.resume = threading.Event()
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
+    ) -> CollectionDescriptionReceipt:
+        if self.delay_next_description:
+            self.delay_next_description = False
+            self.started.set()
+            assert self.resume.wait(timeout=10)
+        return super().publish_collection_description(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+            document=document,
+            passphrase_id=passphrase_id,
+            expected_current_stored_sha256=expected_current_stored_sha256,
         )
 
 
@@ -563,6 +596,158 @@ def test_description_projection_waits_for_durable_publication_and_restarts(
         assert collection.description_revision == 1
         assert collection.description_mutation_state == "idle"
         assert len(list(session.scalars(select(CatalogEventRecord)))) == 2
+
+
+def test_delayed_primary_description_writer_cannot_overwrite_newer_authority(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = DelayedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    store.delay_next_description = True
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        delayed = executor.submit(
+            service.replace,
+            1,
+            description="Delayed authority",
+            expected_identity=initial_identity,
+            principal=PRINCIPAL,
+        )
+        assert store.started.wait(timeout=10)
+        restarted = SqlAlchemyCollectionDescriptionService(
+            config,
+            ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+            session_factory=factory,
+        )
+        assert restarted.requeue_interrupted_for_startup(limit=1) == 1
+        assert restarted.process_due(limit=1) == 1
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            collection = session.get(CollectionRecord, 1)
+            assert collection is not None
+            delayed_identity = collection.description_identity
+        current = restarted.replace(
+            1,
+            description="Newer acknowledged authority",
+            expected_identity=delayed_identity,
+            principal=PRINCIPAL,
+        )
+        assert current["description_revision"] == 2
+        store.resume.set()
+        with pytest.raises(ServiceUnavailable):
+            delayed.result(timeout=10)
+
+    document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(
+            store.objects[f"archives/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"],
+            DEV_ARCHIVE_PASSPHRASE,
+        )
+    )
+    assert document.revision == 2
+    assert document.description == "Newer acknowledged authority"
+
+
+def test_delayed_description_replica_cannot_overwrite_newer_authority(
+    tmp_path: Path,
+) -> None:
+    config, factory, primary, _registry = _seed(tmp_path / "catalog.sqlite3")
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/1",
+                last_uploaded_at=NOW,
+                last_verified_at=NOW,
+            )
+        )
+        session.add(
+            CollectionDescriptionPublicationRecord(
+                collection_id=1,
+                store="mirror",
+                desired_revision=0,
+                desired_identity=initial_identity,
+                published_revision=0,
+                published_identity=initial_identity,
+                state="published",
+                next_attempt_at=None,
+            )
+        )
+    mirror = DelayedDescriptionStore()
+    registry = ArchiveStoreRegistry(
+        {
+            "archive": archive_store_binding(primary),
+            "mirror": archive_store_binding(mirror),
+        }
+    )
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        registry,
+        session_factory=factory,
+    )
+    first = service.replace(
+        1,
+        description="First authority",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    assert service.process_due(limit=1) == 1
+    second = service.replace(
+        1,
+        description="Delayed replica authority",
+        expected_identity=str(first["description_identity"]),
+        principal=PRINCIPAL,
+    )
+    mirror.delay_next_description = True
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        delayed = executor.submit(service.process_due, limit=1)
+        assert mirror.started.wait(timeout=10)
+        restarted = SqlAlchemyCollectionDescriptionService(
+            config,
+            registry,
+            session_factory=factory,
+        )
+        assert restarted.requeue_interrupted_for_startup(limit=1) == 1
+        assert restarted.process_due(limit=1) == 1
+        third = service.replace(
+            1,
+            description="Newer replica authority",
+            expected_identity=str(second["description_identity"]),
+            principal=PRINCIPAL,
+        )
+        assert restarted.process_due(limit=1) == 1
+        mirror.resume.set()
+        assert delayed.result(timeout=10) == 1
+
+    document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(
+            mirror.objects[f"archives/mirror/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"],
+            DEV_ARCHIVE_PASSPHRASE,
+        )
+    )
+    assert document.revision == third["description_revision"] == 3
+    assert document.description == "Newer replica authority"
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        assert publication is not None
+        assert publication.state == "published"
+        assert publication.published_revision == 3
 
 
 def test_description_acknowledges_one_copy_then_reconciles_every_retained_copy(

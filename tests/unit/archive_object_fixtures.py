@@ -1088,15 +1088,32 @@ class MemoryArchiveStore:
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionDescriptionReceipt:
         assert collection_id == COLLECTION_ID
         assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
         object_path = f"{archive_storage_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        current = self.objects.get(object_path)
+        plaintext_sha256 = hashlib.sha256(document).hexdigest()
+        if current is not None and self.object_metadata.get(object_path) == {
+            "riverhog-plaintext-sha256": plaintext_sha256
+        }:
+            return CollectionDescriptionReceipt(
+                object_path=object_path,
+                revision=self._version(current),
+                stored_bytes=len(current),
+                stored_sha256=hashlib.sha256(current).hexdigest(),
+                published_at=UPLOADED_AT,
+            )
+        if current is not None and expected_current_stored_sha256 is None:
+            raise RuntimeError("collection description already exists with another authority")
+        if expected_current_stored_sha256 is not None and (
+            current is None or hashlib.sha256(current).hexdigest() != expected_current_stored_sha256
+        ):
+            raise RuntimeError("collection description replacement fence differs")
         ciphertext = encrypt_age_scrypt(document, DEV_ARCHIVE_PASSPHRASE, log_n=1)
         self.objects[object_path] = ciphertext
-        self.object_metadata[object_path] = {
-            "riverhog-plaintext-sha256": hashlib.sha256(document).hexdigest()
-        }
+        self.object_metadata[object_path] = {"riverhog-plaintext-sha256": plaintext_sha256}
         return CollectionDescriptionReceipt(
             object_path=object_path,
             revision=self._version(ciphertext),
@@ -1135,8 +1152,26 @@ class MemoryArchiveStore:
         archive_storage_prefix: str,
         document: bytes,
         passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
     ) -> CollectionTagObjectReceipt:
         object_path = f"{archive_storage_prefix}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}"
+        current = self.objects.get(object_path)
+        if current is not None and self.object_metadata.get(object_path) == {
+            "riverhog-plaintext-sha256": hashlib.sha256(document).hexdigest()
+        }:
+            return CollectionTagObjectReceipt(
+                object_path=object_path,
+                revision=self._version(current),
+                stored_bytes=len(current),
+                stored_sha256=hashlib.sha256(current).hexdigest(),
+                published_at=UPLOADED_AT,
+            )
+        if current is not None and expected_current_stored_sha256 is None:
+            raise RuntimeError("collection tag head already exists with another authority")
+        if expected_current_stored_sha256 is not None and (
+            current is None or hashlib.sha256(current).hexdigest() != expected_current_stored_sha256
+        ):
+            raise RuntimeError("collection tag-head replacement fence differs")
         return self._publish_collection_tag_object(object_path, document)
 
     def _publish_collection_tag_object(
@@ -1175,9 +1210,16 @@ class MemoryArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         digest: str,
+        expected_current_stored_sha256: str,
     ) -> None:
         _ = collection_id
         object_path = f"{archive_storage_prefix}/{collection_tag_node_path(digest)}"
+        current = self.objects.get(object_path)
+        if (
+            current is not None
+            and hashlib.sha256(current).hexdigest() != expected_current_stored_sha256
+        ):
+            raise RuntimeError("collection tag-node deletion fence differs")
         self.objects.pop(object_path, None)
         self.object_metadata.pop(object_path, None)
 
