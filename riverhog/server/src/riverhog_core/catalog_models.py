@@ -2476,9 +2476,7 @@ class CollectionUploadTagNodeReferenceRecord(Base):
         ForeignKeyConstraint(
             ["collection_id"], ["collection_uploads.collection_id"], ondelete="CASCADE"
         ),
-        ForeignKeyConstraint(
-            ["node_digest"], ["collection_tag_nodes.digest"], ondelete="RESTRICT"
-        ),
+        ForeignKeyConstraint(["node_digest"], ["collection_tag_nodes.digest"], ondelete="RESTRICT"),
         CheckConstraint(
             _fixed_lowercase_integer_check("node_digest", 64),
             name="ck_collection_upload_tag_node_references_digest",

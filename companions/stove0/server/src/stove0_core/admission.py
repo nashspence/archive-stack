@@ -243,6 +243,7 @@ class ClassificationAdmissionService:
         now = utc_timestamp_now()
         with self.state.sessions() as session, session.begin():
             dialect = session.get_bind().dialect.name
+            insert_policy: Any
             if dialect == "postgresql":
                 insert_policy = postgresql_insert
             elif dialect == "sqlite":

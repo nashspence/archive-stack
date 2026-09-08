@@ -49,8 +49,8 @@ from riverhog_core.catalog_models import (
     CollectionTagPublicationFrontierRecord,
     CollectionTagRecord,
     CollectionTagRevisionRecord,
-    CollectionUploadTagPublicationFrontierRecord,
     CollectionUploadTagNodeReferenceRecord,
+    CollectionUploadTagPublicationFrontierRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.runtime_config import RuntimeConfig

@@ -10,9 +10,9 @@ from riverhog_archive_contracts import CollectionArchiveManifest, RecoveryDescri
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
+    COLLECTION_TAGS_MANAGE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
-    COLLECTION_TAGS_MANAGE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
     ApplicationAccess,
@@ -48,8 +48,8 @@ from riverhog_core.incremental_plan import (
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
+from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing

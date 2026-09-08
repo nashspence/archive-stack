@@ -61,7 +61,7 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                     'if [[ "$*" == *"RIVERHOG_SMOKE_CLIENT_RECEIPT_OUTPUT=1"* ]]; then',
                     (
                         "  printf '%s\\n' "
-                        "'{\"archive_root_sha256\":"
+                        '\'{"archive_root_sha256":'
                         '"3333333333333333333333333333333333333333333333333333333333333333",'
                         '"collection_id":3,"content_identity":'
                         '"4444444444444444444444444444444444444444444444444444444444444444"}\''
