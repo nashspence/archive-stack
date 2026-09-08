@@ -26,6 +26,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionFileRecord,
     CollectionRecord,
+    CollectionTagPublicationRecord,
     CollectionUploadRecord,
     RetrievalJobRecord,
     RetrievalPlanObjectRecord,
@@ -65,6 +66,7 @@ from riverhog_protocol.collection_workflows import (
 )
 from riverhog_protocol.errors import Conflict, NotFound
 from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 
@@ -105,6 +107,7 @@ class BlockingArchiveStore:
         self.delete_started = threading.Event()
         self.allow_delete = threading.Event()
         self.deleted: list[tuple[str, ...]] = []
+        self.deleted_tags: list[tuple[int, str]] = []
 
     def read_mode(self) -> str:
         return "immediate"
@@ -129,6 +132,14 @@ class BlockingArchiveStore:
     ) -> None:
         assert collection_id == COLLECTION_ID
         assert archive.objects
+
+    def delete_collection_tags(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+    ) -> None:
+        self.deleted_tags.append((collection_id, archive_storage_prefix))
 
 
 class RetirementArchiveStore:
@@ -252,6 +263,36 @@ def _seed(database_url: str) -> None:
                 bytes=len(CONTENT),
             )
         )
+
+
+def _add_tag_publication(
+    session: Session,
+    copy: CollectionArchiveCopyRecord,
+) -> None:
+    session.flush()
+    collection = session.get(CollectionRecord, copy.collection_id)
+    assert collection is not None
+    prefix = copy.archive_storage_prefix
+    assert prefix is not None
+    session.add(
+        CollectionTagPublicationRecord(
+            collection_id=copy.collection_id,
+            store=copy.store,
+            desired_revision=collection.tag_revision,
+            desired_tag_set_identity=collection.tag_set_identity,
+            desired_head_identity=collection.tag_head_identity,
+            published_revision=collection.tag_revision,
+            published_tag_set_identity=collection.tag_set_identity,
+            published_head_identity=collection.tag_head_identity,
+            state="published",
+            next_attempt_at=None,
+            head_object_path=f"{prefix}/metadata/tags/head.json.age",
+            head_provider_revision="fixture-tag-head-revision",
+            head_stored_bytes=128,
+            head_stored_sha256="f" * 64,
+            published_at="2026-07-18T00:00:00.000000Z",
+        )
+    )
 
 
 def _seed_second_input(database_url: str) -> CollectionRootIdentity:
@@ -848,6 +889,7 @@ def _seed_b2_copy(database_url: str) -> None:
     with session_scope(make_session_factory(database_url)) as session:
         deep = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         assert deep is not None
+        _add_tag_publication(session, deep)
         b2 = CollectionArchiveCopyRecord(
             collection_id=COLLECTION_ID,
             store="b2",
@@ -857,6 +899,7 @@ def _seed_b2_copy(database_url: str) -> None:
             last_verified_at=deep.last_verified_at,
         )
         session.add(b2)
+        _add_tag_publication(session, b2)
         for current in sorted(deep.objects, key=lambda item: item.object_order):
             copied = CollectionArchiveObjectRecord(
                 collection_id=COLLECTION_ID,
@@ -1670,7 +1713,7 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
 
     thread = threading.Thread(target=retire_copy)
     thread.start()
-    assert deep.delete_started.wait(10)
+    assert deep.delete_started.wait(10), failures
     try:
         current_plan = retrieval.plan(files)
         with session_scope(make_session_factory(database_url)) as session:
@@ -1694,3 +1737,4 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
 
     assert not thread.is_alive()
     assert failures == []
+    assert deep.deleted_tags == [(COLLECTION_ID, "archives/opaque-docs")]
