@@ -30,12 +30,18 @@ from riverhog_core.catalog_events import record_catalog_event
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CatalogSyncStateRecord,
+    CollectionArchiveCopyRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionDescriptionPublicationRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
     CollectionTagMutationRecord,
+    CollectionTagNodeGcRecord,
     CollectionTagNodeReclamationRecord,
     CollectionTagNodeRecord,
+    CollectionTagPublicationFrontierRecord,
+    CollectionTagPublicationRecord,
     CollectionTagRevisionRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadRecord,
@@ -51,9 +57,11 @@ from riverhog_core.services.catalog_sync import (
 from riverhog_core.services.collection_descriptions import (
     SqlAlchemyCollectionDescriptionService,
 )
+from riverhog_core.services.collection_tags import SqlAlchemyCollectionTagService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol import collection_description_identity
+from riverhog_protocol.errors import ServiceUnavailable
 from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -69,6 +77,7 @@ from tests.unit.test_collection_descriptions import (
 from tests.unit.test_collection_descriptions import (
     _seed as description_seed,
 )
+from tests.unit.test_collection_tags import _AmbiguousTagDeleteStore
 from tests.unit.test_collection_tags import _principal as tag_principal
 from tests.unit.test_collection_tags import _service as tag_service
 from tests.unit.test_retrieval_service import _seed_collection
@@ -475,6 +484,195 @@ def test_postgres_superseded_document_cleanup_workers_claim_distinct_receipts(
     with session_scope(factory) as session:
         assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
     assert not store.retained_revisions
+
+
+def test_postgres_mutable_replica_attempt_serializes_reconciliation_before_newer_desired(
+    isolated_database_url: str,
+) -> None:
+    config, factory, primary, _registry = description_seed(
+        None,
+        database_url=isolated_database_url,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    with session_scope(factory) as session:
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/1",
+                last_uploaded_at="2026-09-07T00:00:00.000000Z",
+                last_verified_at="2026-09-07T00:00:00.000000Z",
+            )
+        )
+        session.add(
+            CollectionDescriptionPublicationRecord(
+                collection_id=1,
+                store="mirror",
+                desired_revision=0,
+                desired_identity=initial_identity,
+                published_revision=0,
+                published_identity=initial_identity,
+                state="published",
+                next_attempt_at=None,
+            )
+        )
+    mirror = VersionedDescriptionStore()
+    stores = ArchiveStoreRegistry(
+        {
+            "archive": archive_store_binding(primary),
+            "mirror": archive_store_binding(mirror),
+        }
+    )
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        stores,
+        session_factory=factory,
+    )
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=description_principal,
+    )
+    assert service.process_due(limit=1) == 1
+    second = service.replace(
+        1,
+        description="second",
+        expected_identity=str(first["description_identity"]),
+        principal=description_principal,
+    )
+    mirror.lose_next_response = True
+    assert service.process_due(limit=1) == 1
+    newest = service.replace(
+        1,
+        description="newest",
+        expected_identity=str(second["description_identity"]),
+        principal=description_principal,
+    )
+    with session_scope(factory) as session:
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "mirror", "description"),
+        )
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        assert attempt is not None and attempt.document_revision == 2
+        assert publication is not None and publication.desired_revision == 3
+        publication.next_attempt_at = "2026-09-07T00:00:00.000000Z"
+
+    def advance() -> int:
+        worker = SqlAlchemyCollectionDescriptionService(
+            config,
+            stores,
+            session_factory=make_session_factory(isolated_database_url),
+        )
+        return worker.process_due(limit=1)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert all(result in {0, 1} for result in executor.map(lambda _index: advance(), range(2)))
+    for _ in range(16):
+        if service.process_due(limit=1) == 0:
+            break
+    with session_scope(factory) as session:
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        assert publication is not None and publication.state == "published"
+        assert publication.published_revision == newest["description_revision"] == 3
+        assert session.query(CollectionMutableDocumentPublicationAttemptRecord).count() == 0
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not mirror.retained_revisions
+
+
+def test_postgres_reused_tag_node_gc_and_publication_workers_converge(
+    isolated_database_url: str,
+) -> None:
+    store = _AmbiguousTagDeleteStore()
+    service, factory, _stored = tag_service(
+        None,
+        archive_store=store,
+        database_url=isolated_database_url,
+    )
+    principal = tag_principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="postgres-gc-add",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    service.remove(
+        1,
+        tag="workflow:archive",
+        operation_id="postgres-gc-remove",
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+    with session_scope(factory) as session:
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        assert publication is not None and publication.published_head_identity is not None
+        session.query(CollectionTagPublicationFrontierRecord).filter(
+            CollectionTagPublicationFrontierRecord.collection_id == 1,
+            CollectionTagPublicationFrontierRecord.store == "archive",
+            CollectionTagPublicationFrontierRecord.head_identity
+            != publication.published_head_identity,
+        ).delete(synchronize_session=False)
+    for _ in range(128):
+        assert service.process_due(limit=1) in {0, 1}
+        with session_scope(factory) as session:
+            gc = session.scalar(select(CollectionTagNodeGcRecord))
+            if gc is not None and gc.state == "retry_wait":
+                digest = gc.node_digest
+                break
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("tag-node reclamation did not reach its ambiguous result")
+
+    with pytest.raises(ServiceUnavailable):
+        service.add(
+            1,
+            tag="workflow:archive",
+            operation_id="postgres-gc-readd",
+            expected_revision=3,
+            expected_tag_set_identity=initial_identity,
+            principal=principal,
+        )
+    with session_scope(factory) as session:
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", digest))
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        assert gc is not None and publication is not None
+        gc.next_attempt_at = "2026-09-07T00:00:00.000000Z"
+        publication.next_attempt_at = "2026-09-07T00:00:00.000000Z"
+
+    def advance() -> int:
+        worker = SqlAlchemyCollectionTagService(
+            RuntimeConfig(database_url=isolated_database_url),
+            ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+            session_factory=make_session_factory(isolated_database_url),
+        )
+        return worker.process_due(limit=1)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert all(result in {0, 1} for result in executor.map(lambda _index: advance(), range(2)))
+    for _ in range(128):
+        progressed = service.process_due(limit=1)
+        with session_scope(factory) as session:
+            publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+            if publication is not None and publication.published_revision == 4:
+                break
+        assert progressed == 1
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("reused tag authority did not converge")
+    with session_scope(factory) as session:
+        assert session.get(CollectionTagNodeGcRecord, (1, "archive", digest)) is None
+        assert session.query(CollectionMutableDocumentPublicationAttemptRecord).count() == 0
 
 
 def test_postgres_archive_sequence_state_round_trips_full_v1_domain(

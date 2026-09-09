@@ -27,6 +27,8 @@ from riverhog_core.catalog_events import (
 )
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
+    CollectionArchiveCopyRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
@@ -52,6 +54,7 @@ from riverhog_core.services.catalog_sync import (
 from riverhog_core.services.collection_tags import (
     SqlAlchemyCollectionTagService,
     build_collection_tag_set,
+    ensure_tag_publication_for_copy,
 )
 from riverhog_core.services.mutable_document_reclamation import (
     process_due_mutable_document_reclamations,
@@ -197,8 +200,11 @@ class _EncryptedMemoryTagNodes:
         raise AssertionError((digest, encoded))
 
 
-def _recover_stored_tags(store: MemoryArchiveStore) -> tuple[CollectionTagHeadDocument, set[str]]:
-    prefix = "archives/archive/opaque-docs"
+def _recover_stored_tags(
+    store: MemoryArchiveStore,
+    *,
+    prefix: str = "archives/archive/opaque-docs",
+) -> tuple[CollectionTagHeadDocument, set[str]]:
     head = CollectionTagHeadDocument.from_json_bytes(
         decrypt_age_scrypt(
             store.objects[f"{prefix}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}"],
@@ -737,7 +743,9 @@ class _VersionedTagHeadStore(MemoryArchiveStore):
         super().__init__()
         self.current_revisions: dict[str, str] = {}
         self.retained_revisions: dict[tuple[str, str], bytes] = {}
+        self.deleted_revisions: list[tuple[str, str]] = []
         self.next_revision = 1
+        self.lose_next_head_response = False
 
     def publish_collection_tag_head(
         self,
@@ -765,7 +773,11 @@ class _VersionedTagHeadStore(MemoryArchiveStore):
         revision = f"tag-head-revision-{self.next_revision}"
         self.next_revision += 1
         self.current_revisions[path] = revision
-        return replace(receipt, revision=revision)
+        result = replace(receipt, revision=revision)
+        if self.lose_next_head_response:
+            self.lose_next_head_response = False
+            raise OSError("ambiguous tag-head replacement response")
+        return result
 
     def delete_collection_document_revision(
         self,
@@ -774,6 +786,7 @@ class _VersionedTagHeadStore(MemoryArchiveStore):
         provider_revision: str,
         expected_stored_sha256: str,
     ) -> None:
+        self.deleted_revisions.append((object_path, provider_revision))
         if self.current_revisions.get(object_path) == provider_revision:
             raise RuntimeError("refusing to reclaim current mutable collection document")
         prior = self.retained_revisions.get((object_path, provider_revision))
@@ -782,6 +795,173 @@ class _VersionedTagHeadStore(MemoryArchiveStore):
         if hashlib.sha256(prior).hexdigest() != expected_stored_sha256:
             raise RuntimeError("mutable collection document revision differs")
         del self.retained_revisions[(object_path, provider_revision)]
+
+
+@pytest.mark.parametrize("destination_initialized", (False, True))
+def test_tag_replica_reconciles_exact_ambiguous_attempt_before_newer_desired(
+    tmp_path: Path,
+    destination_initialized: bool,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    service, factory, primary = _service(path)
+    mirror = _VersionedTagHeadStore()
+    config = RuntimeConfig(database_url=sqlite_url(path))
+    registry = ArchiveStoreRegistry(
+        {
+            "archive": archive_store_binding(primary),
+            "mirror": archive_store_binding(mirror),
+        }
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        session.add(
+            copy := CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/opaque-docs",
+                last_uploaded_at=utc_timestamp_now(),
+                last_verified_at=utc_timestamp_now(),
+            )
+        )
+        session.flush()
+        ensure_tag_publication_for_copy(
+            session,
+            collection=collection,
+            store_name=copy.store,
+        )
+        initial_identity = collection.tag_set_identity
+    service = SqlAlchemyCollectionTagService(
+        config,
+        registry,
+        session_factory=factory,
+    )
+
+    if destination_initialized:
+        for _ in range(16):
+            with session_scope(factory) as session:  # type: ignore[arg-type]
+                publication = session.get(CollectionTagPublicationRecord, (1, "mirror"))
+                assert publication is not None
+                if publication.state == "published":
+                    break
+            assert service.process_due(limit=1) == 1
+        added = service.add(
+            1,
+            tag="workflow:archive",
+            operation_id="replica-add",
+            expected_revision=1,
+            expected_tag_set_identity=initial_identity,
+            principal=_principal("source:camera", "workflow:archive"),
+        )
+        ambiguous_revision = 2
+        expected_revision = 2
+        expected_identity = str(added["tag_set_identity"])
+    else:
+        ambiguous_revision = 1
+        expected_revision = 1
+        expected_identity = initial_identity
+
+    mirror.lose_next_head_response = True
+    for _ in range(16):
+        assert service.process_due(limit=1) == 1
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            publication = session.get(CollectionTagPublicationRecord, (1, "mirror"))
+            assert publication is not None
+            if publication.state == "retry_wait":
+                break
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "mirror", "tag_head"),
+        )
+        assert attempt is not None and attempt.document_revision == ambiguous_revision
+
+    if destination_initialized:
+        newest = service.remove(
+            1,
+            tag="workflow:archive",
+            operation_id="replica-remove",
+            expected_revision=expected_revision,
+            expected_tag_set_identity=expected_identity,
+            principal=_principal("source:camera", "workflow:archive"),
+        )
+    else:
+        newest = service.add(
+            1,
+            tag="workflow:archive",
+            operation_id="replica-add",
+            expected_revision=expected_revision,
+            expected_tag_set_identity=expected_identity,
+            principal=_principal("source:camera", "workflow:archive"),
+        )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionTagPublicationRecord, (1, "mirror"))
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "mirror", "tag_head"),
+        )
+        assert publication is not None
+        assert publication.desired_revision == newest["revision"]
+        assert publication.state == "retry_wait"
+        assert attempt is not None and attempt.document_revision == ambiguous_revision
+        publication.next_attempt_at = utc_timestamp_now()
+        attempted_head = CollectionTagHeadDocument.from_json_bytes(attempt.document_bytes)
+        attempted_revision = session.get(
+            CollectionTagRevisionRecord,
+            (1, ambiguous_revision),
+        )
+        assert attempted_revision is not None
+        attempted_revision.cleanup_started_at = "2026-01-01T00:00:00.000000Z"
+
+    for _ in range(16):
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            metrics = _reap_unreferenced_tag_history(
+                session,
+                limit=100,
+                cleanup_before="2026-02-01T00:00:00.000000Z",
+                cleanup_started_at="2026-02-01T00:00:00.000000Z",
+            )
+        if metrics.changed_rows == 0:
+            break
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.scalar(
+            select(
+                exists().where(
+                    CollectionTagPublicationFrontierRecord.collection_id == 1,
+                    CollectionTagPublicationFrontierRecord.store == "mirror",
+                    CollectionTagPublicationFrontierRecord.head_identity
+                    == attempted_head.head_identity,
+                )
+            )
+        )
+        if attempted_head.root_sha256 is not None:
+            assert session.get(CollectionTagNodeRecord, attempted_head.root_sha256) is not None
+
+    restarted = SqlAlchemyCollectionTagService(
+        config,
+        registry,
+        session_factory=make_session_factory(config.database_url),
+    )
+    for _ in range(64):
+        if restarted.process_due(limit=1) == 0:
+            break
+
+    head, tags = _recover_stored_tags(
+        mirror,
+        prefix="archives/mirror/opaque-docs",
+    )
+    assert head.revision == newest["revision"]
+    assert tags == (
+        {"source:camera"} if destination_initialized else {"source:camera", "workflow:archive"}
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionTagPublicationRecord, (1, "mirror"))
+        assert publication is not None and publication.state == "published"
+        assert publication.published_revision == newest["revision"]
+        assert session.query(CollectionMutableDocumentPublicationAttemptRecord).count() == 0
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not mirror.retained_revisions
 
 
 class _DelayedTagHeadStore(MemoryArchiveStore):
@@ -1105,6 +1285,33 @@ class _AmbiguousTagDeleteStore(MemoryArchiveStore):
             raise RuntimeError("ambiguous provider response")
 
 
+class _PersistentTagDeleteFailureStore(MemoryArchiveStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_deletes = True
+        self.delete_attempts = 0
+
+    def delete_collection_tag_node(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        digest: str,
+        expected_current_stored_sha256: str,
+        provider_revision: str | None,
+    ) -> None:
+        self.delete_attempts += 1
+        if self.fail_deletes:
+            raise RuntimeError("persistent provider failure")
+        super().delete_collection_tag_node(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+            digest=digest,
+            expected_current_stored_sha256=expected_current_stored_sha256,
+            provider_revision=provider_revision,
+        )
+
+
 def test_tag_node_gc_resumes_idempotently_after_an_ambiguous_delete(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     store = _AmbiguousTagDeleteStore()
@@ -1157,6 +1364,371 @@ def test_tag_node_gc_resumes_idempotently_after_an_ambiguous_delete(tmp_path: Pa
             break
     with session_scope(factory) as session:  # type: ignore[arg-type]
         assert session.scalar(select(CollectionTagNodeGcRecord)) is None
+
+
+@pytest.mark.parametrize("restart_state", ("pending", "deleting", "retry_wait"))
+def test_reused_tag_node_advances_its_exact_gc_dependency_through_public_maintenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restart_state: str,
+) -> None:
+    path = tmp_path / f"catalog-{restart_state}.sqlite3"
+    store = _AmbiguousTagDeleteStore()
+    service, factory, _store = _service(path, archive_store=store)
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="gc-liveness-add",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    service.remove(
+        1,
+        tag="workflow:archive",
+        operation_id="gc-liveness-remove",
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        for event in session.scalars(select(CatalogEventRecord)):
+            event.committed_at = "2026-01-01T00:00:00.000000Z"
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    catalog = SqlAlchemyCatalogSyncService(
+        RuntimeConfig(
+            database_url=sqlite_url(path),
+            catalog_sync_history_retention=timedelta(days=1),
+            catalog_sync_bootstrap_lifetime=timedelta(hours=1),
+            catalog_sync_cursor_lifetime=timedelta(hours=1),
+            browse_token_lifetime=timedelta(hours=1),
+        ),
+        session_factory=factory,
+    )
+    catalog.reap_expired_history(limit=64)
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 1, 0, 1, tzinfo=UTC),
+    )
+    for _ in range(64):
+        catalog.reap_expired_history(limit=1)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            revisions = list(
+                session.scalars(
+                    select(CollectionTagRevisionRecord.revision).order_by(
+                        CollectionTagRevisionRecord.revision
+                    )
+                )
+            )
+        if revisions == [3]:
+            break
+    else:  # pragma: no cover - three tiny authorities have bounded cleanup state
+        raise AssertionError("retired tag authorities did not expire")
+
+    for _ in range(128):
+        assert service.process_due(limit=1) in {0, 1}
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            gc = session.scalar(select(CollectionTagNodeGcRecord))
+            if gc is not None and gc.state == "retry_wait":
+                reclaimed_digest = gc.node_digest
+                break
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("tag-node reclamation did not reach its ambiguous result")
+
+    with pytest.raises(ServiceUnavailable, match="waiting for node cleanup"):
+        service.add(
+            1,
+            tag="workflow:archive",
+            operation_id="gc-liveness-readd",
+            expected_revision=3,
+            expected_tag_set_identity=initial_identity,
+            principal=principal,
+        )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest))
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "archive", "tag_head"),
+        )
+        assert publication is not None and gc is not None and attempt is not None
+        assert publication.desired_revision == 4
+        assert attempt.document_revision == 4
+        assert (
+            session.get(
+                CollectionTagPublicationFrontierRecord,
+                (1, "archive", publication.desired_head_identity, reclaimed_digest),
+            )
+            is not None
+        )
+
+    # Independent due cleanup may advance, but an unchanged future dependency never
+    # masquerades as progress once all ready work has drained.
+    for _ in range(16):
+        if service.process_due(limit=1) == 0:
+            break
+    else:  # pragma: no cover - only prior-head cleanup can be independently due
+        raise AssertionError("future dependency did not become an idle scheduler result")
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest))
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        assert gc is not None and publication is not None
+        gc.state = restart_state
+        gc.next_attempt_at = utc_timestamp_now()
+        publication.next_attempt_at = utc_timestamp_now()
+    restarted = SqlAlchemyCollectionTagService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=make_session_factory(sqlite_url(path)),
+    )
+    requeued = restarted.requeue_interrupted_for_startup(limit=1)
+    assert requeued == (1 if restart_state == "deleting" else 0)
+
+    for _ in range(128):
+        progressed = restarted.process_due(limit=1)
+        assert progressed in {0, 1}
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+            settled = (
+                publication is not None
+                and publication.state == "published"
+                and publication.published_revision == 4
+            )
+        if settled:
+            break
+        assert progressed == 1
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("reused tag authority did not converge")
+
+    replay = restarted.add(
+        1,
+        tag="workflow:archive",
+        operation_id="gc-liveness-readd",
+        expected_revision=3,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    assert replay["revision"] == 4
+    head, tags = _recover_stored_tags(store)
+    assert head.revision == 4
+    assert tags == {"source:camera", "workflow:archive"}
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest)) is None
+        assert session.query(CollectionMutableDocumentPublicationAttemptRecord).count() == 0
+        current_nodes = set(
+            session.scalars(
+                select(CollectionTagPublicationFrontierRecord.node_digest).where(
+                    CollectionTagPublicationFrontierRecord.collection_id == 1,
+                    CollectionTagPublicationFrontierRecord.store == "archive",
+                    CollectionTagPublicationFrontierRecord.head_identity == head.head_identity,
+                )
+            )
+        )
+        assert reclaimed_digest in current_nodes
+    assert restarted.process_due(limit=1) in {0, 1}
+    assert f"archives/archive/opaque-docs/{collection_tag_node_path(reclaimed_digest)}" in (
+        store.objects
+    )
+
+
+def test_persistent_tag_gc_failure_is_bounded_and_does_not_starve_other_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    archive = _PersistentTagDeleteFailureStore()
+    service, factory, _store = _service(path, archive_store=archive)
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="persistent-gc-add",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    service.remove(
+        1,
+        tag="workflow:archive",
+        operation_id="persistent-gc-remove",
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        for event in session.scalars(select(CatalogEventRecord)):
+            event.committed_at = "2026-01-01T00:00:00.000000Z"
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, tzinfo=UTC),
+    )
+    catalog = SqlAlchemyCatalogSyncService(
+        RuntimeConfig(
+            database_url=sqlite_url(path),
+            catalog_sync_history_retention=timedelta(days=1),
+            catalog_sync_bootstrap_lifetime=timedelta(hours=1),
+            catalog_sync_cursor_lifetime=timedelta(hours=1),
+            browse_token_lifetime=timedelta(hours=1),
+        ),
+        session_factory=factory,
+    )
+    catalog.reap_expired_history(limit=64)
+    monkeypatch.setattr(
+        "riverhog_core.services.catalog_sync.utc_now",
+        lambda: datetime(2026, 9, 8, 1, 0, 1, tzinfo=UTC),
+    )
+    for _ in range(64):
+        catalog.reap_expired_history(limit=1)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            revisions = list(
+                session.scalars(
+                    select(CollectionTagRevisionRecord.revision).order_by(
+                        CollectionTagRevisionRecord.revision
+                    )
+                )
+            )
+        if revisions == [3]:
+            break
+    else:  # pragma: no cover - three tiny authorities have bounded cleanup state
+        raise AssertionError("retired tag authorities did not expire")
+
+    for _ in range(128):
+        assert service.process_due(limit=1) in {0, 1}
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            gc = session.scalar(select(CollectionTagNodeGcRecord))
+            if gc is not None and gc.state == "retry_wait":
+                reclaimed_digest = gc.node_digest
+                break
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("tag-node reclamation did not reach provider failure")
+    assert archive.delete_attempts == 1
+
+    with pytest.raises(ServiceUnavailable, match="waiting for node cleanup"):
+        service.add(
+            1,
+            tag="workflow:archive",
+            operation_id="persistent-gc-readd",
+            expected_revision=3,
+            expected_tag_set_identity=initial_identity,
+            principal=principal,
+        )
+
+    mirror = MemoryArchiveStore()
+    registry = ArchiveStoreRegistry(
+        {
+            "archive": archive_store_binding(archive),
+            "mirror": archive_store_binding(mirror),
+        }
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest))
+        archive_publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        collection = session.get(CollectionRecord, 1)
+        assert gc is not None and archive_publication is not None and collection is not None
+        gc.next_attempt_at = "9999-12-31T23:59:59.999999Z"
+        archive_publication.next_attempt_at = gc.next_attempt_at
+        session.add(
+            mirror_copy := CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/opaque-docs",
+                last_uploaded_at=utc_timestamp_now(),
+                last_verified_at=utc_timestamp_now(),
+            )
+        )
+        session.flush()
+        ensure_tag_publication_for_copy(
+            session,
+            collection=collection,
+            store_name=mirror_copy.store,
+        )
+
+    restarted = SqlAlchemyCollectionTagService(
+        RuntimeConfig(database_url=sqlite_url(path)),
+        registry,
+        session_factory=make_session_factory(sqlite_url(path)),
+    )
+    for _ in range(128):
+        progressed = restarted.process_due(limit=1)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            mirror_publication = session.get(CollectionTagPublicationRecord, (1, "mirror"))
+            mirror_settled = (
+                mirror_publication is not None and mirror_publication.state == "published"
+            )
+        if mirror_settled:
+            break
+        assert progressed == 1
+        assert archive.delete_attempts == 1
+    else:  # pragma: no cover - one tiny tag authority has fixed-depth work
+        raise AssertionError("unrelated replica publication was starved")
+    mirror_head, mirror_tags = _recover_stored_tags(
+        mirror,
+        prefix="archives/mirror/opaque-docs",
+    )
+    assert mirror_head.revision == 3
+    assert mirror_tags == {"source:camera"}
+    for _ in range(128):
+        if restarted.process_due(limit=1) == 0:
+            break
+    assert archive.delete_attempts == 1
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest))
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        assert gc is not None and publication is not None
+        gc.next_attempt_at = utc_timestamp_now()
+        publication.next_attempt_at = utc_timestamp_now()
+    assert restarted.process_due(limit=1) == 1
+    assert archive.delete_attempts == 2
+    assert restarted.process_due(limit=128) == 0
+    assert archive.delete_attempts == 2
+
+    archive.fail_deletes = False
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        gc = session.get(CollectionTagNodeGcRecord, (1, "archive", reclaimed_digest))
+        publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+        assert gc is not None and publication is not None
+        gc.next_attempt_at = utc_timestamp_now()
+        publication.next_attempt_at = utc_timestamp_now()
+    for _ in range(128):
+        progressed = restarted.process_due(limit=1)
+        with session_scope(factory) as session:  # type: ignore[arg-type]
+            publication = session.get(CollectionTagPublicationRecord, (1, "archive"))
+            settled = (
+                publication is not None
+                and publication.state == "published"
+                and publication.published_revision == 4
+            )
+        if settled:
+            break
+        assert progressed == 1
+    else:  # pragma: no cover - fixed-depth tag closure is much smaller
+        raise AssertionError("publication did not recover after provider failure")
+    replay = restarted.add(
+        1,
+        tag="workflow:archive",
+        operation_id="persistent-gc-readd",
+        expected_revision=3,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    assert replay["revision"] == 4
 
 
 def test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts(

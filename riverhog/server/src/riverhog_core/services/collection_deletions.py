@@ -31,6 +31,7 @@ from riverhog_core.catalog_models import (
     CollectionDeletionRecord,
     CollectionDescriptionPublicationRecord,
     CollectionFileRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagPublicationRecord,
@@ -957,6 +958,27 @@ def _active_blockers(
             description_publications,
             render=lambda store: f"collection description publication is active: {store}",
             overflow="additional collection description publications are active",
+        )
+    )
+    mutable_document_attempts = list(
+        session.execute(
+            select(
+                CollectionMutableDocumentPublicationAttemptRecord.store,
+                CollectionMutableDocumentPublicationAttemptRecord.document_kind,
+            )
+            .where(CollectionMutableDocumentPublicationAttemptRecord.collection_id == collection_id)
+            .order_by(
+                CollectionMutableDocumentPublicationAttemptRecord.store,
+                CollectionMutableDocumentPublicationAttemptRecord.document_kind,
+            )
+            .limit(COLLECTION_DELETION_BLOCKER_CATEGORY_SAMPLE_MAX + 1)
+        )
+    )
+    blockers.extend(
+        _bounded_blocker_sample(
+            mutable_document_attempts,
+            render=lambda value: f"collection {value[1]} publication is active: {value[0]}",
+            overflow="additional mutable collection document publications are active",
         )
     )
     return blockers

@@ -147,8 +147,8 @@ def test_agents_requires_post_push_github_validation() -> None:
     assert "watch the pushed commit's GitHub Actions checks through completion" in agents
     assert "Required GitHub checks are part of complete validation" in agents
     assert "`release.toml` owns the release-governance policy" in agents
-    assert "fully green `release/v1` pull request" in agents
-    assert "fast-forward `main` to that exact accepted commit" in agents
+    assert "Direct commits to `main`" in agents
+    assert "Keep the protected `release/v1` branch pinned as an ancestor" in agents
     assert "Provider qualification stays disabled" in agents
     assert "never moves a v1 tag" in agents
 

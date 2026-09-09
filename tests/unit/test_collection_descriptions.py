@@ -26,6 +26,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
     CollectionFileRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
@@ -884,6 +885,129 @@ def test_description_acknowledges_one_copy_then_reconciles_every_retained_copy(
         .description_publication
         == "current"
     )
+
+
+@pytest.mark.parametrize("destination_initialized", (False, True))
+def test_description_replica_reconciles_exact_ambiguous_attempt_before_newer_desired(
+    tmp_path: Path,
+    destination_initialized: bool,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    config, factory, primary, _registry = _seed(path)
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        session.add(
+            CollectionArchiveCopyRecord(
+                collection_id=1,
+                store="mirror",
+                state="uploaded",
+                archive_storage_prefix="archives/mirror/1",
+                last_uploaded_at=NOW,
+                last_verified_at=NOW,
+            )
+        )
+        session.add(
+            CollectionDescriptionPublicationRecord(
+                collection_id=1,
+                store="mirror",
+                desired_revision=0,
+                desired_identity=initial_identity,
+                published_revision=0,
+                published_identity=initial_identity,
+                state="published",
+                next_attempt_at=None,
+            )
+        )
+    mirror = VersionedDescriptionStore()
+    registry = ArchiveStoreRegistry(
+        {
+            "archive": archive_store_binding(primary),
+            "mirror": archive_store_binding(mirror),
+        }
+    )
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        registry,
+        session_factory=factory,
+    )
+
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    if destination_initialized:
+        assert service.process_due(limit=1) == 1
+        second = service.replace(
+            1,
+            description="second",
+            expected_identity=str(first["description_identity"]),
+            principal=PRINCIPAL,
+        )
+        ambiguous_revision = 2
+        expected_identity = str(second["description_identity"])
+    else:
+        ambiguous_revision = 1
+        expected_identity = str(first["description_identity"])
+
+    mirror.lose_next_response = True
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "mirror", "description"),
+        )
+        assert publication is not None and publication.state == "retry_wait"
+        assert attempt is not None and attempt.document_revision == ambiguous_revision
+
+    newest = service.replace(
+        1,
+        description="newest",
+        expected_identity=expected_identity,
+        principal=PRINCIPAL,
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        attempt = session.get(
+            CollectionMutableDocumentPublicationAttemptRecord,
+            (1, "mirror", "description"),
+        )
+        assert publication is not None
+        assert publication.desired_revision == newest["description_revision"]
+        assert publication.state == "retry_wait"
+        assert attempt is not None and attempt.document_revision == ambiguous_revision
+        publication.next_attempt_at = NOW
+
+    restarted = SqlAlchemyCollectionDescriptionService(
+        config,
+        registry,
+        session_factory=make_session_factory(config.database_url),
+    )
+    for _ in range(16):
+        if restarted.process_due(limit=1) == 0:
+            break
+
+    document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(
+            mirror.objects[f"archives/mirror/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"],
+            DEV_ARCHIVE_PASSPHRASE,
+        )
+    )
+    assert document.revision == newest["description_revision"]
+    assert document.description == "newest"
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        publication = session.get(CollectionDescriptionPublicationRecord, (1, "mirror"))
+        assert publication is not None and publication.state == "published"
+        assert publication.published_revision == newest["description_revision"]
+        assert session.query(CollectionMutableDocumentPublicationAttemptRecord).count() == 0
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not mirror.retained_revisions
 
 
 def test_description_status_excludes_incomplete_archive_copies(tmp_path: Path) -> None:

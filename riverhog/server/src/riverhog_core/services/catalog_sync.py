@@ -44,6 +44,7 @@ from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CatalogSyncStateRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagMutationNodeReferenceRecord,
@@ -648,6 +649,18 @@ def _reap_unreferenced_tag_history_rows(
             .where(
                 CollectionTagRevisionRecord.cleanup_started_at.is_not(None),
                 CollectionTagRevisionRecord.cleanup_started_at < cleanup_before,
+                ~exists(
+                    select(1).where(
+                        CollectionMutableDocumentPublicationAttemptRecord.collection_id
+                        == CollectionTagPublicationFrontierRecord.collection_id,
+                        CollectionMutableDocumentPublicationAttemptRecord.store
+                        == CollectionTagPublicationFrontierRecord.store,
+                        CollectionMutableDocumentPublicationAttemptRecord.document_kind
+                        == "tag_head",
+                        CollectionMutableDocumentPublicationAttemptRecord.document_identity
+                        == CollectionTagPublicationFrontierRecord.head_identity,
+                    )
+                ),
             )
             .order_by(
                 CollectionTagRevisionRecord.cleanup_started_at,

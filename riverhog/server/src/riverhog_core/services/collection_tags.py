@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -45,6 +46,7 @@ from riverhog_core.catalog_models import (
     ArchiveCopyRetirementRecord,
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagMutationNodeReferenceRecord,
@@ -64,11 +66,27 @@ from riverhog_core.collection_access import collection_access_filter, require_co
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
+from riverhog_core.services.mutable_document_publication import (
+    create_mutable_document_publication_attempt,
+    retain_attempt_superseded_document,
+    validate_mutable_document_publication_attempt,
+)
 from riverhog_core.services.mutable_document_reclamation import (
     process_due_mutable_document_reclamations,
     requeue_interrupted_mutable_document_reclamations,
-    retain_superseded_mutable_document,
 )
+
+type _TagNodeGcKey = tuple[int, str, str]
+
+
+@dataclass(frozen=True)
+class _PublicationStepResult:
+    progressed: bool
+    blocked_gc: _TagNodeGcKey | None = None
+
+
+class _PublicationAttemptFailed(RuntimeError):
+    """An exact provider attempt failed after retaining its retry identity."""
 
 
 def build_collection_tag_set(
@@ -423,7 +441,13 @@ class SqlAlchemyCollectionTagService:
                 if publication is None:
                     raise RuntimeError("collection tag publication is unavailable")
                 store_name = publication.store
-            self._process_publication_step(collection_id, store_name)
+            result = self._process_publication_step(collection_id, store_name)
+            if result.blocked_gc is not None:
+                if self._process_gc_step(key=result.blocked_gc):
+                    continue
+                raise ServiceUnavailable("collection tag publication is waiting for node cleanup")
+            if not result.progressed:
+                return
         raise RuntimeError("collection tag mutation exceeded fixed-depth path work")
 
     def requeue_interrupted_for_startup(self, *, limit: int = 100) -> int:
@@ -511,10 +535,33 @@ class SqlAlchemyCollectionTagService:
                 break
             else:
                 try:
-                    self._process_publication_step(*key)
+                    result = self._process_publication_step(*key)
+                except _PublicationAttemptFailed:
+                    processed += 1
+                    continue
                 except Exception as exc:
                     self._record_publication_failure(*key, exc)
-                processed += 1
+                    processed += 1
+                    continue
+                if result.progressed:
+                    processed += 1
+                    continue
+                if result.blocked_gc is not None and self._process_gc_step(key=result.blocked_gc):
+                    processed += 1
+                    continue
+                if self._process_reachability_step() or self._process_gc_step():
+                    processed += 1
+                    continue
+                reclaimed = process_due_mutable_document_reclamations(
+                    self._session_factory,
+                    self._archive_stores,
+                    document_kind="tag_head",
+                    limit=1,
+                )
+                if reclaimed:
+                    processed += reclaimed
+                    continue
+                break
         return processed
 
     def _process_reachability_step(self) -> bool:
@@ -558,28 +605,34 @@ class SqlAlchemyCollectionTagService:
                 (frontier.collection_id, frontier.store),
             )
             node = session.get(CollectionTagNodeRecord, frontier.node_digest)
-            if publication is None or node is None:
+            if publication is None or publication.published_head_identity is None or node is None:
                 raise RuntimeError("published collection tag reachability state is unavailable")
             for child in decode_collection_tag_node(node.encoded).children:
                 _add_frontier_node(
                     session,
                     publication=publication,
+                    head_identity=publication.published_head_identity,
                     digest=child.digest,
                     expanded=False,
                 )
             frontier.expanded = True
             return True
 
-    def _process_gc_step(self) -> bool:
+    def _process_gc_step(self, *, key: _TagNodeGcKey | None = None) -> bool:
         with session_scope(self._session_factory) as session:
             now = utc_timestamp_now()
-            gc = session.scalar(
-                select(CollectionTagNodeGcRecord)
-                .where(
-                    CollectionTagNodeGcRecord.state.in_(("pending", "retry_wait")),
-                    CollectionTagNodeGcRecord.next_attempt_at <= now,
+            statement = select(CollectionTagNodeGcRecord).where(
+                CollectionTagNodeGcRecord.state.in_(("pending", "retry_wait")),
+                CollectionTagNodeGcRecord.next_attempt_at <= now,
+            )
+            if key is not None:
+                statement = statement.where(
+                    CollectionTagNodeGcRecord.collection_id == key[0],
+                    CollectionTagNodeGcRecord.store == key[1],
+                    CollectionTagNodeGcRecord.node_digest == key[2],
                 )
-                .order_by(
+            gc = session.scalar(
+                statement.order_by(
                     CollectionTagNodeGcRecord.next_attempt_at,
                     CollectionTagNodeGcRecord.collection_id,
                     CollectionTagNodeGcRecord.store,
@@ -589,6 +642,8 @@ class SqlAlchemyCollectionTagService:
                 .with_for_update(skip_locked=True)
             )
             if gc is None:
+                if key is not None:
+                    return False
                 published = session.scalar(
                     select(CollectionTagPublishedNodeRecord)
                     .join(
@@ -658,30 +713,6 @@ class SqlAlchemyCollectionTagService:
                 )
                 session.add(gc)
                 session.flush()
-            publication = session.get(
-                CollectionTagPublicationRecord,
-                (gc.collection_id, gc.store),
-            )
-            still_obsolete = (
-                publication is not None
-                and publication.state == "published"
-                and publication.desired_head_identity == gc.expected_head_identity
-                and publication.published_head_identity == gc.expected_head_identity
-                and session.scalar(
-                    select(
-                        exists().where(
-                            CollectionTagPublicationFrontierRecord.collection_id
-                            == gc.collection_id,
-                            CollectionTagPublicationFrontierRecord.store == gc.store,
-                            CollectionTagPublicationFrontierRecord.node_digest == gc.node_digest,
-                        )
-                    )
-                )
-                is False
-            )
-            if not still_obsolete:
-                session.delete(gc)
-                return True
             copy = session.get(CollectionArchiveCopyRecord, (gc.collection_id, gc.store))
             if copy is None or copy.archive_storage_prefix is None:
                 session.delete(gc)
@@ -717,8 +748,15 @@ class SqlAlchemyCollectionTagService:
                 )
                 if current is not None:
                     current.state = "retry_wait"
-                    current.next_attempt_at = format_utc_timestamp(utc_now() + timedelta(seconds=2))
+                    retry_at = format_utc_timestamp(utc_now() + timedelta(seconds=2))
+                    current.next_attempt_at = retry_at
                     current.failure = f"{type(exc).__name__}: {exc}"[:1000]
+                    publication = session.get(
+                        CollectionTagPublicationRecord,
+                        (collection_id, store_name),
+                    )
+                    if publication is not None and publication.state != "published":
+                        publication.next_attempt_at = retry_at
             return True
         with session_scope(self._session_factory) as session:
             current = session.get(CollectionTagNodeGcRecord, (collection_id, store_name, digest))
@@ -731,7 +769,9 @@ class SqlAlchemyCollectionTagService:
                 session.delete(current)
         return True
 
-    def _process_publication_step(self, collection_id: int, store_name: str) -> None:
+    def _process_publication_step(
+        self, collection_id: int, store_name: str
+    ) -> _PublicationStepResult:
         with session_scope(self._session_factory) as session:
             publication = session.scalar(
                 select(CollectionTagPublicationRecord)
@@ -742,7 +782,7 @@ class SqlAlchemyCollectionTagService:
                 .with_for_update(skip_locked=True)
             )
             if publication is None or publication.state == "published":
-                return
+                return _PublicationStepResult(progressed=False)
             collection = session.get(CollectionRecord, collection_id)
             copy = session.get(CollectionArchiveCopyRecord, (collection_id, store_name))
             if (
@@ -754,31 +794,55 @@ class SqlAlchemyCollectionTagService:
                 raise Conflict("collection tag destination archive copy is incomplete")
             if session.get(ArchiveCopyRetirementRecord, (collection_id, store_name)) is not None:
                 raise Conflict("collection archive copy retirement is active")
+            attempt = session.get(
+                CollectionMutableDocumentPublicationAttemptRecord,
+                (collection_id, store_name, "tag_head"),
+            )
+            if attempt is None:
+                head = CollectionTagHeadDocument.seal(
+                    archive_root_sha256=str(collection.archive_root_sha256),
+                    revision=publication.desired_revision,
+                    root_sha256=_revision_root(
+                        session, collection_id, publication.desired_revision, publication
+                    ),
+                )
+                if head.head_identity != publication.desired_head_identity:
+                    raise RuntimeError("collection tag publication authority differs")
+                attempt = create_mutable_document_publication_attempt(
+                    session,
+                    collection_id=collection_id,
+                    store=store_name,
+                    document_kind="tag_head",
+                    document=head.to_json_bytes(),
+                    archive_storage_prefix=copy.archive_storage_prefix,
+                    passphrase_id=collection.passphrase_id,
+                    prior_object_path=publication.head_object_path,
+                    prior_provider_revision=publication.head_provider_revision,
+                    prior_stored_bytes=publication.head_stored_bytes,
+                    prior_stored_sha256=publication.head_stored_sha256,
+                )
+            retained_document = validate_mutable_document_publication_attempt(attempt)
+            if not isinstance(retained_document, CollectionTagHeadDocument):
+                raise RuntimeError("tag-head publication attempt has another document kind")
+            if copy.archive_storage_prefix != attempt.archive_storage_prefix:
+                raise Conflict("collection tag destination changed during publication")
             frontier = session.scalar(
                 select(CollectionTagPublicationFrontierRecord)
                 .where(
                     CollectionTagPublicationFrontierRecord.collection_id == collection_id,
                     CollectionTagPublicationFrontierRecord.store == store_name,
                     CollectionTagPublicationFrontierRecord.head_identity
-                    == publication.desired_head_identity,
+                    == retained_document.head_identity,
                     CollectionTagPublicationFrontierRecord.published.is_(False),
                 )
                 .order_by(CollectionTagPublicationFrontierRecord.node_digest)
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
-            prefix = copy.archive_storage_prefix
-            passphrase_id = collection.passphrase_id
-            expected_head_stored_sha256 = publication.head_stored_sha256
-            head = CollectionTagHeadDocument.seal(
-                archive_root_sha256=str(collection.archive_root_sha256),
-                revision=publication.desired_revision,
-                root_sha256=_revision_root(
-                    session, collection_id, publication.desired_revision, publication
-                ),
-            )
-            if head.head_identity != publication.desired_head_identity:
-                raise RuntimeError("collection tag publication authority differs")
+            prefix = attempt.archive_storage_prefix
+            passphrase_id = attempt.passphrase_id
+            expected_head_stored_sha256 = attempt.prior_stored_sha256
+            attempt_identity = attempt.attempt_identity
             if frontier is not None:
                 gc = session.get(
                     CollectionTagNodeGcRecord,
@@ -786,8 +850,15 @@ class SqlAlchemyCollectionTagService:
                 )
                 if gc is not None and not frontier.published:
                     publication.state = "pending"
-                    publication.next_attempt_at = gc.next_attempt_at
-                    return
+                    publication.next_attempt_at = (
+                        format_utc_timestamp(utc_now() + timedelta(seconds=2))
+                        if gc.state == "deleting"
+                        else gc.next_attempt_at
+                    )
+                    return _PublicationStepResult(
+                        progressed=False,
+                        blocked_gc=(collection_id, store_name, frontier.node_digest),
+                    )
                 node = session.get(CollectionTagNodeRecord, frontier.node_digest)
                 if node is None:
                     raise RuntimeError("collection tag publication node is unavailable")
@@ -802,23 +873,41 @@ class SqlAlchemyCollectionTagService:
                 publication.state = "publishing_head"
         store = self._archive_stores.require(store_name).store
         if digest is not None and encoded is not None and decoded is not None:
-            receipt = store.publish_collection_tag_node(
-                collection_id=collection_id,
-                archive_storage_prefix=prefix,
-                digest=digest,
-                encoded=encoded,
-                passphrase_id=passphrase_id,
-            )
+            try:
+                receipt = store.publish_collection_tag_node(
+                    collection_id=collection_id,
+                    archive_storage_prefix=prefix,
+                    digest=digest,
+                    encoded=encoded,
+                    passphrase_id=passphrase_id,
+                )
+            except Exception as exc:
+                self._record_publication_failure(
+                    collection_id,
+                    store_name,
+                    exc,
+                    attempt_identity=attempt_identity,
+                )
+                raise _PublicationAttemptFailed from exc
             with session_scope(self._session_factory) as session:
+                attempt = session.get(
+                    CollectionMutableDocumentPublicationAttemptRecord,
+                    (collection_id, store_name, "tag_head"),
+                )
                 publication = session.get(
                     CollectionTagPublicationRecord, (collection_id, store_name)
                 )
                 frontier = session.get(
                     CollectionTagPublicationFrontierRecord,
-                    (collection_id, store_name, head.head_identity, digest),
+                    (collection_id, store_name, retained_document.head_identity, digest),
                 )
-                if publication is None or frontier is None:
-                    return
+                if (
+                    attempt is None
+                    or attempt.attempt_identity != attempt_identity
+                    or publication is None
+                    or frontier is None
+                ):
+                    return _PublicationStepResult(progressed=True)
                 session.merge(
                     CollectionTagPublishedNodeRecord(
                         collection_id=collection_id,
@@ -836,6 +925,7 @@ class SqlAlchemyCollectionTagService:
                         _add_frontier_node(
                             session,
                             publication=publication,
+                            head_identity=retained_document.head_identity,
                             digest=child.digest,
                             expanded=False,
                         )
@@ -844,15 +934,24 @@ class SqlAlchemyCollectionTagService:
                 publication.state = "pending"
                 publication.next_attempt_at = utc_timestamp_now()
                 publication.failure = None
-            return
+            return _PublicationStepResult(progressed=True)
 
-        receipt = store.publish_collection_tag_head(
-            collection_id=collection_id,
-            archive_storage_prefix=prefix,
-            document=head.to_json_bytes(),
-            passphrase_id=passphrase_id,
-            expected_current_stored_sha256=expected_head_stored_sha256,
-        )
+        try:
+            receipt = store.publish_collection_tag_head(
+                collection_id=collection_id,
+                archive_storage_prefix=prefix,
+                document=retained_document.to_json_bytes(),
+                passphrase_id=passphrase_id,
+                expected_current_stored_sha256=expected_head_stored_sha256,
+            )
+        except Exception as exc:
+            self._record_publication_failure(
+                collection_id,
+                store_name,
+                exc,
+                attempt_identity=attempt_identity,
+            )
+            raise _PublicationAttemptFailed from exc
         with session_scope(self._session_factory) as session:
             publication = session.scalar(
                 select(CollectionTagPublicationRecord)
@@ -863,40 +962,56 @@ class SqlAlchemyCollectionTagService:
                 .with_for_update()
             )
             if publication is None:
-                return
-            if publication.head_stored_sha256 != expected_head_stored_sha256:
-                return
-            retain_superseded_mutable_document(
+                return _PublicationStepResult(progressed=True)
+            attempt = session.scalar(
+                select(CollectionMutableDocumentPublicationAttemptRecord)
+                .where(
+                    CollectionMutableDocumentPublicationAttemptRecord.collection_id
+                    == collection_id,
+                    CollectionMutableDocumentPublicationAttemptRecord.store == store_name,
+                    CollectionMutableDocumentPublicationAttemptRecord.document_kind == "tag_head",
+                )
+                .with_for_update()
+            )
+            if attempt is None or attempt.attempt_identity != attempt_identity:
+                return _PublicationStepResult(progressed=True)
+            if (
+                publication.head_object_path != attempt.prior_object_path
+                or publication.head_provider_revision != attempt.prior_provider_revision
+                or publication.head_stored_bytes != attempt.prior_stored_bytes
+                or publication.head_stored_sha256 != attempt.prior_stored_sha256
+            ):
+                raise Conflict("tag-head publication receipt changed during its attempt")
+            settled_document = validate_mutable_document_publication_attempt(attempt)
+            if not isinstance(settled_document, CollectionTagHeadDocument):
+                raise RuntimeError("tag-head publication attempt has another document kind")
+            retain_attempt_superseded_document(
                 session,
-                collection_id=collection_id,
-                store=store_name,
-                document_kind="tag_head",
-                object_path=publication.head_object_path,
-                provider_revision=publication.head_provider_revision,
-                stored_bytes=publication.head_stored_bytes,
-                stored_sha256=publication.head_stored_sha256,
+                attempt=attempt,
                 replacement=receipt,
             )
-            publication.published_revision = head.revision
-            publication.published_tag_set_identity = head.tag_set_identity
-            publication.published_head_identity = head.head_identity
+            publication.published_revision = settled_document.revision
+            publication.published_tag_set_identity = settled_document.tag_set_identity
+            publication.published_head_identity = settled_document.head_identity
             publication.failure = None
             publication.head_object_path = receipt.object_path
             publication.head_provider_revision = receipt.revision
             publication.head_stored_bytes = receipt.stored_bytes
             publication.head_stored_sha256 = receipt.stored_sha256
             publication.published_at = receipt.published_at
-            if publication.desired_head_identity != head.head_identity:
+            session.delete(attempt)
+            if publication.desired_head_identity != settled_document.head_identity:
                 publication.state = "pending"
                 publication.next_attempt_at = utc_timestamp_now()
-                return
+                return _PublicationStepResult(progressed=True)
             publication.state = "published"
             publication.next_attempt_at = None
             mutation = session.scalar(
                 select(CollectionTagMutationRecord)
                 .where(
                     CollectionTagMutationRecord.collection_id == collection_id,
-                    CollectionTagMutationRecord.result_head_identity == head.head_identity,
+                    CollectionTagMutationRecord.result_head_identity
+                    == settled_document.head_identity,
                     CollectionTagMutationRecord.state != "succeeded",
                 )
                 .with_for_update()
@@ -906,9 +1021,10 @@ class SqlAlchemyCollectionTagService:
                     session,
                     collection_id=collection_id,
                     mutation=mutation,
-                    head=head,
+                    head=settled_document,
                     publication=publication,
                 )
+        return _PublicationStepResult(progressed=True)
 
     def _record_failure(self, collection_id: int, operation_id: str, exc: Exception) -> None:
         with session_scope(self._session_factory) as session:
@@ -919,11 +1035,26 @@ class SqlAlchemyCollectionTagService:
                 mutation.updated_at = utc_timestamp_now()
 
     def _record_publication_failure(
-        self, collection_id: int, store_name: str, exc: Exception
+        self,
+        collection_id: int,
+        store_name: str,
+        exc: Exception,
+        *,
+        attempt_identity: str | None = None,
     ) -> None:
         with session_scope(self._session_factory) as session:
             publication = session.get(CollectionTagPublicationRecord, (collection_id, store_name))
             if publication is None or publication.state == "published":
+                return
+            attempt = session.get(
+                CollectionMutableDocumentPublicationAttemptRecord,
+                (collection_id, store_name, "tag_head"),
+            )
+            if attempt_identity is not None and (
+                attempt is None or attempt.attempt_identity != attempt_identity
+            ):
+                return
+            if attempt_identity is None and attempt is not None:
                 return
             publication.state = "retry_wait"
             publication.failure = f"{type(exc).__name__}: {exc}"[:1000]
@@ -1224,13 +1355,19 @@ def _schedule_publication(
     publication.desired_revision = revision
     publication.desired_tag_set_identity = tag_set_identity
     publication.desired_head_identity = head_identity
-    publication.state = "pending"
-    publication.next_attempt_at = utc_timestamp_now()
-    publication.failure = None
+    attempt = session.get(
+        CollectionMutableDocumentPublicationAttemptRecord,
+        (publication.collection_id, publication.store, "tag_head"),
+    )
+    if attempt is None:
+        publication.state = "pending"
+        publication.next_attempt_at = utc_timestamp_now()
+        publication.failure = None
     if root_sha256 is not None:
         _add_frontier_node(
             session,
             publication=publication,
+            head_identity=head_identity,
             digest=root_sha256,
             expanded=False,
         )
@@ -1240,13 +1377,14 @@ def _add_frontier_node(
     session: Session,
     *,
     publication: CollectionTagPublicationRecord,
+    head_identity: str,
     digest: str,
     expanded: bool,
 ) -> None:
     key = (
         publication.collection_id,
         publication.store,
-        publication.desired_head_identity,
+        head_identity,
         digest,
     )
     if session.get(CollectionTagPublicationFrontierRecord, key) is None:
@@ -1262,7 +1400,7 @@ def _add_frontier_node(
             CollectionTagPublicationFrontierRecord(
                 collection_id=publication.collection_id,
                 store=publication.store,
-                head_identity=publication.desired_head_identity,
+                head_identity=head_identity,
                 node_digest=digest,
                 expanded=expanded,
                 published=already is not None and gc is None,

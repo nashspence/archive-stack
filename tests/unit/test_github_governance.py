@@ -166,19 +166,23 @@ def test_complete_scope_requires_live_immutable_release_state() -> None:
     assert module._immutable_release_status("nashspence/riverhog", scope="complete") == "enabled"
 
 
-def test_pre_v1_lockstep_requires_the_same_exact_commit() -> None:
+def test_pre_v1_main_convergence_requires_release_to_remain_an_ancestor() -> None:
     module = load_script()
     refs = {
         "repos/nashspence/riverhog/git/ref/heads/main": {"object": {"sha": "a" * 40}},
-        "repos/nashspence/riverhog/git/ref/heads/release/v1": {"object": {"sha": "a" * 40}},
+        "repos/nashspence/riverhog/git/ref/heads/release/v1": {"object": {"sha": "b" * 40}},
+        f"repos/nashspence/riverhog/compare/{'b' * 40}...{'a' * 40}": {"status": "ahead"},
     }
     module._gh = refs.__getitem__
 
-    assert module._check_pre_v1_lockstep("nashspence/riverhog") == "a" * 40
+    assert module._check_pre_v1_main_convergence("nashspence/riverhog") == (
+        "a" * 40,
+        "b" * 40,
+    )
 
-    refs["repos/nashspence/riverhog/git/ref/heads/release/v1"] = {"object": {"sha": "b" * 40}}
-    with pytest.raises(module.GovernanceError, match="resolve to the same commit"):
-        module._check_pre_v1_lockstep("nashspence/riverhog")
+    refs[f"repos/nashspence/riverhog/compare/{'b' * 40}...{'a' * 40}"] = {"status": "diverged"}
+    with pytest.raises(module.GovernanceError, match="remain an ancestor"):
+        module._check_pre_v1_main_convergence("nashspence/riverhog")
 
 
 @pytest.mark.parametrize("reviewer_required", [False, True])

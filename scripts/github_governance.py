@@ -152,14 +152,15 @@ def _git_ref_sha(repository: str, ref: str) -> str:
     return value
 
 
-def _check_pre_v1_lockstep(repository: str) -> str:
+def _check_pre_v1_main_convergence(repository: str) -> tuple[str, str]:
     main_sha = _git_ref_sha(repository, "main")
     release_sha = _git_ref_sha(repository, "release/v1")
-    if main_sha != release_sha:
+    comparison = _gh(f"repos/{repository}/compare/{release_sha}...{main_sha}")
+    if comparison.get("status") not in {"ahead", "identical"}:
         raise GovernanceError(
-            "pre-v1 lockstep requires main and release/v1 to resolve to the same commit"
+            "pre-v1 convergence requires the pinned release/v1 commit to remain an ancestor of main"
         )
-    return main_sha
+    return main_sha, release_sha
 
 
 def _check_environment(
@@ -216,8 +217,8 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
     config = tomllib.loads((ROOT / "release.toml").read_text(encoding="utf-8"))
     governance = config["governance"]
     repository = str(governance["repository"])
-    if governance.get("branch_delivery") != "pre-v1-lockstep":
-        raise GovernanceError("release.toml must declare pre-v1 lockstep delivery")
+    if governance.get("branch_delivery") != "pre-v1-main-convergence":
+        raise GovernanceError("release.toml must declare pre-v1 main convergence delivery")
     required_checks = list(governance["required_checks"])
     summaries = _gh(f"repos/{repository}/rulesets")
     by_name = {item["name"]: item for item in summaries}
@@ -234,7 +235,7 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
         int(governance["required_check_integration_id"]),
     )
     _check_tag_ruleset(tag_ruleset)
-    governed_sha = _check_pre_v1_lockstep(repository)
+    governed_sha, release_sha = _check_pre_v1_main_convergence(repository)
     immutable_release_status = _immutable_release_status(repository, scope=scope)
 
     environments = governance["environments"]
@@ -269,10 +270,11 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
         "scope": scope,
         "repository": repository,
         "source_sha": _git_sha(),
-        "branch_delivery": "pre-v1-lockstep",
+        "branch_delivery": "pre-v1-main-convergence",
         "governed_sha": governed_sha,
-        "main": "lockstep-fast-forward-target",
-        "release_branch": "protected-lockstep-authority",
+        "release_sha": release_sha,
+        "main": "active-contract-convergence-authority",
+        "release_branch": "protected-pinned-checkpoint",
         "required_checks": required_checks,
         "tag_policy": "immutable-v1",
         "immutable_releases": immutable_release_status,

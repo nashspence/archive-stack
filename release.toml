@@ -11,7 +11,7 @@ documentation_url = "https://nashspence.github.io/riverhog/v1/"
 repository = "nashspence/riverhog"
 maintainer = "nashspence"
 workflow_source_branch = "main"
-branch_delivery = "pre-v1-lockstep"
+branch_delivery = "pre-v1-main-convergence"
 required_check_integration_id = 15368
 required_checks = [
   "Analyze (actions)",
@@ -44,15 +44,15 @@ required_checks = [
 ]
 
 [governance.main]
-delivery = "Fast-forward only to the exact commit accepted by protected release/v1, followed by exact-SHA GitHub check validation."
+delivery = "Direct maintainer commits during pre-v1 contract convergence, followed by exact-SHA GitHub check validation."
 protection = "An active no-bypass ruleset requires linear history and rejects force-push and deletion; it has no pull-request or pre-push status gate."
 
 [governance.release]
-delivery = "Pull requests into release/v1 with every required check passing against the current head; the accepted commit is then fast-forwarded unchanged to main."
+delivery = "Keep the protected branch pinned until the maintainer declares a new freeze candidate, then fast-forward it to an exact green main commit through its pull-request rail."
 required_approvals = 0
 review_policy = "The sole maintainer must inspect the diff and check result; add approval requirements when another maintainer can provide meaningful review."
-contents = "Current pre-v1 stabilization and release corrections; main and release/v1 remain commit-identical."
-synchronization = "Provider qualification stays disabled between release/v1 acceptance and the immediate fast-forward of main to the same commit."
+contents = "The last synchronized pre-v1 checkpoint; main is the active contract-convergence authority until a new freeze candidate is declared."
+synchronization = "The pinned release/v1 commit must remain an ancestor of main; synchronize only an explicitly selected, fully green main commit."
 
 [governance.tags]
 release_candidate = "v{version}-rc.{candidate}"

@@ -40,6 +40,7 @@ from riverhog_core.catalog_types import (
 COLLECTION_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
 _ARCHIVE_SEQUENCE_ZERO = "0" * 64
 _AUTHORITY_ORDINAL_ZERO = "0" * 64
+_MUTABLE_DOCUMENT_PUBLICATION_BYTES_MAX = COLLECTION_DESCRIPTION_UTF8_BYTES_MAX + 1024
 
 
 def _fixed_lowercase_integer_check(column: str, width: int) -> str:
@@ -1116,6 +1117,76 @@ class CollectionMutableDocumentReclamationRecord(Base):
         ),
         Index(
             "ix_collection_mutable_document_reclamations_owner",
+            "collection_id",
+            "store",
+            "document_kind",
+        ),
+    )
+
+
+class CollectionMutableDocumentPublicationAttemptRecord(Base):
+    """One exact provider write retained independently of newer desired state."""
+
+    __tablename__ = "collection_mutable_document_publication_attempts"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    store: Mapped[str] = mapped_column(String, primary_key=True)
+    document_kind: Mapped[str] = mapped_column(String, primary_key=True)
+    attempt_identity: Mapped[str] = mapped_column(String(64), unique=True)
+    document_revision: Mapped[int] = mapped_column(BigInteger)
+    document_identity: Mapped[str] = mapped_column(String(64))
+    document_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    archive_storage_prefix: Mapped[str] = mapped_column(String)
+    passphrase_id: Mapped[str] = mapped_column(String)
+    prior_object_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    prior_provider_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    prior_stored_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    prior_stored_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "store"],
+            ["collection_archive_copies.collection_id", "collection_archive_copies.store"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "document_kind IN ('description','tag_head')",
+            name="ck_mutable_document_publication_attempts_kind",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("attempt_identity", 64),
+            name="ck_mutable_document_publication_attempts_identity",
+        ),
+        CheckConstraint(
+            f"document_revision >= 1 AND document_revision <= "
+            f"{MAX_COLLECTION_DESCRIPTION_REVISION}",
+            name="ck_mutable_document_publication_attempts_revision",
+        ),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("document_identity", 64),
+            name="ck_mutable_document_publication_attempts_document_identity",
+        ),
+        CheckConstraint(
+            f"octet_length(document_bytes) > 0 AND "
+            f"octet_length(document_bytes) <= {_MUTABLE_DOCUMENT_PUBLICATION_BYTES_MAX}",
+            name="ck_mutable_document_publication_attempts_bytes",
+        ),
+        CheckConstraint(
+            "prior_object_path IS NULL AND prior_provider_revision IS NULL "
+            "AND prior_stored_bytes IS NULL AND prior_stored_sha256 IS NULL OR "
+            "prior_object_path IS NOT NULL AND prior_stored_bytes IS NOT NULL "
+            "AND prior_stored_bytes > 0 AND prior_stored_sha256 IS NOT NULL",
+            name="ck_mutable_document_publication_attempts_prior_receipt",
+        ),
+        CheckConstraint(
+            "prior_stored_sha256 IS NULL OR "
+            + _fixed_lowercase_integer_check("prior_stored_sha256", 64),
+            name="ck_mutable_document_publication_attempts_prior_sha256",
+        ),
+        Index(
+            "ix_mutable_document_publication_attempts_created",
+            "created_at",
             "collection_id",
             "store",
             "document_kind",

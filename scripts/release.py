@@ -515,8 +515,8 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release governance must target the canonical repository")
     if governance["maintainer"] != "nashspence" or governance["workflow_source_branch"] != "main":
         raise ReleaseError("release governance lacks its maintainer or workflow authority")
-    if governance["branch_delivery"] != "pre-v1-lockstep":
-        raise ReleaseError("release governance must keep the pre-v1 branches in lockstep")
+    if governance["branch_delivery"] != "pre-v1-main-convergence":
+        raise ReleaseError("release governance must declare pre-v1 main convergence")
     required_checks = governance["required_checks"]
     if (
         not isinstance(required_checks, list)

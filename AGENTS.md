@@ -79,10 +79,12 @@ make build
 
 After pushing, watch the pushed commit's GitHub Actions checks through completion. Required
 GitHub checks are part of complete validation; fix any failure before handing work back.
-`release.toml` owns the release-governance policy. During the current pre-v1 lockstep, deliver
-changes through a current, fully green `release/v1` pull request, then fast-forward `main` to
-that exact accepted commit and complete its post-push validation. Provider qualification stays
-disabled during that bounded synchronization window. Publication requires its protected GitHub
-environment, a complete governance check with an administrator-readable GitHub token, and never
-moves a v1 tag. GitHub Actions runs the narrower `actions-observable` governance scope because
-its least-privilege token cannot read repository administration settings.
+`release.toml` owns the release-governance policy. Direct commits to `main` are the current
+pre-v1 contract-convergence rail; validate every pushed SHA through GitHub Actions. Keep the
+protected `release/v1` branch pinned as an ancestor until the maintainer explicitly selects a
+new, fully green freeze candidate for synchronization through its pull-request rail. Provider
+qualification stays disabled while that release checkpoint is pinned. Publication
+requires its protected GitHub environment, a complete governance check with an
+administrator-readable GitHub token, and never moves a v1 tag. GitHub Actions runs the narrower
+`actions-observable` governance scope because its least-privilege token cannot read repository
+administration settings.

@@ -25,6 +25,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionDeletionRecord,
     CollectionDescriptionPublicationRecord,
+    CollectionMutableDocumentPublicationAttemptRecord,
     CollectionRecord,
     CollectionTagPublicationRecord,
     RetrievalJobObjectProgressRecord,
@@ -640,7 +641,13 @@ def _build_plan(
         CollectionDescriptionPublicationRecord,
         (collection_id, store),
     )
-    if target_description is not None and target_description.state == "publishing":
+    target_description_attempt = db.get(
+        CollectionMutableDocumentPublicationAttemptRecord,
+        (collection_id, store, "description"),
+    )
+    if target_description_attempt is not None or (
+        target_description is not None and target_description.state == "publishing"
+    ):
         blockers.append("collection description publication is active on the selected copy")
     if collection.description_revision > 0 and not any(
         (
@@ -661,7 +668,13 @@ def _build_plan(
             "retirement would remove the last current durable collection description replica"
         )
     target_tags = db.get(CollectionTagPublicationRecord, (collection_id, store))
-    if target_tags is not None and target_tags.state in {"publishing_nodes", "publishing_head"}:
+    target_tag_attempt = db.get(
+        CollectionMutableDocumentPublicationAttemptRecord,
+        (collection_id, store, "tag_head"),
+    )
+    if target_tag_attempt is not None or (
+        target_tags is not None and target_tags.state in {"publishing_nodes", "publishing_head"}
+    ):
         blockers.append("collection tag publication is active on the selected copy")
     if not any(
         (
