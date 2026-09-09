@@ -354,6 +354,44 @@ class StorageAdapterArchiveStore:
         ):
             raise RuntimeError("collection tag-node provider revision was not reclaimed")
 
+    def delete_collection_document_revision(
+        self,
+        *,
+        object_path: str,
+        provider_revision: str,
+        expected_stored_sha256: str,
+    ) -> None:
+        exact = self._head(
+            object_path=object_path,
+            revision=provider_revision,
+            placement="immediate",
+        )
+        if exact is None:
+            return
+        if _required_stored_sha256(exact, object_path=object_path) != expected_stored_sha256:
+            raise RuntimeError("mutable collection document revision differs from its receipt")
+        current = self._head(object_path=object_path, revision=None, placement="immediate")
+        if current is not None and current.revision == provider_revision:
+            raise RuntimeError("refusing to reclaim the current mutable collection document")
+        self._adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(
+                    object_path=object_path,
+                    revision=provider_revision,
+                ),
+                mode="exact_revision",
+            )
+        )
+        if (
+            self._head(
+                object_path=object_path,
+                revision=provider_revision,
+                placement="immediate",
+            )
+            is not None
+        ):
+            raise RuntimeError("mutable collection document revision was not reclaimed")
+
     def read_archive_artifact(
         self,
         *,

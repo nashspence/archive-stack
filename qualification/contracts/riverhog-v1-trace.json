@@ -259,7 +259,10 @@
         "packages/riverhog-protocol/tests/test_collection_tag_protocol.py::test_late_tag_page_seeks_by_fixed_identity_without_rescanning_prior_tags",
         "tests/unit/test_collection_tags.py::test_provider_nodes_for_retained_exact_revisions_remain_recoverable",
         "tests/unit/test_collection_tags.py::test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts",
-        "tests/integration/test_catalog_schema_postgres.py::test_postgres_tag_history_cleanup_serializes_its_row_work_budget"
+        "tests/unit/test_collection_tags.py::test_tag_node_reclamation_counts_every_edge_and_node_row_at_work_one",
+        "tests/integration/test_catalog_schema_postgres.py::test_postgres_tag_history_cleanup_serializes_its_row_work_budget",
+        "tests/integration/test_catalog_schema_postgres.py::test_postgres_tag_mutation_protects_an_aba_root_before_its_first_commit",
+        "tests/integration/test_collection_upload_custody_concurrency.py::test_postgres_upload_protects_a_reused_tag_root_before_its_first_commit"
       ]
     },
     {
@@ -287,8 +290,8 @@
       ]
     }
   ],
-  "contract_canonical_sha256": "37ced1cd7a6d82c9a5f887694211e752d404dbbe8391199d8830131f29f7ba0a",
-  "contract_projection_sha256": "47827575b646f12ef5a03a7c90b5d7eda811078d2ccf17128802fa4586ddb8c2",
+  "contract_canonical_sha256": "4bf280be007c7995d16005a775795cc04a67afa7249d111e2299ecc4c732c5ba",
+  "contract_projection_sha256": "b85e974efc5d7cd1af6fa1bfbc02c4cf2d247733c0b7f6cab10dc5681d05f3f1",
   "contract_schema": "riverhog-contract-freeze/v1",
   "coverage": {
     "behavioral_witnesses": 12,
@@ -13859,7 +13862,7 @@
       "fixtures": [
         {
           "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-          "sha256": "f66c77e6ccfaad3c7d070418f3b3998a9858de97e8aa20a5d4b12a56fb545572"
+          "sha256": "0b68428eeb9ff0903bf7d4415222e5f4ba1fc5155a6e6475ae2906f12ac51921"
         }
       ],
       "id": "state:riverhog-catalog"

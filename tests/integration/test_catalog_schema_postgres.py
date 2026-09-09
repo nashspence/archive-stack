@@ -4,6 +4,7 @@ import os
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,17 +31,29 @@ from riverhog_core.catalog_models import (
     CatalogEventRecord,
     CatalogSyncStateRecord,
     CollectionArchiveObjectUploadRecord,
+    CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
+    CollectionTagMutationRecord,
+    CollectionTagNodeReclamationRecord,
     CollectionTagNodeRecord,
+    CollectionTagRevisionRecord,
     CollectionUploadProvenanceArchiveVolumeRecord,
     CollectionUploadRecord,
     RetrievalPlanObjectRecord,
     RetrievalPlanPlacementRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.services.catalog_sync import SqlAlchemyCatalogSyncService
+from riverhog_core.services import collection_tags as collection_tags_module
+from riverhog_core.services.catalog_sync import (
+    SqlAlchemyCatalogSyncService,
+    _reap_unreferenced_tag_history,
+)
+from riverhog_core.services.collection_descriptions import (
+    SqlAlchemyCollectionDescriptionService,
+)
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_protocol import collection_description_identity
 from sqlalchemy import inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -49,6 +62,15 @@ from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
     archive_store_binding,
 )
+from tests.unit.test_collection_descriptions import PRINCIPAL as description_principal
+from tests.unit.test_collection_descriptions import (
+    VersionedDescriptionStore,
+)
+from tests.unit.test_collection_descriptions import (
+    _seed as description_seed,
+)
+from tests.unit.test_collection_tags import _principal as tag_principal
+from tests.unit.test_collection_tags import _service as tag_service
 from tests.unit.test_retrieval_service import _seed_collection
 
 pytestmark = pytest.mark.integration
@@ -290,14 +312,15 @@ def test_postgres_tag_history_cleanup_serializes_its_row_work_budget(
 ) -> None:
     initialize_db(isolated_database_url)
     factory = make_session_factory(isolated_database_url)
+    digests = tuple(f"{index:064x}" for index in range(1, 5))
     with session_scope(factory) as session:
         session.add_all(
             CollectionTagNodeRecord(
-                digest=f"{index:064x}",
+                digest=digest,
                 encoded=f"node-{index}".encode(),
                 created_at="2026-09-08T00:00:00.000000Z",
             )
-            for index in range(1, 5)
+            for index, digest in enumerate(digests, start=1)
         )
 
     def reap_one() -> int:
@@ -310,22 +333,148 @@ def test_postgres_tag_history_cleanup_serializes_its_row_work_budget(
         )
         return service.reap_expired_history()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        assert list(executor.map(lambda _index: reap_one(), range(2))) == [0, 0]
-    with session_scope(factory) as session:
-        assert len(list(session.scalars(select(CollectionTagNodeRecord)))) == 2
+    for expected_progress in range(2, 13, 2):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            assert list(executor.map(lambda _index: reap_one(), range(2))) == [0, 0]
+        with session_scope(factory) as session:
+            nodes = set(session.scalars(select(CollectionTagNodeRecord.digest)))
+            claims = set(session.scalars(select(CollectionTagNodeReclamationRecord.node_digest)))
+            progress = sum(
+                (
+                    1
+                    if digest in nodes and digest in claims
+                    else 2
+                    if digest not in nodes and digest in claims
+                    else 3
+                    if digest not in nodes and digest not in claims
+                    else 0
+                )
+                for digest in digests
+            )
+            assert progress == expected_progress
+    assert not nodes
+    assert not claims
 
-    restarted = SqlAlchemyCatalogSyncService(
-        RuntimeConfig(
-            database_url=isolated_database_url,
-            catalog_sync_history_reap_batch_size=1,
-        ),
-        session_factory=make_session_factory(isolated_database_url),
-    )
-    assert restarted.reap_expired_history() == 0
-    assert restarted.reap_expired_history() == 0
+
+def test_postgres_tag_mutation_protects_an_aba_root_before_its_first_commit(
+    isolated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, factory, _store = tag_service(None, database_url=isolated_database_url)
+    principal = tag_principal("source:camera", "workflow:archive")
     with session_scope(factory) as session:
-        assert not list(session.scalars(select(CollectionTagNodeRecord)))
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+        initial_root = collection.tag_root_sha256
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="establish-postgres-aba-root",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    with session_scope(factory) as session:
+        retired = session.get(CollectionTagRevisionRecord, (1, 1))
+        assert retired is not None and retired.root_sha256 == initial_root
+        retired.cleanup_started_at = "2026-01-01T00:00:00.000000Z"
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_scope = collection_tags_module.session_scope
+    paused = False
+
+    @contextmanager
+    def pause_before_commit(session_factory: object) -> Iterator[object]:
+        nonlocal paused
+        with original_scope(session_factory) as session:  # type: ignore[arg-type]
+            yield session
+            mutation = session.get(
+                CollectionTagMutationRecord,
+                (1, "reuse-postgres-aba-root"),
+            )
+            if not paused and mutation is not None and mutation.state == "pending":
+                paused = True
+                entered.set()
+                assert release.wait(timeout=10)
+
+    monkeypatch.setattr(collection_tags_module, "session_scope", pause_before_commit)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            service.remove,
+            1,
+            tag="workflow:archive",
+            operation_id="reuse-postgres-aba-root",
+            expected_revision=2,
+            expected_tag_set_identity=str(added["tag_set_identity"]),
+            principal=principal,
+        )
+        assert entered.wait(timeout=10)
+        with session_scope(factory) as session:
+            metrics = _reap_unreferenced_tag_history(
+                session,
+                limit=100,
+                cleanup_before="2026-02-01T00:00:00.000000Z",
+                cleanup_started_at="2026-02-01T00:00:00.000000Z",
+            )
+            assert metrics.changed_rows > 0
+        with session_scope(factory) as session:
+            assert session.get(CollectionTagNodeRecord, initial_root) is not None
+            assert session.get(CollectionTagNodeReclamationRecord, initial_root) is None
+        release.set()
+        result = pending.result(timeout=10)
+
+    assert result["revision"] == 3
+    page = service.list_collection(
+        1,
+        page_size=100,
+        position=None,
+        expected_revision=3,
+        expected_tag_set_identity=str(result["tag_set_identity"]),
+        principal=principal,
+    )
+    assert page["tags"] == ["source:camera"]
+
+
+def test_postgres_superseded_document_cleanup_workers_claim_distinct_receipts(
+    isolated_database_url: str,
+) -> None:
+    config, factory, _initial, _registry = description_seed(
+        None,
+        database_url=isolated_database_url,
+    )
+    store = VersionedDescriptionStore()
+    stores = ArchiveStoreRegistry({"archive": archive_store_binding(store)})
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        stores,
+        session_factory=factory,
+    )
+    identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    for description in ("first", "second", "third"):
+        result = service.replace(
+            1,
+            description=description,
+            expected_identity=identity,
+            principal=description_principal,
+        )
+        identity = str(result["description_identity"])
+
+    with session_scope(factory) as session:
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 2
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _index: service.process_due(limit=1), range(2))) == [
+            1,
+            1,
+        ]
+    with session_scope(factory) as session:
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not store.retained_revisions
 
 
 def test_postgres_archive_sequence_state_round_trips_full_v1_domain(
