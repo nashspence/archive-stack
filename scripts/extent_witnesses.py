@@ -180,8 +180,14 @@ WITNESSES = (
             "test_provider_nodes_for_retained_exact_revisions_remain_recoverable",
             "tests/unit/test_collection_tags.py::"
             "test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts",
+            "tests/unit/test_collection_tags.py::"
+            "test_tag_node_reclamation_counts_every_edge_and_node_row_at_work_one",
             "tests/integration/test_catalog_schema_postgres.py::"
             "test_postgres_tag_history_cleanup_serializes_its_row_work_budget",
+            "tests/integration/test_catalog_schema_postgres.py::"
+            "test_postgres_tag_mutation_protects_an_aba_root_before_its_first_commit",
+            "tests/integration/test_collection_upload_custody_concurrency.py::"
+            "test_postgres_upload_protects_a_reused_tag_root_before_its_first_commit",
         ),
         gates=("make unit", "make compose-smoke", "make provider-qualification"),
     ),

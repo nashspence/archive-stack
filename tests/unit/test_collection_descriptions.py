@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionDescriptionPublicationRecord,
     CollectionFileRecord,
+    CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagRecord,
@@ -52,7 +55,7 @@ from riverhog_protocol import (
     collection_tag_sha256,
 )
 from riverhog_protocol.errors import PreconditionFailed, ServiceUnavailable
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
@@ -123,11 +126,80 @@ class DelayedDescriptionStore(MemoryArchiveStore):
         )
 
 
+class VersionedDescriptionStore(MemoryArchiveStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_revisions: dict[str, str] = {}
+        self.retained_revisions: dict[tuple[str, str], bytes] = {}
+        self.deleted_revisions: list[tuple[str, str]] = []
+        self.next_revision = 1
+        self.lose_next_response = False
+        self.lose_next_delete_response = False
+
+    def publish_collection_description(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
+    ) -> CollectionDescriptionReceipt:
+        path = f"{archive_storage_prefix}/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+        prior = self.objects.get(path)
+        prior_revision = self.current_revisions.get(path)
+        receipt = super().publish_collection_description(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+            document=document,
+            passphrase_id=passphrase_id,
+            expected_current_stored_sha256=expected_current_stored_sha256,
+        )
+        if prior is self.objects.get(path) and prior_revision is not None:
+            return replace(receipt, revision=prior_revision)
+        if prior is not None and prior_revision is not None:
+            self.retained_revisions[(path, prior_revision)] = prior
+        revision = f"description-revision-{self.next_revision}"
+        self.next_revision += 1
+        self.current_revisions[path] = revision
+        result = replace(receipt, revision=revision)
+        if self.lose_next_response:
+            self.lose_next_response = False
+            raise OSError("ambiguous description replacement response")
+        return result
+
+    def delete_collection_document_revision(
+        self,
+        *,
+        object_path: str,
+        provider_revision: str,
+        expected_stored_sha256: str,
+    ) -> None:
+        self.deleted_revisions.append((object_path, provider_revision))
+        if self.current_revisions.get(object_path) == provider_revision:
+            raise RuntimeError("refusing to reclaim current mutable collection document")
+        prior = self.retained_revisions.get((object_path, provider_revision))
+        if prior is None:
+            return
+        if hashlib.sha256(prior).hexdigest() != expected_stored_sha256:
+            raise RuntimeError("mutable collection document revision differs")
+        del self.retained_revisions[(object_path, provider_revision)]
+        if self.lose_next_delete_response:
+            self.lose_next_delete_response = False
+            raise OSError("ambiguous description revision deletion response")
+
+
 def _seed(
-    path: Path,
+    path: Path | None,
+    *,
+    database_url: str | None = None,
 ) -> tuple[RuntimeConfig, object, MemoryArchiveStore, ArchiveStoreRegistry]:
+    if database_url is None:
+        if path is None:
+            raise ValueError("path or database_url is required")
+        database_url = sqlite_url(path)
     config = RuntimeConfig(
-        database_url=sqlite_url(path),
+        database_url=database_url,
         browse_token_signing_key="description-test-key-000000000000",
     )
     initialize_db(config.database_url)
@@ -850,3 +922,233 @@ def test_description_status_excludes_incomplete_archive_copies(tmp_path: Path) -
     )
     assert summary.archive_copy_count == 2
     assert summary.description_publication == "current"
+
+
+def test_superseded_description_revisions_are_reclaimed_one_at_a_time(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = VersionedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    for description in ("first", "second", None):
+        current = service.replace(
+            1,
+            description=description,
+            expected_identity=identity,
+            principal=PRINCIPAL,
+        )
+        identity = str(current["description_identity"])
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 2
+    assert len(store.retained_revisions) == 2
+
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 1
+    assert len(store.retained_revisions) == 1
+    assert service.process_due(limit=1) == 1
+    assert service.process_due(limit=1) == 0
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not store.retained_revisions
+    path = f"archives/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+    current_document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(store.objects[path], DEV_ARCHIVE_PASSPHRASE)
+    )
+    assert current_document.revision == 3
+    assert current_document.description is None
+
+
+def test_description_replacement_reconciles_receipts_after_an_ambiguous_response(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = VersionedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    store.lose_next_response = True
+    with pytest.raises(ServiceUnavailable, match="publication failed"):
+        service.replace(
+            1,
+            description="second",
+            expected_identity=str(first["description_identity"]),
+            principal=PRINCIPAL,
+        )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        assert collection.description == "first"
+        collection.description_next_attempt_at = NOW
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None and collection.description == "second"
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 1
+    assert len(store.retained_revisions) == 1
+
+
+def test_description_revision_reclamation_reconciles_an_ambiguous_delete(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = VersionedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    service.replace(
+        1,
+        description="second",
+        expected_identity=str(first["description_identity"]),
+        principal=PRINCIPAL,
+    )
+
+    store.lose_next_delete_response = True
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        row = session.scalar(select(CollectionMutableDocumentReclamationRecord))
+        assert row is not None
+        assert row.state == "retry_wait"
+        row.next_attempt_at = NOW
+    assert not store.retained_revisions
+
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    path = f"archives/1/{COLLECTION_DESCRIPTION_RELATIVE_PATH}"
+    current_document = CollectionDescriptionDocument.from_json_bytes(
+        decrypt_age_scrypt(store.objects[path], DEV_ARCHIVE_PASSPHRASE)
+    )
+    assert current_document.revision == 2
+
+
+def test_description_revision_reclamation_resumes_after_interrupted_provider_effect(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = VersionedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    service.replace(
+        1,
+        description="second",
+        expected_identity=str(first["description_identity"]),
+        principal=PRINCIPAL,
+    )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        row = session.scalar(select(CollectionMutableDocumentReclamationRecord))
+        assert row is not None
+        row.state = "deleting"
+    restarted = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    assert restarted.requeue_interrupted_for_startup(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        row = session.scalar(select(CollectionMutableDocumentReclamationRecord))
+        assert row is not None
+        assert row.state == "pending"
+        assert row.failure == "reclamation interrupted before completion"
+
+    assert restarted.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not store.retained_revisions
+
+
+def test_superseded_document_cleanup_receipt_survives_collection_retirement(
+    tmp_path: Path,
+) -> None:
+    config, factory, _initial, _registry = _seed(tmp_path / "catalog.sqlite3")
+    store = VersionedDescriptionStore()
+    service = SqlAlchemyCollectionDescriptionService(
+        config,
+        ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+        session_factory=factory,
+    )
+    initial_identity = collection_description_identity(
+        archive_root_sha256="5" * 64,
+        revision=0,
+        description=None,
+    )
+    first = service.replace(
+        1,
+        description="first",
+        expected_identity=initial_identity,
+        principal=PRINCIPAL,
+    )
+    service.replace(
+        1,
+        description="second",
+        expected_identity=str(first["description_identity"]),
+        principal=PRINCIPAL,
+    )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 1
+        session.execute(delete(CollectionRecord).where(CollectionRecord.id == 1))
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 1
+
+    # Prefix retirement already reclaimed every provider revision.  The independent
+    # receipt remains restartable and its exact deletion is safely idempotent.
+    store.objects.clear()
+    store.current_revisions.clear()
+    store.retained_revisions.clear()
+    assert service.process_due(limit=1) == 1
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0

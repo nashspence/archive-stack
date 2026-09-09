@@ -21,6 +21,7 @@ from riverhog_protocol import (
     CatalogSyncDelete,
     CatalogSyncDescriptor,
     CatalogSyncUpsert,
+    decode_collection_tag_node,
 )
 from riverhog_protocol.errors import (
     BadRequest,
@@ -48,6 +49,7 @@ from riverhog_core.catalog_models import (
     CollectionTagMutationNodeReferenceRecord,
     CollectionTagMutationRecord,
     CollectionTagNodeEdgeRecord,
+    CollectionTagNodeReclamationRecord,
     CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
     CollectionTagPublicationRecord,
@@ -532,6 +534,49 @@ def _reap_unreferenced_tag_history_rows(
     cleanup_before: str,
     cleanup_started_at: str,
 ) -> _TagHistoryCleanupAction | None:
+    reclamation = session.scalar(
+        select(CollectionTagNodeReclamationRecord)
+        .order_by(CollectionTagNodeReclamationRecord.node_digest)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    if reclamation is not None:
+        node = session.scalar(
+            select(CollectionTagNodeRecord)
+            .where(CollectionTagNodeRecord.digest == reclamation.node_digest)
+            .with_for_update()
+        )
+        if node is None:
+            session.delete(reclamation)
+            return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+        if _tag_node_has_live_owner(session, reclamation.node_digest):
+            expected_children = {
+                child.digest for child in decode_collection_tag_node(node.encoded).children
+            }
+            actual_children = set(
+                session.scalars(
+                    select(CollectionTagNodeEdgeRecord.child_digest).where(
+                        CollectionTagNodeEdgeRecord.parent_digest == reclamation.node_digest
+                    )
+                )
+            )
+            if actual_children != expected_children:
+                raise RuntimeError("a partially reclaimed catalog tag node gained an owner")
+            session.delete(reclamation)
+            return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+        edge = session.scalar(
+            select(CollectionTagNodeEdgeRecord)
+            .where(CollectionTagNodeEdgeRecord.parent_digest == reclamation.node_digest)
+            .order_by(CollectionTagNodeEdgeRecord.child_digest)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        if edge is not None:
+            session.delete(edge)
+            return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+        session.delete(node)
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+
     construction = list(
         session.scalars(
             select(CollectionTagMutationNodeReferenceRecord)
@@ -784,6 +829,11 @@ def _reap_unreferenced_tag_history_rows(
         .where(
             ~exists(
                 select(1).where(
+                    CollectionTagNodeReclamationRecord.node_digest == CollectionTagNodeRecord.digest
+                )
+            ),
+            ~exists(
+                select(1).where(
                     CollectionTagPublicationFrontierRecord.node_digest
                     == CollectionTagNodeRecord.digest
                 )
@@ -822,8 +872,13 @@ def _reap_unreferenced_tag_history_rows(
         .with_for_update(skip_locked=True)
     )
     if node is not None:
-        session.delete(node)
-        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
+        session.add(
+            CollectionTagNodeReclamationRecord(
+                node_digest=node.digest,
+                claimed_at=cleanup_started_at,
+            )
+        )
+        return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=0)
 
     unused_tag = session.scalar(
         select(CollectionTagRecord)
@@ -843,6 +898,27 @@ def _reap_unreferenced_tag_history_rows(
         session.delete(unused_tag)
         return _TagHistoryCleanupAction(changed_rows=1, deleted_rows=1)
     return None
+
+
+def _tag_node_has_live_owner(session: Session, digest: str) -> bool:
+    columns = (
+        CollectionTagPublicationFrontierRecord.node_digest,
+        CollectionUploadTagPublicationFrontierRecord.node_digest,
+        CollectionUploadTagNodeReferenceRecord.node_digest,
+        CollectionTagMutationNodeReferenceRecord.node_digest,
+    )
+    if any(session.scalar(select(exists().where(column == digest))) is True for column in columns):
+        return True
+    return any(
+        (
+            session.scalar(
+                select(exists().where(CollectionTagNodeEdgeRecord.child_digest == digest))
+            ),
+            session.scalar(
+                select(exists().where(CollectionTagRevisionRecord.root_sha256 == digest))
+            ),
+        )
+    )
 
 
 def _catalog_collection_page_statement(

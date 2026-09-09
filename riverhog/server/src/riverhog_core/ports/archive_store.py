@@ -160,6 +160,14 @@ class ArchiveStore(Protocol):
         provider_revision: str | None,
     ) -> None: ...
 
+    def delete_collection_document_revision(
+        self,
+        *,
+        object_path: str,
+        provider_revision: str,
+        expected_stored_sha256: str,
+    ) -> None: ...
+
     def read_archive_artifact(
         self,
         *,

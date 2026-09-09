@@ -209,6 +209,23 @@ class _VersionedMemoryAdapter(_MemoryAdapter):
     def __init__(self) -> None:
         super().__init__()
         self.revisions: dict[tuple[str, str], _Stored] = {}
+        self.next_revision = 1
+
+    def put_small_object(
+        self,
+        request: SmallObjectWriteRequest,
+        content: bytes,
+    ) -> ImmutableObjectReceipt:
+        prior = self.objects.get(request.object_path)
+        receipt = super().put_small_object(request, content)
+        current = self.objects[request.object_path]
+        if current is prior:
+            return receipt
+        if prior is not None:
+            self.revisions[(request.object_path, prior.revision)] = prior
+        current.revision = f"provider-revision-{self.next_revision}"
+        self.next_revision += 1
+        return self._immutable(request.object_path, current)
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
         revision = request.object.revision
@@ -443,6 +460,46 @@ def test_tag_node_gc_removes_current_then_its_exact_data_revision() -> None:
     assert [request.mode for request in adapter.deleted] == ["current", "exact_revision"]
     assert path not in adapter.objects
     assert (path, stored.revision) not in adapter.revisions
+
+
+def test_mutable_document_gc_removes_only_the_exact_superseded_revision() -> None:
+    adapter = _VersionedMemoryAdapter()
+    store = _store(adapter)
+    first = CollectionDescriptionDocument.seal(
+        archive_root_sha256="a" * 64,
+        revision=1,
+        description="first",
+    )
+    first_receipt = store.publish_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        document=first.to_json_bytes(),
+        passphrase_id="riverhog-dev-key-v1",
+    )
+    second = CollectionDescriptionDocument.seal(
+        archive_root_sha256="a" * 64,
+        revision=2,
+        description="second",
+    )
+    second_receipt = store.publish_collection_description(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        document=second.to_json_bytes(),
+        passphrase_id="riverhog-dev-key-v1",
+        expected_current_stored_sha256=first_receipt.stored_sha256,
+    )
+
+    assert first_receipt.revision is not None
+    store.delete_collection_document_revision(
+        object_path=first_receipt.object_path,
+        provider_revision=first_receipt.revision,
+        expected_stored_sha256=first_receipt.stored_sha256,
+    )
+
+    assert (first_receipt.object_path, first_receipt.revision) not in adapter.revisions
+    current = adapter.objects[second_receipt.object_path]
+    assert current.revision == second_receipt.revision
+    assert current.identity["riverhog-description-revision"] == "2"
 
 
 def test_discard_removes_completed_objects_from_the_exact_archive_namespace() -> None:

@@ -5,6 +5,7 @@ import os
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
 from uuid import uuid4
@@ -12,10 +13,12 @@ from uuid import uuid4
 import pytest
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
+    COLLECTION_TAGS_MANAGE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
     ApplicationAccess,
     ApplicationPrincipal,
+    tag_resource,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
@@ -25,15 +28,21 @@ from riverhog_core.catalog_db import (
     session_scope,
 )
 from riverhog_core.catalog_models import (
+    CollectionTagNodeReclamationRecord,
+    CollectionTagNodeRecord,
     CollectionUploadFileRecord,
     CollectionUploadProvenanceJournalChunkRecord,
     CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
+    CollectionUploadTagNodeReferenceRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import collection_uploads as collection_uploads_module
+from riverhog_core.services.catalog_sync import _reap_unreferenced_tag_history
+from riverhog_core.services.collection_tags import build_collection_tag_set
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol import CollectionUploadProvenanceJournalCreateDocument
-from riverhog_protocol.errors import Conflict
+from riverhog_protocol.errors import Conflict, ServiceUnavailable
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
@@ -50,6 +59,16 @@ _OPERATOR = ApplicationPrincipal(
     app="fixture-operator",
     key_id="operator-key",
     access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, ALL_RESOURCES)}),
+)
+_TAGGED_CREATOR = ApplicationPrincipal(
+    app="tagged-fixture-target",
+    key_id="tagged-target-key",
+    access=frozenset(
+        {
+            ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES),
+            ApplicationAccess(COLLECTION_TAGS_MANAGE, tag_resource("source:camera")),
+        }
+    ),
 )
 _FILE = {
     "path": "output/artifact.bin",
@@ -117,6 +136,117 @@ def _create(service: SqlAlchemyCollectionUploadService) -> int:
         custody_mode="custody-transfer",
     )
     return int(payload["collection_id"])
+
+
+def test_postgres_upload_protects_a_reused_tag_root_before_its_first_commit(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _other = _services(database_url)
+    factory = make_session_factory(database_url)
+    with session_scope(factory) as session:
+        tag_set, _created = build_collection_tag_set(session, ("source:camera",))
+        root_digest = tag_set.root.root_sha256
+    assert root_digest is not None
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_scope = collection_uploads_module.session_scope
+    paused = False
+
+    @contextmanager
+    def pause_before_commit(session_factory: object) -> Iterator[object]:
+        nonlocal paused
+        with original_scope(session_factory) as session:  # type: ignore[arg-type]
+            yield session
+            upload = session.scalar(
+                select(CollectionUploadRecord).where(
+                    CollectionUploadRecord.initiated_by_app == _TAGGED_CREATOR.app,
+                    CollectionUploadRecord.idempotency_key == "reuse-orphan-tag-root",
+                )
+            )
+            if not paused and upload is not None:
+                paused = True
+                entered.set()
+                assert release.wait(timeout=10)
+
+    monkeypatch.setattr(collection_uploads_module, "session_scope", pause_before_commit)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            service.create_or_resume,
+            idempotency_key="reuse-orphan-tag-root",
+            ingest_source="postgres-fixture",
+            tags=("source:camera",),
+            archive_store=None,
+            initiator=_TAGGED_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture",
+        )
+        assert entered.wait(timeout=10)
+        with session_scope(factory) as session:
+            metrics = _reap_unreferenced_tag_history(
+                session,
+                limit=1,
+                cleanup_before="9999-12-31T23:59:59.999999Z",
+                cleanup_started_at="9999-12-31T23:59:59.999999Z",
+            )
+            assert metrics.changed_rows == 0
+        with session_scope(factory) as session:
+            assert session.get(CollectionTagNodeRecord, root_digest) is not None
+            assert session.get(CollectionTagNodeReclamationRecord, root_digest) is None
+        release.set()
+        created = pending.result(timeout=10)
+
+    collection_id = int(created["collection_id"])
+    with session_scope(factory) as session:
+        assert (
+            session.get(
+                CollectionUploadTagNodeReferenceRecord,
+                (collection_id, root_digest),
+            )
+            is not None
+        )
+
+
+def test_postgres_upload_reuse_fails_before_commit_after_reclamation_claim(
+    database_url: str,
+) -> None:
+    service, _other = _services(database_url)
+    factory = make_session_factory(database_url)
+    with session_scope(factory) as session:
+        tag_set, _created = build_collection_tag_set(session, ("source:camera",))
+        root_digest = tag_set.root.root_sha256
+    assert root_digest is not None
+    with session_scope(factory) as session:
+        metrics = _reap_unreferenced_tag_history(
+            session,
+            limit=1,
+            cleanup_before="9999-12-31T23:59:59.999999Z",
+            cleanup_started_at="9999-12-31T23:59:59.999999Z",
+        )
+        assert metrics.changed_rows == 1
+    with pytest.raises(ServiceUnavailable, match="being reclaimed"):
+        service.create_or_resume(
+            idempotency_key="claimed-tag-root",
+            ingest_source="postgres-fixture",
+            tags=("source:camera",),
+            archive_store=None,
+            initiator=_TAGGED_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture",
+        )
+    with session_scope(factory) as session:
+        assert (
+            session.scalar(
+                select(CollectionUploadRecord).where(
+                    CollectionUploadRecord.initiated_by_app == _TAGGED_CREATOR.app,
+                    CollectionUploadRecord.idempotency_key == "claimed-tag-root",
+                )
+            )
+            is None
+        )
 
 
 def _expire(database_url: str, collection_id: int) -> None:

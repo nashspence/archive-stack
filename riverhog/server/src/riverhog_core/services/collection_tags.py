@@ -51,6 +51,7 @@ from riverhog_core.catalog_models import (
     CollectionTagMutationRecord,
     CollectionTagNodeEdgeRecord,
     CollectionTagNodeGcRecord,
+    CollectionTagNodeReclamationRecord,
     CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
     CollectionTagPublicationRecord,
@@ -63,6 +64,11 @@ from riverhog_core.collection_access import collection_access_filter, require_co
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
+from riverhog_core.services.mutable_document_reclamation import (
+    process_due_mutable_document_reclamations,
+    requeue_interrupted_mutable_document_reclamations,
+    retain_superseded_mutable_document,
+)
 
 
 def build_collection_tag_set(
@@ -135,7 +141,13 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
             raise RuntimeError("catalog tag node digest differs")
         existing = self._pending.get(digest)
         if existing is None:
-            record = self._session.get(CollectionTagNodeRecord, digest)
+            record = self._session.scalar(
+                select(CollectionTagNodeRecord)
+                .where(CollectionTagNodeRecord.digest == digest)
+                .with_for_update()
+            )
+            if self._session.get(CollectionTagNodeReclamationRecord, digest) is not None:
+                raise ServiceUnavailable("catalog tag node is being reclaimed; retry the work")
             existing = None if record is None else record.encoded
         if existing is not None and existing != payload:
             raise RuntimeError("immutable catalog tag node differs")
@@ -159,6 +171,10 @@ class _DatabaseTagNodeStore(CollectionTagNodeStore):
 
         self._session.flush()
         for parent_digest, child_digest in sorted(self._pending_edges):
+            if self._session.get(CollectionTagNodeReclamationRecord, parent_digest) is not None:
+                raise ServiceUnavailable("catalog tag node is being reclaimed; retry the work")
+            if self._session.get(CollectionTagNodeReclamationRecord, child_digest) is not None:
+                raise ServiceUnavailable("catalog tag node is being reclaimed; retry the work")
             if (
                 self._session.get(
                     CollectionTagNodeEdgeRecord,
@@ -338,7 +354,7 @@ class SqlAlchemyCollectionTagService:
                     # adding the composite construction references.  This remains one
                     # transaction, while making the dependency order explicit on SQLite.
                     session.flush()
-                    for digest in sorted(store.put_digests):
+                    for digest in sorted(store.touched_digests):
                         session.add(
                             CollectionTagMutationNodeReferenceRecord(
                                 collection_id=normalized_id,
@@ -449,7 +465,14 @@ class SqlAlchemyCollectionTagService:
             for gc_row in gc_rows:
                 gc_row.state = "pending"
                 gc_row.next_attempt_at = now
-            return len(rows) + len(gc_rows)
+            remaining -= len(gc_rows)
+            reclaimed = requeue_interrupted_mutable_document_reclamations(
+                session,
+                document_kind="tag_head",
+                limit=remaining,
+                now=now,
+            )
+            return len(rows) + len(gc_rows) + reclaimed
 
     def process_due(self, *, limit: int = 1) -> int:
         processed = 0
@@ -475,6 +498,15 @@ class SqlAlchemyCollectionTagService:
             if key is None:
                 if self._process_reachability_step() or self._process_gc_step():
                     processed += 1
+                    continue
+                reclaimed = process_due_mutable_document_reclamations(
+                    self._session_factory,
+                    self._archive_stores,
+                    document_kind="tag_head",
+                    limit=1,
+                )
+                if reclaimed:
+                    processed += reclaimed
                     continue
                 break
             else:
@@ -834,6 +866,17 @@ class SqlAlchemyCollectionTagService:
                 return
             if publication.head_stored_sha256 != expected_head_stored_sha256:
                 return
+            retain_superseded_mutable_document(
+                session,
+                collection_id=collection_id,
+                store=store_name,
+                document_kind="tag_head",
+                object_path=publication.head_object_path,
+                provider_revision=publication.head_provider_revision,
+                stored_bytes=publication.head_stored_bytes,
+                stored_sha256=publication.head_stored_sha256,
+                replacement=receipt,
+            )
             publication.published_revision = head.revision
             publication.published_tag_set_identity = head.tag_set_identity
             publication.published_head_identity = head.head_identity

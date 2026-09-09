@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -25,11 +27,14 @@ from riverhog_core.catalog_events import (
 )
 from riverhog_core.catalog_models import (
     CatalogEventRecord,
+    CollectionMutableDocumentReclamationRecord,
     CollectionRecord,
     CollectionTagMembershipRecord,
     CollectionTagMutationNodeReferenceRecord,
     CollectionTagMutationRecord,
+    CollectionTagNodeEdgeRecord,
     CollectionTagNodeGcRecord,
+    CollectionTagNodeReclamationRecord,
     CollectionTagNodeRecord,
     CollectionTagPublicationFrontierRecord,
     CollectionTagPublicationRecord,
@@ -48,15 +53,22 @@ from riverhog_core.services.collection_tags import (
     SqlAlchemyCollectionTagService,
     build_collection_tag_set,
 )
+from riverhog_core.services.mutable_document_reclamation import (
+    process_due_mutable_document_reclamations,
+)
 from riverhog_protocol import (
     COLLECTION_TAG_HEAD_RELATIVE_PATH,
     COLLECTION_TAG_UTF8_BYTES_MAX,
     CatalogSyncDelete,
+    CollectionTagChild,
     CollectionTagHeadDocument,
+    CollectionTagNode,
     CollectionTagSet,
     CollectionTagSetRoot,
+    collection_tag_node_digest,
     collection_tag_node_path,
     collection_tag_sha256,
+    encode_collection_tag_node,
 )
 from riverhog_protocol.errors import NotFound, PreconditionFailed, ServiceUnavailable
 from sqlalchemy import exists, select
@@ -83,11 +95,17 @@ def _principal(*tags: str) -> ApplicationPrincipal:
 
 
 def _service(
-    path: Path,
+    path: Path | None,
     *,
     archive_store: MemoryArchiveStore | None = None,
+    database_url: str | None = None,
 ) -> tuple[SqlAlchemyCollectionTagService, object, MemoryArchiveStore]:
-    config, archive = seed_archive_copy(path, {"camera/clip.bin": b"clip"}, store="archive")
+    config, archive = seed_archive_copy(
+        path,
+        {"camera/clip.bin": b"clip"},
+        store="archive",
+        database_url=database_url,
+    )
     store = archive_store or MemoryArchiveStore()
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
@@ -714,6 +732,58 @@ def test_provider_nodes_for_retained_exact_revisions_remain_recoverable(
     assert recovered_tags == {"source:camera"}
 
 
+class _VersionedTagHeadStore(MemoryArchiveStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_revisions: dict[str, str] = {}
+        self.retained_revisions: dict[tuple[str, str], bytes] = {}
+        self.next_revision = 1
+
+    def publish_collection_tag_head(
+        self,
+        *,
+        collection_id: int,
+        archive_storage_prefix: str,
+        document: bytes,
+        passphrase_id: str,
+        expected_current_stored_sha256: str | None = None,
+    ) -> CollectionTagObjectReceipt:
+        path = f"{archive_storage_prefix}/{COLLECTION_TAG_HEAD_RELATIVE_PATH}"
+        prior = self.objects.get(path)
+        prior_revision = self.current_revisions.get(path)
+        receipt = super().publish_collection_tag_head(
+            collection_id=collection_id,
+            archive_storage_prefix=archive_storage_prefix,
+            document=document,
+            passphrase_id=passphrase_id,
+            expected_current_stored_sha256=expected_current_stored_sha256,
+        )
+        if prior is self.objects.get(path) and prior_revision is not None:
+            return replace(receipt, revision=prior_revision)
+        if prior is not None and prior_revision is not None:
+            self.retained_revisions[(path, prior_revision)] = prior
+        revision = f"tag-head-revision-{self.next_revision}"
+        self.next_revision += 1
+        self.current_revisions[path] = revision
+        return replace(receipt, revision=revision)
+
+    def delete_collection_document_revision(
+        self,
+        *,
+        object_path: str,
+        provider_revision: str,
+        expected_stored_sha256: str,
+    ) -> None:
+        if self.current_revisions.get(object_path) == provider_revision:
+            raise RuntimeError("refusing to reclaim current mutable collection document")
+        prior = self.retained_revisions.get((object_path, provider_revision))
+        if prior is None:
+            return
+        if hashlib.sha256(prior).hexdigest() != expected_stored_sha256:
+            raise RuntimeError("mutable collection document revision differs")
+        del self.retained_revisions[(object_path, provider_revision)]
+
+
 class _DelayedTagHeadStore(MemoryArchiveStore):
     def __init__(self) -> None:
         super().__init__()
@@ -768,6 +838,64 @@ class _CommittedTagHeadWithoutResponseStore(MemoryArchiveStore):
             self.lose_next_head_response = False
             raise OSError("simulated lost response after durable head replacement")
         return receipt
+
+
+def test_superseded_tag_heads_retain_exact_cleanup_custody(tmp_path: Path) -> None:
+    store = _VersionedTagHeadStore()
+    service, factory, _store = _service(
+        tmp_path / "catalog.sqlite3",
+        archive_store=store,
+    )
+    principal = _principal("source:camera", "workflow:archive")
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        collection = session.get(CollectionRecord, 1)
+        assert collection is not None
+        initial_identity = collection.tag_set_identity
+    added = service.add(
+        1,
+        tag="workflow:archive",
+        operation_id="versioned-add",
+        expected_revision=1,
+        expected_tag_set_identity=initial_identity,
+        principal=principal,
+    )
+    service.remove(
+        1,
+        tag="workflow:archive",
+        operation_id="versioned-remove",
+        expected_revision=2,
+        expected_tag_set_identity=str(added["tag_set_identity"]),
+        principal=principal,
+    )
+
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 2
+    assert len(store.retained_revisions) == 2
+    assert (
+        process_due_mutable_document_reclamations(
+            factory,
+            ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+            document_kind="tag_head",
+            limit=1,
+        )
+        == 1
+    )
+    assert len(store.retained_revisions) == 1
+    assert (
+        process_due_mutable_document_reclamations(
+            factory,
+            ArchiveStoreRegistry({"archive": archive_store_binding(store)}),
+            document_kind="tag_head",
+            limit=1,
+        )
+        == 1
+    )
+    with session_scope(factory) as session:  # type: ignore[arg-type]
+        assert session.query(CollectionMutableDocumentReclamationRecord).count() == 0
+    assert not store.retained_revisions
+    head, tags = _recover_stored_tags(store)
+    assert head.revision == 3
+    assert tags == {"source:camera"}
 
 
 def test_committed_tag_head_reconciles_after_its_response_is_lost(tmp_path: Path) -> None:
@@ -1129,6 +1257,83 @@ def test_tag_history_cleanup_bounds_all_subordinate_rows_and_restarts(
                 )
             )
         )
+
+
+def test_tag_node_reclamation_counts_every_edge_and_node_row_at_work_one(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    _service(path)
+    factory = make_session_factory(sqlite_url(path))
+    children: list[CollectionTagChild] = []
+    with session_scope(factory) as session:
+        for label in range(256):
+            encoded = encode_collection_tag_node(
+                CollectionTagNode(prefix=bytes((label,)), tag=f"child-{label}".encode())
+            )
+            digest = collection_tag_node_digest(encoded)
+            session.add(
+                CollectionTagNodeRecord(
+                    digest=digest,
+                    encoded=encoded,
+                    created_at=utc_timestamp_now(),
+                )
+            )
+            children.append(CollectionTagChild(label=label, digest=digest))
+        parent_encoded = encode_collection_tag_node(
+            CollectionTagNode(prefix=b"", children=tuple(children))
+        )
+        parent_digest = collection_tag_node_digest(parent_encoded)
+        session.add(
+            CollectionTagNodeRecord(
+                digest=parent_digest,
+                encoded=parent_encoded,
+                created_at=utc_timestamp_now(),
+            )
+        )
+        session.flush()
+        session.add_all(
+            CollectionTagNodeEdgeRecord(parent_digest=parent_digest, child_digest=child.digest)
+            for child in children
+        )
+
+    steps = 0
+    while True:
+        with session_scope(factory) as session:
+            before = sum(
+                int(session.query(model).count())
+                for model in (
+                    CollectionTagNodeRecord,
+                    CollectionTagNodeEdgeRecord,
+                    CollectionTagNodeReclamationRecord,
+                )
+            )
+            metrics = _reap_unreferenced_tag_history(
+                session,
+                limit=1,
+                cleanup_before="9999-12-31T23:59:59.999999Z",
+                cleanup_started_at="9999-12-31T23:59:59.999999Z",
+            )
+            session.flush()
+            after = sum(
+                int(session.query(model).count())
+                for model in (
+                    CollectionTagNodeRecord,
+                    CollectionTagNodeEdgeRecord,
+                    CollectionTagNodeReclamationRecord,
+                )
+            )
+            assert metrics.changed_rows == 1
+            assert abs(after - before) == 1
+            parent_present = session.get(CollectionTagNodeRecord, parent_digest) is not None
+            claim_present = (
+                session.get(CollectionTagNodeReclamationRecord, parent_digest) is not None
+            )
+        steps += 1
+        if not parent_present and not claim_present:
+            break
+
+    assert steps == 259
 
 
 def test_exact_tag_revisions_expire_with_the_catalog_history_that_names_them(

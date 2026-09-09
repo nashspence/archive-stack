@@ -746,13 +746,17 @@ def _fixture_provenance_artifacts(
 
 
 def seed_archive_copy(
-    path: Path,
+    path: Path | None,
     files: dict[str, bytes],
     *,
     store: str = "deep",
     archive: FixtureArchive | None = None,
+    database_url: str | None = None,
 ) -> tuple[RuntimeConfig, FixtureArchive]:
-    database_url = sqlite_url(path)
+    if database_url is None:
+        if path is None:
+            raise ValueError("path or database_url is required")
+        database_url = sqlite_url(path)
     initialize_db(database_url)
     current = archive or make_archive(files)
     factory = make_session_factory(database_url)
@@ -1225,6 +1229,21 @@ class MemoryArchiveStore:
             raise RuntimeError("collection tag-node provider revision differs")
         self.objects.pop(object_path, None)
         self.object_metadata.pop(object_path, None)
+
+    def delete_collection_document_revision(
+        self,
+        *,
+        object_path: str,
+        provider_revision: str,
+        expected_stored_sha256: str,
+    ) -> None:
+        current = self.objects.get(object_path)
+        if current is None:
+            return
+        if self._version(current) == provider_revision:
+            if hashlib.sha256(current).hexdigest() != expected_stored_sha256:
+                raise RuntimeError("mutable collection document revision differs")
+            raise RuntimeError("refusing to reclaim current mutable collection document")
 
     def read_archive_artifact(
         self,

@@ -40,6 +40,11 @@ from riverhog_core.ports.archive_store import CollectionDescriptionReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_records import archive_copy_is_complete
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
+from riverhog_core.services.mutable_document_reclamation import (
+    process_due_mutable_document_reclamations,
+    requeue_interrupted_mutable_document_reclamations,
+    retain_superseded_mutable_document,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -174,6 +179,14 @@ class SqlAlchemyCollectionDescriptionService:
                     publication.next_attempt_at = now
                     publication.failure = "publication interrupted before completion"
                 changed += len(publications)
+                remaining -= len(publications)
+            if remaining:
+                changed += requeue_interrupted_mutable_document_reclamations(
+                    session,
+                    document_kind="description",
+                    limit=remaining,
+                    now=now,
+                )
         return changed
 
     def process_due(self, *, limit: int = 1) -> int:
@@ -195,6 +208,15 @@ class SqlAlchemyCollectionDescriptionService:
                 continue
             publication = self._claim_due_replica()
             if publication is None:
+                reclaimed = process_due_mutable_document_reclamations(
+                    self._session_factory,
+                    self._archive_stores,
+                    document_kind="description",
+                    limit=1,
+                )
+                if reclaimed:
+                    processed += reclaimed
+                    continue
                 break
             try:
                 self._publish_replica(*publication)
@@ -428,6 +450,18 @@ class SqlAlchemyCollectionDescriptionService:
                 return
             if receipt is not None and publication.stored_sha256 != expected_current_stored_sha256:
                 return
+            if receipt is not None:
+                retain_superseded_mutable_document(
+                    session,
+                    collection_id=collection_id,
+                    store=store,
+                    document_kind="description",
+                    object_path=publication.object_path,
+                    provider_revision=publication.provider_revision,
+                    stored_bytes=publication.stored_bytes,
+                    stored_sha256=publication.stored_sha256,
+                    replacement=receipt,
+                )
             publication.published_revision = revision
             publication.published_identity = identity
             if receipt is not None:
@@ -615,6 +649,17 @@ def _record_published_copy(
         )
         session.add(publication)
         return
+    retain_superseded_mutable_document(
+        session,
+        collection_id=collection.id,
+        store=store,
+        document_kind="description",
+        object_path=publication.object_path,
+        provider_revision=publication.provider_revision,
+        stored_bytes=publication.stored_bytes,
+        stored_sha256=publication.stored_sha256,
+        replacement=receipt,
+    )
     publication.desired_revision = collection.description_revision
     publication.desired_identity = collection.description_identity
     publication.published_revision = collection.description_revision

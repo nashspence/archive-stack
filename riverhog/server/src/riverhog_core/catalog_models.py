@@ -345,6 +345,22 @@ class CollectionTagNodeRecord(Base):
     )
 
 
+class CollectionTagNodeReclamationRecord(Base):
+    """Durable fence while one unowned catalog tag node is dismantled."""
+
+    __tablename__ = "collection_tag_node_reclamations"
+
+    node_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claimed_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        CheckConstraint(
+            _fixed_lowercase_integer_check("node_digest", 64),
+            name="ck_collection_tag_node_reclamations_digest",
+        ),
+    )
+
+
 class CollectionTagNodeEdgeRecord(Base):
     """One immutable structural edge in the content-addressed tag tree."""
 
@@ -357,7 +373,6 @@ class CollectionTagNodeEdgeRecord(Base):
         ForeignKeyConstraint(
             ["parent_digest"],
             ["collection_tag_nodes.digest"],
-            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(["child_digest"], ["collection_tag_nodes.digest"]),
         CheckConstraint(
@@ -1055,6 +1070,56 @@ class CollectionDescriptionPublicationRecord(Base):
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(
         back_populates="description_publication"
+    )
+
+
+class CollectionMutableDocumentReclamationRecord(Base):
+    """Exact provider revision retained until superseded sidecar reclamation."""
+
+    __tablename__ = "collection_mutable_document_reclamations"
+
+    receipt_identity: Mapped[str] = mapped_column(String(64), primary_key=True)
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
+    store: Mapped[str] = mapped_column(String)
+    document_kind: Mapped[str] = mapped_column(String)
+    object_path: Mapped[str] = mapped_column(String)
+    provider_revision: Mapped[str] = mapped_column(String)
+    stored_bytes: Mapped[int] = mapped_column(BigInteger)
+    stored_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String, default="pending")
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            _fixed_lowercase_integer_check("receipt_identity", 64),
+            name="ck_mutable_document_reclamations_identity",
+        ),
+        CheckConstraint(
+            "document_kind IN ('description','tag_head')",
+            name="ck_mutable_document_reclamations_kind",
+        ),
+        CheckConstraint("stored_bytes > 0", name="ck_mutable_document_reclamations_bytes"),
+        CheckConstraint(
+            _fixed_lowercase_integer_check("stored_sha256", 64),
+            name="ck_mutable_document_reclamations_stored_sha256",
+        ),
+        CheckConstraint(
+            "state IN ('pending','deleting','retry_wait')",
+            name="ck_mutable_document_reclamations_state",
+        ),
+        Index(
+            "ix_collection_mutable_document_reclamations_due",
+            "state",
+            "next_attempt_at",
+            "receipt_identity",
+        ),
+        Index(
+            "ix_collection_mutable_document_reclamations_owner",
+            "collection_id",
+            "store",
+            "document_kind",
+        ),
     )
 
 
